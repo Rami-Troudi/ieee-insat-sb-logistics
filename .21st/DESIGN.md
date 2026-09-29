@@ -8,7 +8,7 @@ A responsive equipment desk for IEEE INSAT Student Branch members and Board oper
 
 - Use a light interface with forest green, warm chalk, muted sage, and a small lime accent.
 - Use compact dashboard headings, factual page descriptions, uppercase section labels, and clear readable body text.
-- Keep equipment cards, time-window controls, reservation rows, and inventory labels dense and scannable.
+- Present catalogue equipment as compact horizontal rows; keep time-window controls, reservation rows, and inventory labels dense and scannable.
 - Use the system sans-serif stack throughout the interface.
 - Use consistent rounded cards, restrained borders, and subtle shadows. Reserve stronger green fills for primary actions.
 

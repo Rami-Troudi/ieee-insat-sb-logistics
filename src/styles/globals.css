@@ -625,10 +625,12 @@ textarea:focus-visible {
 }
 .equipment-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 15px;
+  grid-template-columns: 1fr;
+  gap: 8px;
 }
 .equipment-card {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
   border: 1px solid #e2e8f0;
   background: #fff;
   border-radius: 9px;
@@ -642,7 +644,7 @@ textarea:focus-visible {
   box-shadow: 0 4px 12px #0f172a0a;
 }
 .equipment-image {
-  height: 155px;
+  min-height: 118px;
   position: relative;
   display: grid;
   place-items: center;
@@ -650,8 +652,8 @@ textarea:focus-visible {
   background: #e8eee7;
 }
 .equipment-image img {
-  width: 125px;
-  height: 125px;
+  width: 88px;
+  height: 88px;
   object-fit: contain;
   mix-blend-mode: multiply;
 }
@@ -682,8 +684,8 @@ textarea:focus-visible {
 }
 .availability-tag {
   position: absolute;
-  right: 10px;
-  top: 12px;
+  left: 12px;
+  bottom: 10px;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -708,25 +710,35 @@ textarea:focus-visible {
   background: #ba866c;
 }
 .equipment-body {
-  padding: 14px 14px 12px;
+  padding: 15px 16px 13px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto 1fr;
+  column-gap: 24px;
+  align-items: center;
 }
 .equipment-body h3 {
+  grid-column: 1;
   font-size: 13px;
 }
 .equipment-body > p {
-  min-height: 34px;
-  margin: 6px 0 14px;
+  grid-column: 1;
+  min-height: 0;
+  margin: 5px 0 0;
   color: #879087;
   font-size: 10px;
   line-height: 1.6;
 }
 .card-footer {
-  border-top: 1px solid #eef0ec;
-  padding-top: 11px;
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  border-left: 1px solid #eef0ec;
+  border-top: 0;
+  padding: 2px 0 2px 18px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 7px;
+  gap: 14px;
 }
 .stock-copy {
   display: flex;
@@ -2437,26 +2449,31 @@ textarea:focus-visible {
     max-width: 155px;
   }
   .equipment-grid {
-    grid-template-columns: 1fr 1fr;
-    gap: 9px;
+    grid-template-columns: 1fr;
+    gap: 7px;
+  }
+  .equipment-card {
+    grid-template-columns: 96px minmax(0, 1fr);
   }
   .equipment-image {
-    height: 130px;
+    min-height: 104px;
+    height: auto;
   }
   .equipment-image img {
-    width: 105px;
-    height: 105px;
+    width: 62px;
+    height: 62px;
   }
   .equipment-body {
-    padding: 11px 10px 10px;
+    padding: 11px;
+    display: block;
   }
   .equipment-body h3 {
     font-size: 11px;
   }
   .equipment-body > p {
     font-size: 9px;
-    min-height: 45px;
-    margin: 5px 0 10px;
+    min-height: 0;
+    margin: 4px 0 9px;
   }
   .category-tag,
   .availability-tag {
@@ -2468,12 +2485,15 @@ textarea:focus-visible {
     left: 7px;
   }
   .availability-tag {
-    right: 7px;
+    display: none;
   }
   .card-footer {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 8px;
+    border-left: 0;
+    border-top: 1px solid #eef0ec;
+    padding: 8px 0 0;
+    align-items: center;
+    flex-direction: row;
+    gap: 6px;
   }
   .stock-copy {
     font-size: 8px;
