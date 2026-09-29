@@ -9,7 +9,6 @@ export interface RegisterMemberInput {
   email: string;
   membership: MembershipType;
   phone: string;
-  password?: string;
 }
 
 export interface RegisterResult {
