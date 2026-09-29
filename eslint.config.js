@@ -25,7 +25,7 @@ export default tseslint.config(
         "warn",
         {
           allowConstantExport: true,
-          allowExportNames: ["buttonVariants", "badgeVariants", "STATUS_CONFIG", "useDevPersona"],
+          allowExportNames: ["buttonVariants", "badgeVariants", "STATUS_CONFIG"],
         },
       ],
       "@typescript-eslint/no-unused-vars": [
