@@ -132,104 +132,11 @@ app.all("/api/auth/*", async (c) => {
   return createAuth(c.env, trustedAuthOrigin(c.env, c.req.url)).handler(c.req.raw);
 });
 
-app.post("/api/v1/auth/board-login", async (c) => {
-  const ip = c.req.header("CF-Connecting-IP") ?? "unknown";
-  if (!(await rateLimit(c.env.DB, `board-login:${ip}`, 10, 60))) {
-    return jsonError(c, 429, "RATE_LIMITED", "Too many login attempts; please wait a minute");
-  }
-  const body = await c.req
-    .json<{ email?: string; password?: string; deviceKey?: string }>()
-    .catch(() => null);
-  if (!body || typeof body.email !== "string" || typeof body.password !== "string") {
-    return jsonError(c, 400, "VALIDATION", "Staff email and password are required");
-  }
-  const email = body.email.trim().toLowerCase();
-  const password = body.password.trim();
-
-  const user = await c.env.DB.prepare(
-    "SELECT id, name, email, role, clearance, affiliation, status, data FROM app_users WHERE email=? COLLATE NOCASE"
-  )
-    .bind(email)
-    .first<any>();
-
-  if (!user || !["OPERATOR", "SUPERADMIN"].includes(user.role) || user.status !== "ACTIVE") {
-    return jsonError(c, 403, "FORBIDDEN", "Invalid staff credentials or account not active");
-  }
-
-  const expectedPassword = c.env.BOARD_STAFF_PASSWORD || "ras-insat-board-2026";
-  const userSpecificPassword = parseJson<any>(user.data)?.password;
-  const isPasswordValid =
-    (userSpecificPassword && timingSafeEqual(password, userSpecificPassword)) ||
-    timingSafeEqual(password, expectedPassword);
-
-  if (!isPasswordValid) {
-    return jsonError(c, 401, "UNAUTHENTICATED", "Invalid staff password");
-  }
-
-  const timestamp = now();
-  const expiresAt = timestamp + 30 * 24 * 60 * 60 * 1000;
-  const freshUntil = timestamp + 8 * 60 * 60 * 1000;
-  const sessionId = uuid("sess");
-  const sessionToken = uuid("tok");
-  const deviceKey = body.deviceKey && body.deviceKey.length >= 16 ? body.deviceKey : uuid("dev");
-
-  await c.env.DB.batch([
-    c.env.DB.prepare(
-      "INSERT INTO session(id, expiresAt, token, createdAt, updatedAt, ipAddress, userAgent, userId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-    ).bind(
-      sessionId,
-      expiresAt,
-      sessionToken,
-      timestamp,
-      timestamp,
-      ip,
-      c.req.header("User-Agent") ?? null,
-      user.id
-    ),
-    c.env.DB.prepare(
-      "INSERT INTO staff_sessions(user_id, expires_at, fresh_until, revoked_at) VALUES (?, ?, ?, NULL) ON CONFLICT(user_id) DO UPDATE SET expires_at=excluded.expires_at, fresh_until=excluded.fresh_until, revoked_at=NULL"
-    ).bind(user.id, expiresAt, freshUntil),
-    c.env.DB.prepare(
-      "INSERT INTO audit_events(id, actor_user_id, entity_type, entity_id, action, created_at, data) VALUES (?, ?, ?, ?, ?, ?, ?)"
-    ).bind(
-      uuid("audit"),
-      user.id,
-      "AUTH",
-      user.id,
-      "BOARD_LOGIN_SUCCESS",
-      timestamp,
-      JSON.stringify({ ip, deviceKey })
-    ),
-  ]);
-
-  const isHttps = c.req.url.startsWith("https:");
-  const cookieFlags = `Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${isHttps ? "; Secure" : ""}`;
-  c.header("Set-Cookie", `better-auth.session_token=${sessionToken}; ${cookieFlags}`, {
-    append: true,
-  });
-  c.header("Set-Cookie", `ras_staff_session=${sessionToken}; ${cookieFlags}`, { append: true });
-
-  return c.json({
-    ok: true,
-    user: {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      clearance: user.clearance,
-      affiliation: user.affiliation,
-      status: user.status,
-    },
-    deviceKey,
-  });
-});
-
 app.post("/api/v1/auth/borrower", async (c) => {
   const ip = c.req.header("CF-Connecting-IP") ?? "unknown";
   const rateDecision = await c.env.AUTH_RATE_LIMITER.limit({ key: `borrower-auth:${ip}` });
-  if (!rateDecision.success) {
-    return jsonError(c, 429, "RATE_LIMITED", "Too many requests; slow down and try again");
-  }
+  if (!rateDecision.success)
+    return jsonError(c, 429, "RATE_LIMITED", "Too many authentication attempts; try again later");
 
   const body = await c.req
     .json<{
@@ -245,56 +152,84 @@ app.post("/api/v1/auth/borrower", async (c) => {
   if (
     !body ||
     typeof body.email !== "string" ||
-    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email.trim())
-  ) {
-    return jsonError(c, 400, "VALIDATION", "A valid email address is required");
-  }
+    !/^\S+@\S+\.\S+$/.test(body.email.trim()) ||
+    typeof body.name !== "string" ||
+    body.name.trim().length < 3 ||
+    body.name.length > 120
+  )
+    return jsonError(c, 400, "VALIDATION", "Valid member details are required");
 
   const email = body.email.trim().toLowerCase();
-  const name =
-    (body.name || `${body.firstName ?? ""} ${body.lastName ?? ""}`).trim() || "Borrower";
+  const name = body.name.trim();
   const phone = typeof body.phone === "string" ? body.phone.trim() : "";
   const membership = ["IEEE", "AEROBOTIX", "EXTERNAL"].includes(body.membership ?? "")
-    ? (body.membership as string)
+    ? body.membership!
     : "EXTERNAL";
+  const timestamp = now();
 
-  const existing = await c.env.DB.prepare(
-    "SELECT * FROM app_users WHERE email=? COLLATE NOCASE"
-  )
+  let user = await c.env.DB.prepare("SELECT * FROM app_users WHERE email=? COLLATE NOCASE")
     .bind(email)
     .first<AppUser>();
 
-  const userId = existing?.id ?? `borrower-${await digest(email)}`;
-  const clearance = membership === "IEEE" ? "III" : membership === "AEROBOTIX" ? "II" : "I";
-  const timestamp = Date.now();
-
-  if (existing) {
-    await c.env.DB.prepare(
-      "UPDATE app_users SET name=?, phone=?, claimed_affiliation=?, updated_at=? WHERE id=?"
-    )
-      .bind(name, phone, membership, timestamp, existing.id)
-      .run();
-  } else {
-    await c.env.DB.prepare(
-      "INSERT INTO app_users(id, email, name, phone, role, clearance, affiliation, claimed_affiliation, affiliation_verified, status, data, created_at, updated_at) VALUES(?, ?, ?, ?, 'MEMBER', ?, ?, ?, 0, 'ACTIVE', '{}', ?, ?)"
-    )
-      .bind(userId, email, name, phone, clearance, membership, membership, timestamp, timestamp)
-      .run();
+  if (!user) {
+    const userId = `borrower-${await digest(email)}`;
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        "INSERT INTO user(id,name,email,emailVerified,createdAt,updatedAt) VALUES(?,?,?,0,?,?,?)".replace(",?,?,?)", ",?,?)")
+      ),
+    ]);
   }
 
-  const user = {
-    id: userId,
-    email,
-    name,
-    phone,
-    role: "MEMBER",
-    clearance,
-    affiliation: existing?.affiliation ?? membership,
-    claimedAffiliation: membership,
-    status: "ACTIVE",
-  };
+  const existing = await c.env.DB.prepare("SELECT * FROM app_users WHERE email=? COLLATE NOCASE")
+    .bind(email)
+    .first<AppUser>();
 
-  return c.json({ ok: true, user });
+  if (!existing) {
+    const userId = `borrower-${await digest(email)}`;
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        "INSERT INTO user(id,name,email,emailVerified,createdAt,updatedAt) VALUES(?,?,?,1,?,?)"
+      ).bind(userId, name, email, timestamp, timestamp),
+      c.env.DB.prepare(
+        "INSERT INTO app_users(id,email,name,phone,role,clearance,affiliation,claimed_affiliation,affiliation_verified,status,data,created_at,updated_at) VALUES(?,?,?,?,'MEMBER','I','EXTERNAL',?,0,'ACTIVE','{}',?,?)"
+      ).bind(userId, email, name, phone, membership, timestamp, timestamp),
+    ]);
+  } else {
+    await c.env.DB.prepare(
+      "UPDATE app_users SET name=?,phone=?,claimed_affiliation=?,updated_at=? WHERE id=?"
+    ).bind(name, phone, membership, timestamp, existing.id).run();
+  }
+
+  const origin = trustedAuthOrigin(c.env, c.req.url);
+  try {
+    await createAuth(c.env, origin).api.signInMagicLink({
+      body: { email, name, callbackURL: `${origin}/app` },
+      headers: c.req.raw.headers,
+    });
+  } catch {
+    return jsonError(c, 503, "AUTH_UNAVAILABLE", "The sign-in link could not be sent");
+  }
+
+  user = await c.env.DB.prepare("SELECT * FROM app_users WHERE email=? COLLATE NOCASE")
+    .bind(email)
+    .first<AppUser>();
+  if (!user) return jsonError(c, 500, "INTERNAL", "Member account could not be loaded");
+
+  return c.json({
+    ok: true,
+    magicLinkSent: true,
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      clearance: user.clearance,
+      affiliation: user.affiliation,
+      isProcessed: user.affiliation_verified === 1,
+      status: user.status,
+      strikesCount: 0,
+    },
+  }, 202);
 });
 
 app.post("/api/v1/staff/challenge", async (c) => {
