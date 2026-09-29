@@ -15,7 +15,7 @@ export const PROD_DEFAULT_PERSONA: UserPersona = {
   name: "Guest",
   email: "",
   role: "MEMBER",
-  clearance: "III",
+  clearance: "I",
   affiliation: "EXTERNAL",
   isProcessed: false,
   status: "PENDING",
