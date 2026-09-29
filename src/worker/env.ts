@@ -30,7 +30,6 @@ export interface Env {
   APP_ORIGIN?: string;
   ENVIRONMENT: "staging" | "production";
   BETTER_AUTH_SECRET: string;
-  BOARD_STAFF_PASSWORD?: string;
   BREVO_API_KEY?: string;
   BREVO_SENDER_EMAIL?: string;
   BREVO_SENDER_NAME?: string;
