@@ -89,7 +89,7 @@ export const BoardPeoplePage: React.FC = () => {
       defaultClearance = "VI";
     } else if (role === "OPERATOR") {
       defaultAffiliation = "RAS_BOARD";
-      defaultClearance = "IV";
+      defaultClearance = "V";
     } else {
       // Member
       defaultAffiliation = addForm.affiliation === "RAS_BOARD" ? "IEEE" : addForm.affiliation;
