@@ -54,7 +54,6 @@ export function createRuntimeEnv(source: NodeJS.ProcessEnv = process.env): Env {
     APP_ORIGIN: source.APP_ORIGIN,
     ENVIRONMENT: source.VERCEL_ENV === "preview" ? "staging" : "production",
     BETTER_AUTH_SECRET: secret!,
-    BOARD_STAFF_PASSWORD: source.BOARD_STAFF_PASSWORD || "ras-insat-board-2026",
     BREVO_API_KEY: source.BREVO_API_KEY,
     BREVO_SENDER_EMAIL: source.BREVO_SENDER_EMAIL,
     BREVO_SENDER_NAME: source.BREVO_SENDER_NAME,
