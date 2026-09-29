@@ -20,25 +20,11 @@ import { Role, ClearanceLevel, Affiliation, UserProfile } from "@/types";
 import {
   UserPlus,
   Trash2,
-  Key,
-  Copy,
-  Check,
   Shield,
   ShieldAlert,
   ShieldCheck,
   AlertCircle,
-  RefreshCw,
-} from "lucide-react";
-
-function generateSecurePassword(): string {
-  const chars = "abcdefghjkmnpqrstuvwxyz23456789";
-  const arr = new Uint8Array(12);
-  crypto.getRandomValues(arr);
-  const part1 = Array.from(arr.slice(0, 4), (b) => chars[b % chars.length]).join("");
-  const part2 = Array.from(arr.slice(4, 8), (b) => chars[b % chars.length]).join("");
-  const part3 = Array.from(arr.slice(8, 12), (b) => chars[b % chars.length]).join("");
-  return `ras-${part1}-${part2}-${part3}`;
-}
+  } from "lucide-react";
 
 export const BoardPeoplePage: React.FC = () => {
   const { currentPersona } = useSession();
@@ -61,16 +47,8 @@ export const BoardPeoplePage: React.FC = () => {
     role: "MEMBER" as Role,
     affiliation: "IEEE" as Affiliation,
     clearance: "III" as ClearanceLevel,
-    password: "",
   });
   const [formError, setFormError] = useState<string | null>(null);
-  const [copiedPassword, setCopiedPassword] = useState(false);
-  const [createdCredentials, setCreatedCredentials] = useState<{
-    name: string;
-    email: string;
-    role: Role;
-    password?: string;
-  } | null>(null);
 
   // Remove person dialog state
   const [userToRemove, setUserToRemove] = useState<UserProfile | null>(null);
@@ -105,16 +83,13 @@ export const BoardPeoplePage: React.FC = () => {
   const handleRoleChange = (role: Role) => {
     let defaultAffiliation: Affiliation = addForm.affiliation;
     let defaultClearance: ClearanceLevel = addForm.clearance;
-    let newPassword = addForm.password;
 
     if (role === "SUPERADMIN") {
       defaultAffiliation = "RAS_BOARD";
       defaultClearance = "VI";
-      if (!newPassword) newPassword = generateSecurePassword();
     } else if (role === "OPERATOR") {
       defaultAffiliation = "RAS_BOARD";
       defaultClearance = "IV";
-      if (!newPassword) newPassword = generateSecurePassword();
     } else {
       // Member
       defaultAffiliation = addForm.affiliation === "RAS_BOARD" ? "IEEE" : addForm.affiliation;
@@ -133,7 +108,6 @@ export const BoardPeoplePage: React.FC = () => {
       role,
       affiliation: defaultAffiliation,
       clearance: defaultClearance,
-      password: newPassword,
     }));
     setFormError(null);
   };
@@ -153,19 +127,6 @@ export const BoardPeoplePage: React.FC = () => {
     setAddForm((prev) => ({ ...prev, affiliation, clearance }));
   };
 
-  const handleGeneratePassword = () => {
-    const pwd = generateSecurePassword();
-    setAddForm((prev) => ({ ...prev, password: pwd }));
-    setCopiedPassword(false);
-    setFormError(null);
-  };
-
-  const handleCopyPassword = (textToCopy: string) => {
-    navigator.clipboard.writeText(textToCopy);
-    setCopiedPassword(true);
-    setTimeout(() => setCopiedPassword(false), 2500);
-  };
-
   const handleAddSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
@@ -179,14 +140,6 @@ export const BoardPeoplePage: React.FC = () => {
       return;
     }
 
-    const isAdminRole = addForm.role === "OPERATOR" || addForm.role === "SUPERADMIN";
-    if (isAdminRole && !addForm.password.trim()) {
-      setFormError(
-        "Staff and Admin accounts require a system-generated password. Please click 'Generate Password'."
-      );
-      return;
-    }
-
     try {
       await createUserMutation.mutateAsync({
         payload: {
@@ -196,20 +149,12 @@ export const BoardPeoplePage: React.FC = () => {
           role: addForm.role,
           affiliation: addForm.affiliation,
           clearance: addForm.clearance,
-          password: addForm.password.trim() || undefined,
         },
         actorUserId: currentPersona.id,
         actorRole: currentPersona.role,
       });
 
-      if (addForm.password.trim() || isAdminRole) {
-        setCreatedCredentials({
-          name: addForm.name.trim(),
-          email: addForm.email.trim(),
-          role: addForm.role,
-          password: addForm.password.trim(),
-        });
-      } else {
+      if (true) {
         setIsAddModalOpen(false);
         setSuccessBanner(`User "${addForm.name}" created successfully.`);
         resetAddForm();
@@ -613,70 +558,7 @@ export const BoardPeoplePage: React.FC = () => {
                   </select>
                 </div>
 
-                {/* Password Section with Mandated Generation for Admins */}
-                <div className="pt-2 border-t border-border">
-                  <div className="flex items-center justify-between mb-1.5">
-                    <label className="font-medium text-foreground flex items-center gap-1.5">
-                      <Key className="h-3.5 w-3.5 text-primary" />
-                      <span>
-                        {addForm.role === "MEMBER"
-                          ? "Password (Optional for members)"
-                          : "Generated Staff Password (Required)"}
-                      </span>
-                    </label>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={handleGeneratePassword}
-                      className="h-7 text-[11px] gap-1 px-2.5"
-                    >
-                      <RefreshCw className="h-3 w-3" />
-                      <span>Generate Password</span>
-                    </Button>
-                  </div>
-
-                  {addForm.role !== "MEMBER" && (
-                    <p className="text-[11px] text-muted-foreground mb-2">
-                      Admins and staff must not set arbitrary passwords. Click{" "}
-                      <strong className="text-foreground">Generate Password</strong> to create a
-                      high-entropy secure key.
-                    </p>
-                  )}
-
-                  <div className="flex items-center gap-2">
-                    <Input
-                      type="text"
-                      readOnly
-                      placeholder={
-                        addForm.role === "MEMBER"
-                          ? "Optional: Click 'Generate Password' to set"
-                          : "Click 'Generate Password' to generate"
-                      }
-                      value={addForm.password}
-                      className="font-mono text-xs bg-muted/50 cursor-default select-all"
-                    />
-                    {addForm.password && (
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="secondary"
-                        onClick={() => handleCopyPassword(addForm.password)}
-                        className="h-9 px-3 gap-1 shrink-0"
-                      >
-                        {copiedPassword ? (
-                          <Check className="h-3.5 w-3.5 text-emerald-600" />
-                        ) : (
-                          <Copy className="h-3.5 w-3.5" />
-                        )}
-                        <span className="text-xs">{copiedPassword ? "Copied" : "Copy"}</span>
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <DialogFooter className="pt-2">
+                    <DialogFooter className="pt-2">
                 <Button
                   type="button"
                   variant="outline"
