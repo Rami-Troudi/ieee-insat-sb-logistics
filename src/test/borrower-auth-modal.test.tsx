@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { Providers } from "@/app/providers";
 import { BorrowerAuthModal } from "@/components/auth/BorrowerAuthModal";
@@ -65,6 +65,27 @@ describe("BorrowerAuthModal Component", () => {
   it("submits valid borrower details, saves to localStorage, and updates active session", async () => {
     let closed = false;
     let succeeded = false;
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes("/api/v1/auth/borrower")) {
+          return Response.json({
+            ok: true,
+            user: {
+              id: "member-yassine",
+              name: "Yassine Ben Ali",
+              email: "yassine.ba@insat.u-carthage.tn",
+              role: "MEMBER",
+              clearance: "II",
+              affiliation: "AEROBOTIX",
+              status: "ACTIVE",
+            },
+          });
+        }
+        return Response.json({});
+      })
+    );
 
     render(
       <Providers>

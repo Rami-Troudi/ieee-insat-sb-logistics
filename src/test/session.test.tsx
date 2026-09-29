@@ -8,7 +8,7 @@ import { RootRedirect } from "@/app/RootRedirect";
 import { UserPersona } from "@/types";
 
 describe("Production Session Abstraction & UserMenu", () => {
-  it("provides PROD_DEFAULT_PERSONA with role MEMBER and clearance III", () => {
+  it("provides PROD_DEFAULT_PERSONA with role MEMBER and neutral clearance", () => {
     function TestConsumer() {
       const { currentPersona, isDev } = useSession();
       return (
@@ -29,7 +29,7 @@ describe("Production Session Abstraction & UserMenu", () => {
 
     expect(screen.getByTestId("user-name")).toHaveTextContent(PROD_DEFAULT_PERSONA.name);
     expect(screen.getByTestId("user-role")).toHaveTextContent("MEMBER");
-    expect(screen.getByTestId("user-clearance")).toHaveTextContent("III");
+    expect(screen.getByTestId("user-clearance")).toHaveTextContent(PROD_DEFAULT_PERSONA.clearance);
     expect(screen.getByTestId("is-dev")).toHaveTextContent("false");
   });
 

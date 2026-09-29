@@ -11,7 +11,7 @@ import { KeyValueRow } from "@/components/shared/KeyValueRow";
 import { LoadingState } from "@/components/shared/LoadingState";
 import { ResponsiveDataTable } from "@/components/shared/ResponsiveDataTable";
 import { UserMenu } from "@/components/shared/UserMenu";
-import { DevPersonaProvider } from "@/dev/DevPersonaProvider";
+import { SessionProvider } from "@/hooks/SessionProvider";
 
 describe("Shared Foundation Primitives", () => {
   it("interacts properly with FilterChip and FilterBar", () => {
@@ -154,9 +154,9 @@ describe("Shared Foundation Primitives", () => {
   it("renders UserMenu with active persona info", () => {
     render(
       <MemoryRouter>
-        <DevPersonaProvider>
+        <SessionProvider>
           <UserMenu />
-        </DevPersonaProvider>
+        </SessionProvider>
       </MemoryRouter>
     );
 

@@ -12,8 +12,10 @@ import {
 } from "../hooks/useBoardInventory";
 import { Package, Search, Plus, Eye, EyeOff } from "lucide-react";
 import { EquipmentClass } from "@/types";
-import { isBorrowerCatalogVisible } from "@/features/inventory/utils/catalogAccess";
 import { DEFAULT_EQUIPMENT_IMAGE } from "@/assets/equipmentImages";
+
+const isBorrowerCatalogVisible = (item: { borrowerVisible?: boolean; equipmentClass: string }) =>
+  item.borrowerVisible ?? (item.equipmentClass === "C" || item.equipmentClass === "E");
 
 export const BoardInventoryPage: React.FC = () => {
   const { currentPersona } = useSession();

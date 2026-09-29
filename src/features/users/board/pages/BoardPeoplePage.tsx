@@ -22,9 +22,8 @@ import {
   Trash2,
   Shield,
   ShieldAlert,
-  ShieldCheck,
   AlertCircle,
-  } from "lucide-react";
+} from "lucide-react";
 
 export const BoardPeoplePage: React.FC = () => {
   const { currentPersona } = useSession();

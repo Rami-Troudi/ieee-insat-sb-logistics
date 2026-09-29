@@ -218,10 +218,14 @@ describe("Vercel API backend on SQLite-compatible storage", () => {
     ).toBe(403);
     expect(
       (
-        await request("/api/v1/board/loans/loan-1/return", {
+        await request("/api/v1/board/rpc", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: "{}",
+          body: JSON.stringify({
+            service: "loan",
+            method: "confirmReturn",
+            args: [{ loanId: "loan-1" }],
+          }),
         })
       ).status
     ).toBe(403);
@@ -319,7 +323,7 @@ describe("Vercel API backend on SQLite-compatible storage", () => {
       userClearance: string;
     };
     expect(createdValue.userId).toBe(member.id);
-    expect(createdValue).toMatchObject({ contactEmailVerified: false, userClearance: "I" });
+    expect(createdValue).toMatchObject({ contactEmailVerified: false, userClearance: "III" });
 
     const replay = await request(
       "/api/v1/requests",

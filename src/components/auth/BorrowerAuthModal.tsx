@@ -140,6 +140,20 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
         phone: data.phone.trim(),
       });
 
+      localStorage.setItem("ras_onboarding_completed", "true");
+      localStorage.setItem("ras_borrower_email", data.email.trim().toLowerCase());
+      localStorage.setItem(
+        "ras_borrower_profile",
+        JSON.stringify({
+          name: fullName,
+          firstName: data.firstName.trim(),
+          lastName: data.lastName.trim(),
+          email: data.email.trim().toLowerCase(),
+          membership: data.membership,
+          phone: data.phone.trim(),
+        })
+      );
+
       handleClose();
       if (onSuccess) {
         onSuccess();
@@ -360,7 +374,7 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
           <div>
             <DialogHeader className="text-center sm:text-center space-y-1.5">
               <div className="w-10 h-10 bg-secondary/15 text-secondary rounded-full flex items-center justify-center mx-auto mb-1">
-                <KeyRound className="w-5 h-5 text-secondary" />
+                <ShieldCheck className="w-5 h-5 text-secondary" />
               </div>
               <DialogTitle className="text-lg font-bold text-foreground">
                 Board Staff Sign In
@@ -390,22 +404,6 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
                   onChange={(e) => setStaffEmail(e.target.value)}
                   className="h-9 text-xs"
                 />
-              </div>
-
-              <div className="flex items-center gap-2 pt-1">
-                <input
-                  id="remember-device-modal"
-                  type="checkbox"
-                  checked={rememberDevice}
-                  onChange={(e) => setRememberDevice(e.target.checked)}
-                  className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
-                />
-                <label
-                  htmlFor="remember-device-modal"
-                  className="text-xs text-muted-foreground cursor-pointer select-none"
-                >
-                  Remember this device for staff operations
-                </label>
               </div>
 
               <Button
