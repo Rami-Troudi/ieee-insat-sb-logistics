@@ -49,7 +49,6 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
 
   // Staff login state
   const [staffEmail, setStaffEmail] = useState("");
-  const [staffPassword, setStaffPassword] = useState("");
   const [rememberDevice, setRememberDevice] = useState(true);
   const [staffError, setStaffError] = useState("");
   const [staffSubmitting, setStaffSubmitting] = useState(false);
@@ -155,47 +154,25 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
     e.preventDefault();
     setStaffError("");
     setStaffSubmitting(true);
-
-    const normalizedEmail = staffEmail.trim().toLowerCase();
-    const storedDeviceKey = localStorage.getItem("ras_board_device_key") ?? undefined;
-
     try {
-      const response = await fetch("/api/v1/auth/board-login", {
+      const response = await fetch("/api/auth/sign-in/magic-link", {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          email: normalizedEmail,
-          password: staffPassword.trim(),
-          deviceKey: storedDeviceKey,
+          email: staffEmail.trim().toLowerCase(),
+          callbackURL: `${window.location.origin}/board`,
         }),
       });
-
-      if (response.status === 429)
-        throw new Error("Too many attempts. Wait a minute and try again.");
-      if (response.status === 401)
-        throw new Error("Invalid staff password. Check your assigned board credentials.");
-      if (response.status === 403)
-        throw new Error("This account is not authorized for board operations or is inactive.");
-
-      const data = (await response.json()) as {
-        ok: boolean;
-        user: Parameters<typeof authService.setSession>[0];
-        deviceKey?: string;
-      };
-
-      if (rememberDevice && data.deviceKey) {
-        localStorage.setItem("ras_board_device_key", data.deviceKey);
-      }
-      authService.setSession(data.user);
-      handleClose();
-      window.location.href = "/board";
+      if (!response.ok) throw new Error("Unable to send the staff sign-in link.");
+      setStaffError("A single-use sign-in link was sent to the staff mailbox.");
     } catch (cause) {
       setStaffError(cause instanceof Error ? cause.message : "Unable to sign in right now.");
     } finally {
       setStaffSubmitting(false);
     }
   };
+
 
   if (!isOpen) return null;
 
@@ -375,7 +352,7 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
                   className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1.5 underline-offset-4 hover:underline"
                 >
                   <ShieldCheck className="w-3.5 h-3.5" />
-                  <span>Board staff access (Password & Key)</span>
+                  <span>Board staff access</span>
                 </Link>
               </div>
             </form>
@@ -390,7 +367,7 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
                 Board Staff Sign In
               </DialogTitle>
               <DialogDescription className="text-xs text-muted-foreground">
-                Sign in with your assigned staff email and password.
+                Enter the staff email. A single-use sign-in link will be sent to that mailbox.
               </DialogDescription>
             </DialogHeader>
 
@@ -416,20 +393,6 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
                 />
               </div>
 
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block">
-                  Password *
-                </label>
-                <Input
-                  type="password"
-                  required
-                  placeholder="Enter staff password"
-                  value={staffPassword}
-                  onChange={(e) => setStaffPassword(e.target.value)}
-                  className="h-9 text-xs"
-                />
-              </div>
-
               <div className="flex items-center gap-2 pt-1">
                 <input
                   id="remember-device-modal"
@@ -451,8 +414,8 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
                 disabled={staffSubmitting}
                 className="w-full h-10 text-xs font-bold gap-2 rounded-xl mt-3 shadow-xs"
               >
-                <KeyRound className="w-4 h-4" />
-                <span>{staffSubmitting ? "Authenticating..." : "Sign In to Board"}</span>
+                <ShieldCheck className="w-4 h-4" />
+                <span>{staffSubmitting ? "Sending link..." : "Send Sign-In Link"}</span>
               </Button>
             </form>
           </div>
