@@ -105,42 +105,6 @@ export function evaluateItemEligibility(
     };
   }
 
-  // Clearance Matrix Evaluation
-  const clNum = clearanceToNumber(userClearance);
-
-  // Level I: External Individuals -> Only Class A & B. (C, D, E, F, G -> Insufficient clearance)
-  if (clNum === 1) {
-    if (equipmentClass !== "A" && equipmentClass !== "B") {
-      return {
-        canBorrowOnline: false,
-        canRequest: false,
-        badgeType: "WARNING",
-        statusLabel: "Clearance Req.",
-        reason: "Insufficient clearance: Level I individuals are only eligible for Class A & B.",
-        noticeTitle: "Clearance Level I Limitation",
-        noticeMessage:
-          "External individuals (Level I) are restricted to Class A (Consumables) and Class B (Expendable Resources).",
-      };
-    }
-  }
-
-  // Level II: Aerobotix -> Allowed A, B, C. (D, E, F, G -> Insufficient clearance)
-  if (clNum === 2) {
-    if (equipmentClass !== "A" && equipmentClass !== "B" && equipmentClass !== "C") {
-      return {
-        canBorrowOnline: false,
-        canRequest: false,
-        badgeType: "WARNING",
-        statusLabel: "Clearance Req.",
-        reason:
-          "Insufficient clearance: Aerobotix members (Level II) are eligible for Classes A, B, and C.",
-        noticeTitle: "Clearance Level II Limitation",
-        noticeMessage:
-          "Aerobotix clearance allows Class A, B, and C equipment. Tools (Class D), Electronic Resources (Class E), and Heavy Equipment (Class F) require Level III+ clearance.",
-      };
-    }
-  }
-
   // Classes B and D: Direct Board Request / Interaction (Off-online-workflow)
   // Evaluated ONLY AFTER clearance eligibility is established
   if (equipmentClass === "B") {
