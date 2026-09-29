@@ -124,7 +124,6 @@ export const BoardUserDetailPage: React.FC = () => {
         },
         actorUserId: currentPersona.id,
         actorRole: currentPersona.role,
-        actorClearance: currentPersona.clearance,
       });
 
       setSuccessMessage(
