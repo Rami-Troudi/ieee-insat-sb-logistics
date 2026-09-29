@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "project": {
+    "name": "ieee-insat-sb-equipment-reservations",
+    "productType": "Responsive equipment reservation web app",
+    "stack": ["react", "tailwind-v3", "vite"]
+  },
+  "sources": {
+    "tokens": [],
+    "components": ["src/components/ui"],
+    "assets": ["src/assets"],
+    "instructions": []
+  },
+  "design": {
+    "colorMode": "light",
+    "colors": {},
+    "typography": {},
+    "spacing": {},
+    "radius": {},
+    "shadows": {},
+    "motion": {},
+    "density": "comfortable"
+  },
+  "components": {
+    "installed": [
+      "alert-dialog",
+      "badge",
+      "button",
+      "dialog",
+      "dropdown-menu",
+      "input",
+      "separator",
+      "sheet",
+      "skeleton",
+      "table"
+    ],
+    "preferredPrimitives": ["radix-ui"],
+    "patterns": []
+  },
+  "constraints": {
+    "must": [],
+    "avoid": []
+  },
+  "decisions": [
+    "Member availability selection leads the experience; Board asset allocation stays explicit.",
+    "The application uses a calm forest, chalk, and pale green palette for an equipment desk.",
+    "Africa/Tunis is the shared timezone for displayed and submitted reservation times."
+  ],
+  "evidence": [
+    {
+      "fact": "components.installed",
+      "source": "src/app/App.tsx and src/styles/globals.css"
+    },
+    {
+      "fact": "project.stack:react",
+      "source": "package.json"
+    },
+    {
+      "fact": "project.stack:tailwind-v3",
+      "source": "package.json"
+    },
+    {
+      "fact": "project.stack:vite",
+      "source": "package.json"
+    }
+  ],
+  "generatedAt": "2026-09-29T19:48:46.510Z"
+}

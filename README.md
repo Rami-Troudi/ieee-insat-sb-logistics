@@ -1,90 +1,48 @@
-# IEEE RAS INSAT Logistics
+# IEEE INSAT SB Equipment Reservations
 
-Production logistics portal for IEEE RAS INSAT equipment borrowing and operational inventory management.
+A standalone reservation and inventory application for the IEEE INSAT Student Branch. It has its own database, account roles, asset labels, reservation workflow, and deployment configuration. It does not read or migrate RAS Logistics data.
 
-## Current architecture
+## Local setup
 
-- React + Vite frontend
-- Vercel deployment
-- Hono API
-- Turso/libSQL database
-- Drizzle-compatible SQL schema and migrations
-- Better Auth passwordless magic-link authentication
-- Brevo email delivery for magic links and staff verification codes
-- Server-side request validation, rate limiting, idempotency and audit logging
+Requirements: Node.js 22 or newer and npm.
 
-The repository is now in the real-backend phase. The old mock service layer and development persona switcher have been removed from the application.
+    npm install
+    cp .env.example .env
 
-## Authentication
+Set BETTER_AUTH_SECRET in .env to a random value with at least 32 characters. The example points to a fresh SQLite-compatible local database at .local/reservations.db.
 
-Members and staff do not use application passwords.
+    npm run db:migrate
+    npm run seed:inventory
 
-- Member registration creates or updates the server-side member record and sends a single-use magic link.
-- Staff sign in through a single-use magic link, followed by the existing short-lived staff verification step before operational actions.
-- Sessions are server-side and delivered through secure HTTP cookies.
-- Legacy application password data is removed by the security migration.
+Start the API and web app in separate terminals:
 
-## Borrowing lifecycle
+    npm run dev:api
+    npm run dev
 
-```
-Catalogue
-  -> Request
-  -> Human logistics review
-  -> 48h allocation
-  -> Physical handover
-  -> Active loan
-  -> Physical return inspection
-  -> Closed loan
-```
+Open <http://127.0.0.1:5173>. Member sign-in uses a one-time email link; configure the Brevo variables in .env for delivery. No passwords are stored or accepted. A new member signs in once before an operator assigns an account role.
 
-Formal online borrowing is limited to the equipment classes defined by the product workflow. Clearance values are recorded and changed through human operational workflows; the application does not use a client-submitted clearance value as an authorization source.
+To grant the initial Superadmin role, set SUPERADMIN_EMAIL in .env to the already signed-in account's email and run:
 
-## Inventory invariants
+    npm run bootstrap:superadmin
 
-For each inventory item:
+This command only changes the matching account's role. It refuses RAS database URLs and requires an explicit confirmation environment variable for remote databases.
 
-```
-total =
-  available +
-  allocated +
-  borrowed +
-  damaged +
-  maintenance +
-  lost
-```
+## Product flows
 
-Individually tracked equipment also keeps one asset record per owned unit.
+- Members select a pickup and return window, browse time-specific availability, reserve personally or for an active chapter, and follow reservation status.
+- Board accounts approve or decline requests, allocate individual assets, manage the equipment catalogue, print QR labels, scan collections and returns, and review the calendar and audit log.
+- Superadmins manage account roles.
+- The application uses USER, BOARD, and SUPERADMIN roles, Better Auth sessions, relational storage, immutable audit events, and an Africa/Tunis timezone.
 
-## Development
+## Quality gates
 
-```bash
-npm install
-npm run typecheck
-npm run lint
-npm run test
-npm run build
-npm run dev
-```
+    npm run format:check
+    npm run lint
+    npm run typecheck
+    npm run test
+    npm run test:e2e
+    npm run build
 
-Production database migrations:
+Browser tests create a fresh isolated database at .local/e2e.db; they do not use the configured development or remote database.
 
-```bash
-npm run db:migrate
-```
-
-Production inventory seed:
-
-```bash
-npm run seed:inventory
-```
-
-The inventory seed requires `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`. It validates stock conservation and individually tracked asset counts before writing data.
-
-## Repository structure
-
-- `src/worker/`: API, authentication, authorization, database adapter and domain RPCs
-- `src/services/remote.ts`: frontend-to-production API services
-- `src/features/`: member and board UI
-- `drizzle/`: database migrations
-- `scripts/`: production maintenance and seed scripts
-- `api/[...path].ts`: Vercel serverless entrypoint
+Deployment and operational requirements are in [docs/operations.md](docs/operations.md).
