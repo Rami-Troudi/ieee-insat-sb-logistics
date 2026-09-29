@@ -352,155 +352,85 @@ export const BoardPeoplePage: React.FC = () => {
         )}
       </div>
 
-      {/* Add Person / Admin Modal */}
+      {/* Add Person / Staff Modal */}
       <Dialog
         open={isAddModalOpen}
         onOpenChange={(open) => {
-          if (!open) {
-            resetAddForm();
-          }
+          if (!open) resetAddForm();
           setIsAddModalOpen(open);
         }}
       >
         <DialogContent className="max-w-lg">
           <form onSubmit={handleAddSubmit} className="space-y-4">
-              <DialogHeader>
-                <DialogTitle className="text-lg">Add Person / Staff</DialogTitle>
-                <DialogDescription>
-                  Provision a new borrower member or board staff administrator.
-                </DialogDescription>
-              </DialogHeader>
+            <DialogHeader>
+              <DialogTitle className="text-lg">Add Person / Staff</DialogTitle>
+              <DialogDescription>
+                Provision a borrower member or board staff account. Staff sign in by email link.
+              </DialogDescription>
+            </DialogHeader>
 
-              {formError && (
-                <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-xs flex items-center gap-2">
-                  <AlertCircle className="h-4 w-4 shrink-0" />
-                  <span>{formError}</span>
-                </div>
-              )}
+            {formError && (
+              <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-xs flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                <span>{formError}</span>
+              </div>
+            )}
 
-              <div className="space-y-3 text-xs">
-                {/* Full Name */}
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="font-medium text-foreground block mb-1">Full Name *</label>
+                <Input required value={addForm.name} onChange={(e) => setAddForm((p) => ({ ...p, name: e.target.value }))} className="h-9" />
+              </div>
+              <div>
+                <label className="font-medium text-foreground block mb-1">Email Address *</label>
+                <Input type="email" required value={addForm.email} onChange={(e) => setAddForm((p) => ({ ...p, email: e.target.value }))} className="h-9" />
+              </div>
+              <div>
+                <label className="font-medium text-foreground block mb-1">Phone Number (Optional)</label>
+                <Input type="tel" value={addForm.phone} onChange={(e) => setAddForm((p) => ({ ...p, phone: e.target.value }))} className="h-9" />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="font-medium text-foreground block mb-1">
-                    Full Name <span className="text-destructive">*</span>
-                  </label>
-                  <Input
-                    type="text"
-                    required
-                    placeholder="e.g. Aziz Ben Mansour"
-                    value={addForm.name}
-                    onChange={(e) => setAddForm((prev) => ({ ...prev, name: e.target.value }))}
-                    className="h-9"
-                  />
-                </div>
-
-                {/* Email */}
-                <div>
-                  <label className="font-medium text-foreground block mb-1">
-                    Email Address <span className="text-destructive">*</span>
-                  </label>
-                  <Input
-                    type="email"
-                    required
-                    placeholder="e.g. student@insat.ucar.tn"
-                    value={addForm.email}
-                    onChange={(e) => setAddForm((prev) => ({ ...prev, email: e.target.value }))}
-                    className="h-9"
-                  />
-                </div>
-
-                {/* Phone */}
-                <div>
-                  <label className="font-medium text-foreground block mb-1">
-                    Phone Number (Optional)
-                  </label>
-                  <Input
-                    type="tel"
-                    placeholder="e.g. +216 99 123 456"
-                    value={addForm.phone}
-                    onChange={(e) => setAddForm((prev) => ({ ...prev, phone: e.target.value }))}
-                    className="h-9"
-                  />
-                </div>
-
-                {/* Role and Affiliation grid */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="font-medium text-foreground block mb-1">Role</label>
-                    <select
-                      value={addForm.role}
-                      onChange={(e) => handleRoleChange(e.target.value as Role)}
-                      className="w-full h-9 px-2.5 rounded-md border border-input bg-background text-foreground text-xs"
-                    >
-                      <option value="MEMBER">Borrower Member</option>
-                      <option value="OPERATOR">Board Staff / Operator</option>
-                      {isSuperadmin && <option value="SUPERADMIN">Superadmin</option>}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="font-medium text-foreground block mb-1">Affiliation</label>
-                    <select
-                      value={addForm.affiliation}
-                      onChange={(e) => handleAffiliationChange(e.target.value as Affiliation)}
-                      className="w-full h-9 px-2.5 rounded-md border border-input bg-background text-foreground text-xs"
-                    >
-                      <option value="IEEE">IEEE RAS Member</option>
-                      <option value="AEROBOTIX">Aerobotix Member</option>
-                      <option value="EXTERNAL">External / INSAT Student</option>
-                      <option value="RAS_BOARD">RAS Board Member</option>
-                      <option value="EUROBOT">Eurobot Team</option>
-                    </select>
-                  </div>
-                </div>
-
-                {/* Clearance Level */}
-                <div>
-                  <label className="font-medium text-foreground block mb-1">
-                    Clearance Level
-                  </label>
-                  <select
-                    value={addForm.clearance}
-                    onChange={(e) =>
-                      setAddForm((prev) => ({
-                        ...prev,
-                        clearance: e.target.value as ClearanceLevel,
-                      }))
-                    }
-                    className="w-full h-9 px-2.5 rounded-md border border-input bg-background text-foreground text-xs"
-                  >
-                    <option value="I">Level I — General / INSAT Student</option>
-                    <option value="II">Level II — Aerobotix Member</option>
-                    <option value="III">Level III — IEEE RAS Member</option>
-                    <option value="IV">Level IV — Board Staff Operator</option>
-                    <option value="V">Level V — Executive / Eurobot Lead</option>
-                    <option value="VI">Level VI — Superadmin</option>
+                  <label className="font-medium text-foreground block mb-1">Role</label>
+                  <select value={addForm.role} onChange={(e) => handleRoleChange(e.target.value as Role)} className="w-full h-9 px-2.5 rounded-md border border-input bg-background text-foreground text-xs">
+                    <option value="MEMBER">Borrower Member</option>
+                    <option value="OPERATOR">Board Staff / Operator</option>
+                    {isSuperadmin && <option value="SUPERADMIN">Superadmin</option>}
                   </select>
                 </div>
+                <div>
+                  <label className="font-medium text-foreground block mb-1">Affiliation</label>
+                  <select value={addForm.affiliation} onChange={(e) => handleAffiliationChange(e.target.value as Affiliation)} className="w-full h-9 px-2.5 rounded-md border border-input bg-background text-foreground text-xs">
+                    <option value="IEEE">IEEE RAS Member</option>
+                    <option value="AEROBOTIX">Aerobotix Member</option>
+                    <option value="EXTERNAL">External / INSAT Student</option>
+                    <option value="RAS_BOARD">RAS Board Member</option>
+                    <option value="EUROBOT">Eurobot Team</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="font-medium text-foreground block mb-1">Clearance Level</label>
+                <select value={addForm.clearance} onChange={(e) => setAddForm((p) => ({ ...p, clearance: e.target.value as ClearanceLevel }))} className="w-full h-9 px-2.5 rounded-md border border-input bg-background text-foreground text-xs">
+                  <option value="I">Level I</option>
+                  <option value="II">Level II</option>
+                  <option value="III">Level III</option>
+                  <option value="IV">Level IV</option>
+                  <option value="V">Level V</option>
+                  <option value="VI">Level VI</option>
+                </select>
+              </div>
+            </div>
 
-                    <DialogFooter className="pt-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setIsAddModalOpen(false)}
-                  disabled={createUserMutation.isPending}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  disabled={
-                    createUserMutation.isPending ||
-                    ((addForm.role === "OPERATOR" || addForm.role === "SUPERADMIN") &&
-                      !addForm.password)
-                  }
-                  className="gap-1.5"
-                >
-                  {createUserMutation.isPending ? "Creating..." : "Create Account"}
-                </Button>
-              </DialogFooter>
+            <DialogFooter className="pt-2">
+              <Button type="button" variant="outline" onClick={() => setIsAddModalOpen(false)} disabled={createUserMutation.isPending}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={createUserMutation.isPending} className="gap-1.5">
+                {createUserMutation.isPending ? "Creating..." : "Create Account"}
+              </Button>
+            </DialogFooter>
           </form>
-          )}
         </DialogContent>
       </Dialog>
 
