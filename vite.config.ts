@@ -2,16 +2,10 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
 
-export default defineConfig(({ mode }) => ({
+export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      "@/dev/DevPersonaProvider": path.resolve(
-        __dirname,
-        mode !== "production"
-          ? "./src/dev/DevPersonaProvider.tsx"
-          : "./src/dev/productionPersonaProvider.tsx"
-      ),
       "@": path.resolve(__dirname, "./src"),
     },
   },
@@ -20,4 +14,4 @@ export default defineConfig(({ mode }) => ({
     host: true,
     allowedHosts: true,
   },
-}));
+});
