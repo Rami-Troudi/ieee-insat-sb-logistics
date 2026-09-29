@@ -475,7 +475,7 @@ describe("Vercel API backend on SQLite-compatible storage", () => {
           "Idempotency-Key": "lifecycle-request-0001",
         },
         body: JSON.stringify({
-          contactEmail: member.id.replace("member-", "") + "@example.test",
+          contactEmail: "member-lifecycle@example.test",
           expectedReturnDate: new Date(Date.now() + 7 * 86400000).toISOString(),
           items: [{ itemId: "item-lifecycle", quantity: 1 }],
         }),
