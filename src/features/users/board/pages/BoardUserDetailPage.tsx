@@ -43,8 +43,6 @@ export const BoardUserDetailPage: React.FC = () => {
   const [targetRole, setTargetRole] = useState<UserRole>("OPERATOR");
   const [roleReason, setRoleReason] = useState("");
 
-  // Staff password reset state
-
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
