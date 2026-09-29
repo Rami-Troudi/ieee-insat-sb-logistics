@@ -2,7 +2,6 @@ import React from "react";
 import { Link } from "react-router-dom";
 import { AppBrand } from "@/components/shared/AppBrand";
 import { UserMenu } from "@/components/shared/UserMenu";
-import { DevPersonaSwitcher } from "@/components/shared/DevPersonaSwitcher";
 import { Bell, LogIn, ShieldCheck, ShoppingBag } from "lucide-react";
 import { useSession } from "@/hooks/useSession";
 import { useBorrowCart } from "@/features/cart";
@@ -87,10 +86,6 @@ export const TopBar: React.FC<TopBarProps> = ({ isBoard = false }) => {
             )}
           </Link>
         )}
-
-        <div className="hidden sm:block">
-          <DevPersonaSwitcher />
-        </div>
 
         {/* In-App Notifications Button with real unread state */}
         <Link
