@@ -147,17 +147,22 @@ app.post("/api/v1/auth/board-login", async (c) => {
   const password = body.password.trim();
 
   const user = await c.env.DB.prepare(
-    "SELECT id, name, email, role, clearance, affiliation, status FROM app_users WHERE email=? COLLATE NOCASE"
+    "SELECT id, name, email, role, clearance, affiliation, status, data FROM app_users WHERE email=? COLLATE NOCASE"
   )
     .bind(email)
-    .first<AppUser>();
+    .first<any>();
 
   if (!user || !["OPERATOR", "SUPERADMIN"].includes(user.role) || user.status !== "ACTIVE") {
     return jsonError(c, 403, "FORBIDDEN", "Invalid staff credentials or account not active");
   }
 
   const expectedPassword = c.env.BOARD_STAFF_PASSWORD || "ras-insat-board-2026";
-  if (!timingSafeEqual(password, expectedPassword)) {
+  const userSpecificPassword = parseJson<any>(user.data)?.password;
+  const isPasswordValid =
+    (userSpecificPassword && timingSafeEqual(password, userSpecificPassword)) ||
+    timingSafeEqual(password, expectedPassword);
+
+  if (!isPasswordValid) {
     return jsonError(c, 401, "UNAUTHENTICATED", "Invalid staff password");
   }
 
@@ -511,11 +516,7 @@ app.get("/api/v1/catalog", async (c) => {
           : row.available_quantity > 0
             ? "LIMITED"
             : "UNAVAILABLE",
-      action: ["C", "E"].includes(row.equipment_class)
-        ? row.available_quantity > 0
-          ? "REQUEST"
-          : "NONE"
-        : "ASK_OPERATOR",
+      action: row.available_quantity > 0 ? "REQUEST" : "NONE",
     }));
   const availableOnly = c.req.query("availableOnly") === "true";
   return c.json(
@@ -825,10 +826,22 @@ app.post("/api/v1/requests", async (c) => {
       if (
         !item ||
         !item.borrower_visible ||
-        !["C", "E"].includes(item.equipment_class) ||
         item.available_quantity < 1
       )
         throw new Error("INELIGIBLE_ITEM");
+      const clearanceRank: Record<string, number> = { I: 1, II: 2, III: 3, IV: 4, V: 5, VI: 6 };
+      const reqRank: Record<string, number> = { A: 1, B: 1, C: 2, D: 3, E: 3, F: 3, G: 4 };
+      const requiredClearance =
+        { A: "I", B: "I", C: "II", D: "III", E: "III", F: "III", G: "IV" }[item.equipment_class] ??
+        "I";
+      const userCl = existing?.clearance ?? "I";
+      const hasClearanceMismatch = (clearanceRank[userCl] ?? 1) < (reqRank[item.equipment_class] ?? 1);
+      const isRestricted = hasClearanceMismatch || !["C", "E"].includes(item.equipment_class);
+      const flagReason = hasClearanceMismatch
+        ? `Level restriction: Requires Clearance ${requiredClearance} (Member has ${userCl})`
+        : !["C", "E"].includes(item.equipment_class)
+          ? `Class restriction: Class ${item.equipment_class} requires manual board approval`
+          : undefined;
       return {
         itemId: item.id,
         itemName: item.name,
@@ -841,6 +854,8 @@ app.post("/api/v1/requests", async (c) => {
         damagedQuantity: 0,
         lostQuantity: 0,
         status: "PENDING",
+        flagged: isRestricted,
+        ...(flagReason ? { flagReason } : {}),
       };
     })
   ).catch(() => null);
@@ -849,7 +864,7 @@ app.post("/api/v1/requests", async (c) => {
       c,
       400,
       "INELIGIBLE_ITEM",
-      "Only borrower-visible Class C and E items can be requested"
+      "One or more requested items are currently unavailable or not in catalogue"
     );
   const id = uuid("REQ");
   const createdAt = iso();
@@ -866,6 +881,10 @@ app.post("/api/v1/requests", async (c) => {
     handoverStatus: "WAITING",
     lifecycleStatus: "ACTIVE",
     status: "PENDING",
+    flagged: requestedItems.some((line) => line.flagged),
+    ...(requestedItems.some((line) => line.flagged)
+      ? { flagReason: "One or more requested items require higher clearance" }
+      : {}),
     items: requestedItems.map((line, index) => ({ ...line, id: `${id}-line-${index + 1}` })),
     createdAt,
     updatedAt: createdAt,
@@ -873,8 +892,9 @@ app.post("/api/v1/requests", async (c) => {
       {
         status: "PENDING",
         timestamp: createdAt,
-        description:
-          "Request sent. Waiting for logistics review. Contact email and borrower identity are unverified.",
+        description: requestedItems.some((line) => line.flagged)
+          ? "Request sent with Level restriction flag. Waiting for logistics review."
+          : "Request sent. Waiting for logistics review. Contact email and borrower identity are unverified.",
         actor: borrowerName,
       },
     ],
@@ -1263,8 +1283,18 @@ function timingSafeEqual(left: string, right: string) {
 }
 function safeImage(value: string | undefined) {
   if (!value) return "";
+  const trimmed = value.trim();
+  if (trimmed.startsWith("/") && !trimmed.startsWith("//")) {
+    return trimmed;
+  }
+  if (trimmed.startsWith("data:image/")) {
+    return trimmed;
+  }
+  if (trimmed.startsWith("<svg") && trimmed.includes("</svg>")) {
+    return `data:image/svg+xml;utf8,${encodeURIComponent(trimmed)}`;
+  }
   try {
-    const url = new URL(value);
+    const url = new URL(trimmed);
     return ["https:", "http:"].includes(url.protocol) ? url.toString() : "";
   } catch {
     return "";

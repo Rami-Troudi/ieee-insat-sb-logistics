@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" role="img" aria-label="Robotics equipment illustration">
+  <defs><linearGradient id="bg" x2="0" y2="1"><stop stop-color="#eff6ff"/><stop offset="1" stop-color="#e0e7ff"/></linearGradient></defs>
+  <rect width="800" height="600" rx="32" fill="url(#bg)"/><rect x="245" y="175" width="310" height="250" rx="34" fill="#1e3a5f"/><rect x="292" y="222" width="216" height="145" rx="18" fill="#0f172a"/><circle cx="400" cy="294" r="45" fill="#38bdf8"/><path d="M400 263v62M369 294h62" stroke="#e0f2fe" stroke-width="10" stroke-linecap="round"/><g fill="#facc15"><circle cx="275" cy="205" r="8"/><circle cx="525" cy="205" r="8"/><circle cx="275" cy="395" r="8"/><circle cx="525" cy="395" r="8"/></g>
+</svg>

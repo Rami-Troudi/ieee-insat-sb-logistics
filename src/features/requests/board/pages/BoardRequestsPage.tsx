@@ -61,7 +61,14 @@ export const BoardRequestsPage = () => {
             className="grid gap-3 rounded-xl border p-4 md:grid-cols-[1fr_1.3fr_auto] md:items-center"
           >
             <div>
-              <p className="font-medium">{request.userName}</p>
+              <div className="flex items-center gap-2">
+                <p className="font-medium">{request.userName}</p>
+                {request.flagged && (
+                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                    ⚠️ Flagged
+                  </span>
+                )}
+              </div>
               <p className="text-sm text-muted-foreground">
                 {new Date(request.createdAt).toLocaleDateString()}
               </p>

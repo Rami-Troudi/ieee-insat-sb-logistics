@@ -17,6 +17,8 @@ export function getBorrowerCatalogAccess(
   visible: boolean;
   action: BorrowerCatalogItem["action"];
   availability: BorrowerCatalogItem["availability"];
+  flagged?: boolean;
+  flagReason?: string;
 } {
   const availability =
     item.availableQuantity <= 0
@@ -25,20 +27,26 @@ export function getBorrowerCatalogAccess(
         ? "LIMITED"
         : "AVAILABLE";
   const clearance = clearanceToNumber(user.clearance);
-  const requiredClearance = { A: 1, B: 1, C: 2, D: 3, E: 3, F: 3, G: 4 }[item.equipmentClass];
+  const requiredClearance = { A: 1, B: 1, C: 2, D: 3, E: 3, F: 3, G: 4 }[item.equipmentClass] ?? 1;
+
+  // Level restrictions are removed from blocking visibility or requests:
+  // We flag clearance mismatches as invalid/restricted while still allowing the member to request them.
+  const hasClearanceMismatch =
+    clearance < requiredClearance || (item.equipmentClass === "G" && user.clearance !== "IV");
+  const flagged = hasClearanceMismatch;
+  const flagReason = hasClearanceMismatch
+    ? `Flagged: Requires Level ${requiredClearance} clearance (Member has Level ${user.clearance || "I"})`
+    : undefined;
+
   const visible =
     isBorrowerCatalogVisible(item) &&
     user.role === "MEMBER" &&
     user.status === "ACTIVE" &&
-    user.strikesCount < 4 &&
-    clearance >= requiredClearance &&
-    item.totalQuantity > 0 &&
-    (item.equipmentClass !== "G" || user.clearance === "IV") &&
-    (user.strikesCount < 2 || !["F", "G"].includes(item.equipmentClass));
-  if (!visible || availability === "UNAVAILABLE") return { visible, action: "NONE", availability };
-  if (item.equipmentClass === "A") return { visible, action: "WORKSPACE", availability };
-  if (isFormalRequestClass(item)) return { visible, action: "REQUEST", availability };
-  return { visible, action: "ASK_OPERATOR", availability };
+    item.totalQuantity > 0;
+
+  if (!visible || availability === "UNAVAILABLE") return { visible, action: "NONE", availability, flagged, flagReason };
+
+  return { visible, action: "REQUEST", availability, flagged, flagReason };
 }
 
 export function toBorrowerCatalogItem(
@@ -54,5 +62,7 @@ export function toBorrowerCatalogItem(
     ...(item.datasheetUrl ? { datasheetUrl: item.datasheetUrl } : {}),
     availability: access.availability,
     action: access.action,
+    flagged: access.flagged,
+    flagReason: access.flagReason,
   };
 }

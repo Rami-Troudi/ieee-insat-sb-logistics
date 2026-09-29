@@ -4,6 +4,7 @@ import { useSession } from "@/hooks/useSession";
 import {
   useBoardRequestDetail,
   useReviewBorrowRequest,
+  useRejectEntireRequest,
   useConfirmHandover,
 } from "../hooks/useBoardRequests";
 import { LoadingState } from "@/components/shared/LoadingState";
@@ -16,6 +17,7 @@ export const BoardRequestDetailPage = () => {
   const { currentPersona } = useSession();
   const { data: request, isLoading } = useBoardRequestDetail(requestId);
   const review = useReviewBorrowRequest();
+  const reject = useRejectEntireRequest();
   const handover = useConfirmHandover();
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [note, setNote] = useState("");
@@ -44,6 +46,19 @@ export const BoardRequestDetailPage = () => {
       setError(err instanceof Error ? err.message : "Could not review request");
     }
   };
+  const submitReject = async () => {
+    setError("");
+    try {
+      await reject.mutateAsync({
+        requestId: request.id,
+        reason: note.trim() || "Declined by operator",
+        actorUserId: currentPersona.id,
+      });
+      navigate("/board/requests", { replace: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not reject request");
+    }
+  };
   const confirm = async () => {
     setError("");
     try {
@@ -63,6 +78,14 @@ export const BoardRequestDetailPage = () => {
           {request.userName} · {request.userEmail}
         </p>
         <h1 className="text-2xl font-semibold">Borrow request</h1>
+        {request.flagged && (
+          <div className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-500/10 border border-amber-500/30 text-amber-600 dark:text-amber-400 text-xs font-semibold">
+            <span>⚠️ Flagged: Level Restriction</span>
+            {request.flagReason && (
+              <span className="font-normal opacity-90">({request.flagReason})</span>
+            )}
+          </div>
+        )}
         <p className="text-sm text-muted-foreground">
           Expected return {new Date(request.expectedReturnDate).toLocaleDateString()} · Submitted{" "}
           {new Date(request.createdAt).toLocaleDateString()}
@@ -78,7 +101,14 @@ export const BoardRequestDetailPage = () => {
             className="flex flex-col justify-between gap-3 p-4 sm:flex-row sm:items-center"
           >
             <div>
-              <p className="font-medium">{line.itemName}</p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <p className="font-medium">{line.itemName}</p>
+                {line.flagged && (
+                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                    Flagged: {line.flagReason || "Level Restriction"}
+                  </span>
+                )}
+              </div>
               <p className="text-sm text-muted-foreground">
                 Requested ×{line.requestedQuantity}
                 {!pending && ` · Approved ×${line.approvedQuantity}`}
@@ -115,13 +145,23 @@ export const BoardRequestDetailPage = () => {
         <Input className="h-11" value={note} onChange={(event) => setNote(event.target.value)} />
       </label>
       {pending && (
-        <Button
-          className="min-h-11 w-full sm:w-auto"
-          disabled={review.isPending}
-          onClick={submitReview}
-        >
-          Approve and reserve stock
-        </Button>
+        <div className="flex flex-col sm:flex-row items-center gap-3">
+          <Button
+            className="min-h-11 w-full sm:w-auto"
+            disabled={review.isPending || reject.isPending}
+            onClick={submitReview}
+          >
+            Approve and reserve stock
+          </Button>
+          <Button
+            variant="destructive"
+            className="min-h-11 w-full sm:w-auto"
+            disabled={review.isPending || reject.isPending}
+            onClick={submitReject}
+          >
+            Reject Request
+          </Button>
+        </div>
       )}
       {ready && (
         <div className="space-y-2">

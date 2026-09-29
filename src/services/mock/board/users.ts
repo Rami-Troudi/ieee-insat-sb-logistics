@@ -271,6 +271,98 @@ class MockBoardUserService implements IBoardUserService {
     }
     throw new Error("Failed to update status");
   }
+
+  async createUser(
+    payload: import("@/services/contracts/board/users").CreateUserPayload,
+    actorUserId: string,
+    _actorRole: string
+  ): Promise<UserProfile> {
+    await this.simulateLatency();
+    const actor = requireOperator(actorUserId);
+    const newId = `user-${Date.now()}`;
+    const affiliation = payload.affiliation || (payload.role === "MEMBER" ? "IEEE" : "RAS_BOARD");
+    const clearance =
+      payload.clearance ||
+      (payload.role === "SUPERADMIN"
+        ? "VI"
+        : payload.role === "OPERATOR"
+          ? "V"
+          : affiliation === "IEEE"
+            ? "III"
+            : affiliation === "AEROBOTIX"
+              ? "II"
+              : "I");
+
+    const newUser: UserProfile = {
+      id: newId,
+      name: payload.name.trim(),
+      email: payload.email.trim().toLowerCase(),
+      phone: payload.phone?.trim() || "",
+      role: payload.role,
+      clearance,
+      clearanceSource:
+        payload.role === "SUPERADMIN"
+          ? "SUPERADMIN_ROLE"
+          : payload.role === "OPERATOR"
+            ? "OPERATOR_ROLE"
+            : "AFFILIATION",
+      affiliation,
+      claimedAffiliation: affiliation,
+      verifiedAffiliation: affiliation,
+      isProcessed: true,
+      status: "ACTIVE",
+      joinedDate: new Date().toISOString(),
+      strikesCount: 0,
+      strikes: [],
+      activeLoansCount: 0,
+      totalRequestsCount: 0,
+    };
+
+    mockDb.mutate((draft) => {
+      draft.userProfiles[newId] = newUser;
+    });
+
+    await mockBoardAuditLogService.logEvent({
+      actorUserId,
+      actorName: "Board Custodian",
+      actorRole: actor.role,
+      action: "USER_CREATED",
+      entityType: "USER",
+      entityId: newId,
+      after: { email: newUser.email, role: newUser.role },
+      reason: "User created via Board People portal",
+    });
+
+    return newUser;
+  }
+
+  async removeUser(
+    userId: string,
+    actorUserId: string,
+    _actorRole: string
+  ): Promise<{ success: boolean }> {
+    await this.simulateLatency();
+    const actor = requireOperator(actorUserId);
+    if (userId === actorUserId) {
+      throw new Error("You cannot remove your own account");
+    }
+
+    mockDb.mutate((draft) => {
+      delete draft.userProfiles[userId];
+    });
+
+    await mockBoardAuditLogService.logEvent({
+      actorUserId,
+      actorName: "Board Custodian",
+      actorRole: actor.role,
+      action: "USER_REMOVED",
+      entityType: "USER",
+      entityId: userId,
+      reason: "User removed via Board People portal",
+    });
+
+    return { success: true };
+  }
 }
 
 export const mockBoardUserService = new MockBoardUserService();

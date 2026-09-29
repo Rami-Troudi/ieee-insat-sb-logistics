@@ -263,7 +263,7 @@ describe("Vercel API backend on SQLite-compatible storage", () => {
       expectedReturnDate: new Date(Date.now() + 7 * 86400000).toISOString(),
       items: [{ itemId: "item-a", quantity: 1 }],
     };
-    const forbiddenClass = await request(
+    const flaggedClass = await request(
       "/api/v1/requests",
       {
         method: "POST",
@@ -275,7 +275,23 @@ describe("Vercel API backend on SQLite-compatible storage", () => {
       },
       member.cookie
     );
-    expect(forbiddenClass.status).toBe(400);
+    expect(flaggedClass.status).toBe(201);
+    const flaggedData = (await flaggedClass.json()) as any;
+    expect(flaggedData.items[0].flagged).toBe(true);
+
+    const invalidItem = await request(
+      "/api/v1/requests",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "request-key-invalid-00001",
+        },
+        body: JSON.stringify({ ...baseBody, items: [{ itemId: "non-existent-item", quantity: 1 }] }),
+      },
+      member.cookie
+    );
+    expect(invalidItem.status).toBe(400);
 
     const body = { ...baseBody, items: [{ itemId: "item-c", quantity: 1 }] };
     const headers = {
@@ -308,7 +324,7 @@ describe("Vercel API backend on SQLite-compatible storage", () => {
       .prepare("SELECT COUNT(*) AS count FROM requests WHERE user_id=?")
       .bind(member.id)
       .first<{ count: number }>();
-    expect(count?.count).toBe(1);
+    expect(count?.count).toBe(2);
 
     const other = await seedUser({ id: "member-2", email: "other@example.test" });
     expect((await request(`/api/v1/requests/${createdValue.id}`, {}, other.cookie)).status).toBe(

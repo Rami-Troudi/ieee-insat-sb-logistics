@@ -85,6 +85,8 @@ var isFresh = (method) => [
   "updateClearance",
   "updateRole",
   "updateStatus",
+  "createUser",
+  "removeUser",
   "exportCsv",
   "logEvent"
 ].includes(method);
@@ -1135,8 +1137,43 @@ async function genericRecords(env, actor, service, method, args) {
     );
   if (service === "audit" && method === "getAuditById")
     return ok(await readOne(env, "inventory_audit", String(args[0])));
-  if (service === "auditLog" && method === "getEvents")
-    return ok((await readMany(env, "audit_event")).slice(0, Math.min(500, args[0]?.limit ?? 200)));
+  if (service === "auditLog" && method === "getEvents") {
+    const limit = Math.min(500, args[0]?.limit ?? 200);
+    const rows = await env.DB.prepare(
+      `SELECT
+        a.id,
+        a.actor_user_id,
+        COALESCE(u.name, a.actor_user_id) as actor_name,
+        COALESCE(u.role, 'OPERATOR') as actor_role,
+        a.action,
+        a.entity_type,
+        a.entity_id,
+        a.reason,
+        a.created_at,
+        a.data
+      FROM audit_events a
+      LEFT JOIN app_users u ON u.id = a.actor_user_id
+      ORDER BY a.created_at DESC
+      LIMIT ?`
+    ).bind(limit).all();
+    const events = (rows.results ?? []).map((row) => {
+      const parsedData = decode(row.data) ?? {};
+      return {
+        id: row.id,
+        actorUserId: row.actor_user_id,
+        actorName: row.actor_name,
+        actorRole: row.actor_role,
+        action: row.action,
+        entityType: row.entity_type,
+        entityId: row.entity_id,
+        reason: row.reason || parsedData.reason || "",
+        before: parsedData.before,
+        after: parsedData.after,
+        createdAt: typeof row.created_at === "number" ? new Date(row.created_at).toISOString() : String(row.created_at)
+      };
+    });
+    return ok(events);
+  }
   if (service === "insights" && method === "getInsights") return ok(await insights(env));
   if (service === "export" && method === "exportCsv") return exportCsv(env, actor, args[0]);
   if (service === "user" && method === "getUsers") return getUsers(env, args[0]);
@@ -1309,6 +1346,10 @@ async function genericRecords(env, actor, service, method, args) {
     ]);
     return ok(auditRecord);
   }
+  if (service === "user" && method === "createUser")
+    return createUser(env, actor, args[0]);
+  if (service === "user" && method === "removeUser")
+    return removeUser(env, actor, args[0]);
   if (service === "user" && ["processUser", "updateClearance", "updateRole", "updateStatus"].includes(method))
     return updateUser(env, actor, method, args[0]);
   if (service === "allocation" && method === "checkAndExpireAllocations")
@@ -1386,6 +1427,69 @@ async function updateUser(env, actor, method, input) {
   await env.DB.batch(statements);
   const updated = await env.DB.prepare("SELECT * FROM app_users WHERE id=?").bind(targetId).first();
   return ok(publicProfile(updated));
+}
+async function createUser(env, actor, input) {
+  if (actor.role !== "SUPERADMIN" && actor.role !== "OPERATOR")
+    return fail(403, "FORBIDDEN", "Staff access is required to add people");
+  if (!input || typeof input.email !== "string" || !input.email.includes("@"))
+    return fail(400, "VALIDATION", "Valid email address is required");
+  if (typeof input.name !== "string" || input.name.trim().length < 2)
+    return fail(400, "VALIDATION", "Valid name is required");
+  const email = input.email.trim().toLowerCase();
+  const existing = await env.DB.prepare("SELECT id FROM app_users WHERE email=? COLLATE NOCASE").bind(email).first();
+  if (existing) return fail(409, "CONFLICT", "A user with this email already exists");
+  const targetRole = input.role || "MEMBER";
+  if (!["MEMBER", "OPERATOR", "SUPERADMIN"].includes(targetRole))
+    return fail(400, "VALIDATION", "Invalid role specified");
+  if (targetRole === "SUPERADMIN" && actor.role !== "SUPERADMIN")
+    return fail(403, "FORBIDDEN", "Only Superadmins can create other Superadmins");
+  const affiliation = input.affiliation || (targetRole === "MEMBER" ? "IEEE" : "RAS_BOARD");
+  const clearance = input.clearance || (targetRole === "SUPERADMIN" ? "VI" : targetRole === "OPERATOR" ? "V" : affiliation === "IEEE" ? "III" : affiliation === "AEROBOTIX" ? "II" : "I");
+  const phone = input.phone ? String(input.phone).trim() : "";
+  const newId = crypto.randomUUID();
+  const timestamp = stamp();
+  const userData = input.password ? { password: String(input.password).trim() } : {};
+  await env.DB.batch([
+    env.DB.prepare(
+      "INSERT INTO user(id, name, email, emailVerified, createdAt, updatedAt) VALUES(?,?,?,1,?,?)"
+    ).bind(newId, input.name.trim(), email, timestamp, timestamp),
+    env.DB.prepare(
+      `INSERT INTO app_users(id, email, name, phone, role, clearance, clearance_source, affiliation, claimed_affiliation, affiliation_verified, status, data, created_at, updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,1,'ACTIVE',?,?,?)`
+    ).bind(
+      newId,
+      email,
+      input.name.trim(),
+      phone,
+      targetRole,
+      clearance,
+      targetRole === "SUPERADMIN" ? "SUPERADMIN_ROLE" : targetRole === "OPERATOR" ? "OPERATOR_ROLE" : "AFFILIATION",
+      affiliation,
+      affiliation,
+      JSON.stringify(userData),
+      timestamp,
+      timestamp
+    ),
+    audit(env, actor, "USER", newId, "USER_CREATED", { email, role: targetRole, clearance })
+  ]);
+  const createdRow = await env.DB.prepare("SELECT * FROM app_users WHERE id=?").bind(newId).first();
+  return ok(createdRow ? publicProfile(createdRow) : null, 201);
+}
+async function removeUser(env, actor, input) {
+  const targetId = typeof input === "string" ? input : String(input?.userId ?? "");
+  if (!targetId) return fail(400, "VALIDATION", "User ID is required");
+  if (targetId === actor.id) return fail(400, "VALIDATION", "You cannot remove your own account");
+  const row = await env.DB.prepare("SELECT * FROM app_users WHERE id=?").bind(targetId).first();
+  if (!row) return fail(404, "NOT_FOUND", "User not found");
+  if (row.role === "SUPERADMIN" && actor.role !== "SUPERADMIN")
+    return fail(403, "FORBIDDEN", "Only Superadmins can remove another Superadmin");
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM app_users WHERE id=?").bind(targetId),
+    env.DB.prepare("DELETE FROM user WHERE id=?").bind(targetId),
+    env.DB.prepare("DELETE FROM session WHERE userId=?").bind(targetId),
+    audit(env, actor, "USER", targetId, "USER_REMOVED", { email: row.email, name: row.name })
+  ]);
+  return ok({ success: true });
 }
 function publicProfile(row) {
   return {
@@ -2142,13 +2246,15 @@ app.post("/api/v1/auth/board-login", async (c) => {
   const email = body.email.trim().toLowerCase();
   const password = body.password.trim();
   const user = await c.env.DB.prepare(
-    "SELECT id, name, email, role, clearance, affiliation, status FROM app_users WHERE email=? COLLATE NOCASE"
+    "SELECT id, name, email, role, clearance, affiliation, status, data FROM app_users WHERE email=? COLLATE NOCASE"
   ).bind(email).first();
   if (!user || !["OPERATOR", "SUPERADMIN"].includes(user.role) || user.status !== "ACTIVE") {
     return jsonError(c, 403, "FORBIDDEN", "Invalid staff credentials or account not active");
   }
   const expectedPassword = c.env.BOARD_STAFF_PASSWORD || "ras-insat-board-2026";
-  if (!timingSafeEqual(password, expectedPassword)) {
+  const userSpecificPassword = parseJson(user.data)?.password;
+  const isPasswordValid = userSpecificPassword && timingSafeEqual(password, userSpecificPassword) || timingSafeEqual(password, expectedPassword);
+  if (!isPasswordValid) {
     return jsonError(c, 401, "UNAUTHENTICATED", "Invalid staff password");
   }
   const timestamp = now();
@@ -2416,7 +2522,7 @@ app.get("/api/v1/catalog", async (c) => {
     category: row.category,
     imageUrl: safeImage(parseJson(row.data).imageUrl),
     availability: row.available_quantity > 3 ? "AVAILABLE" : row.available_quantity > 0 ? "LIMITED" : "UNAVAILABLE",
-    action: ["C", "E"].includes(row.equipment_class) ? row.available_quantity > 0 ? "REQUEST" : "NONE" : "ASK_OPERATOR"
+    action: row.available_quantity > 0 ? "REQUEST" : "NONE"
   }));
   const availableOnly = c.req.query("availableOnly") === "true";
   return c.json(
@@ -2622,8 +2728,15 @@ app.post("/api/v1/requests", async (c) => {
       const item = await c.env.DB.prepare(
         "SELECT id,name,category,equipment_class,available_quantity,borrower_visible FROM inventory WHERE id=?"
       ).bind(line.itemId).first();
-      if (!item || !item.borrower_visible || !["C", "E"].includes(item.equipment_class) || item.available_quantity < 1)
+      if (!item || !item.borrower_visible || item.available_quantity < 1)
         throw new Error("INELIGIBLE_ITEM");
+      const clearanceRank = { I: 1, II: 2, III: 3, IV: 4, V: 5, VI: 6 };
+      const reqRank = { A: 1, B: 1, C: 2, D: 3, E: 3, F: 3, G: 4 };
+      const requiredClearance = { A: "I", B: "I", C: "II", D: "III", E: "III", F: "III", G: "IV" }[item.equipment_class] ?? "I";
+      const userCl = existing?.clearance ?? "I";
+      const hasClearanceMismatch = (clearanceRank[userCl] ?? 1) < (reqRank[item.equipment_class] ?? 1);
+      const isRestricted = hasClearanceMismatch || !["C", "E"].includes(item.equipment_class);
+      const flagReason = hasClearanceMismatch ? `Level restriction: Requires Clearance ${requiredClearance} (Member has ${userCl})` : !["C", "E"].includes(item.equipment_class) ? `Class restriction: Class ${item.equipment_class} requires manual board approval` : void 0;
       return {
         itemId: item.id,
         itemName: item.name,
@@ -2635,7 +2748,9 @@ app.post("/api/v1/requests", async (c) => {
         returnedQuantity: 0,
         damagedQuantity: 0,
         lostQuantity: 0,
-        status: "PENDING"
+        status: "PENDING",
+        flagged: isRestricted,
+        ...flagReason ? { flagReason } : {}
       };
     })
   ).catch(() => null);
@@ -2644,7 +2759,7 @@ app.post("/api/v1/requests", async (c) => {
       c,
       400,
       "INELIGIBLE_ITEM",
-      "Only borrower-visible Class C and E items can be requested"
+      "One or more requested items are currently unavailable or not in catalogue"
     );
   const id2 = uuid("REQ");
   const createdAt = iso2();
@@ -2661,6 +2776,8 @@ app.post("/api/v1/requests", async (c) => {
     handoverStatus: "WAITING",
     lifecycleStatus: "ACTIVE",
     status: "PENDING",
+    flagged: requestedItems.some((line) => line.flagged),
+    ...requestedItems.some((line) => line.flagged) ? { flagReason: "One or more requested items require higher clearance" } : {},
     items: requestedItems.map((line, index2) => ({ ...line, id: `${id2}-line-${index2 + 1}` })),
     createdAt,
     updatedAt: createdAt,
@@ -2668,7 +2785,7 @@ app.post("/api/v1/requests", async (c) => {
       {
         status: "PENDING",
         timestamp: createdAt,
-        description: "Request sent. Waiting for logistics review. Contact email and borrower identity are unverified.",
+        description: requestedItems.some((line) => line.flagged) ? "Request sent with Level restriction flag. Waiting for logistics review." : "Request sent. Waiting for logistics review. Contact email and borrower identity are unverified.",
         actor: borrowerName
       }
     ]
@@ -2999,8 +3116,18 @@ function timingSafeEqual(left, right) {
 }
 function safeImage(value) {
   if (!value) return "";
+  const trimmed = value.trim();
+  if (trimmed.startsWith("/") && !trimmed.startsWith("//")) {
+    return trimmed;
+  }
+  if (trimmed.startsWith("data:image/")) {
+    return trimmed;
+  }
+  if (trimmed.startsWith("<svg") && trimmed.includes("</svg>")) {
+    return `data:image/svg+xml;utf8,${encodeURIComponent(trimmed)}`;
+  }
   try {
-    const url = new URL(value);
+    const url = new URL(trimmed);
     return ["https:", "http:"].includes(url.protocol) ? url.toString() : "";
   } catch {
     return "";

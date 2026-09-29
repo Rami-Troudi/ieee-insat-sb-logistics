@@ -31,6 +31,8 @@ export interface RequestLineItem {
   lostQuantity: number;
   status: RequestLineStatus;
   rejectionReason?: string;
+  flagged?: boolean;
+  flagReason?: string;
 }
 
 export type PickupWindowStatus = "NORMAL" | "DUE_SOON" | "URGENT" | "EXPIRED";
@@ -58,6 +60,8 @@ export interface BorrowRequest {
   reviewedBy?: string;
   decisionNotes?: string;
   rejectionReason?: string;
+  flagged?: boolean;
+  flagReason?: string;
   pickupDeadline?: string; // 48h window from approval
   pickupStatus?: PickupWindowStatus;
   timeline: {

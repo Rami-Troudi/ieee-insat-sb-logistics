@@ -43,7 +43,7 @@ export const MemberItemDetailPage: React.FC = () => {
       </Link>
       <article className="overflow-hidden rounded-xl border border-border bg-card">
         <img
-          src={imageError ? DEFAULT_EQUIPMENT_IMAGE : item.imageUrl}
+          src={imageError || !item.imageUrl ? DEFAULT_EQUIPMENT_IMAGE : item.imageUrl}
           alt={item.name}
           onError={() => setImageError(true)}
           className="aspect-[4/3] w-full object-contain bg-muted"

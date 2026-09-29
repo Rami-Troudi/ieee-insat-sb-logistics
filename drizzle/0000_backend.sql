@@ -110,7 +110,7 @@ CREATE TABLE IF NOT EXISTS request_lines (
   id TEXT PRIMARY KEY,
   request_id TEXT NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
   item_id TEXT NOT NULL REFERENCES inventory(id),
-  equipment_class TEXT NOT NULL CHECK(equipment_class IN ('C','E')),
+  equipment_class TEXT NOT NULL CHECK(equipment_class IN ('A','B','C','D','E','F','G')),
   quantity INTEGER NOT NULL CHECK(quantity > 0),
   data TEXT NOT NULL CHECK(json_valid(data))
 );

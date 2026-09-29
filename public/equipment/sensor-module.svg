@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" role="img" aria-label="Illustration of an electronic sensor module">
+  <defs><linearGradient id="bg" x2="0" y2="1"><stop stop-color="#f0fdfa"/><stop offset="1" stop-color="#ccfbf1"/></linearGradient><linearGradient id="pcb" x2="1" y2="1"><stop stop-color="#0891b2"/><stop offset="1" stop-color="#155e75"/></linearGradient></defs>
+  <rect width="800" height="600" rx="32" fill="url(#bg)"/><ellipse cx="400" cy="455" rx="218" ry="34" fill="#64748b" opacity=".2"/>
+  <g transform="rotate(7 400 300)"><rect x="215" y="180" width="370" height="245" rx="25" fill="url(#pcb)" stroke="#164e63" stroke-width="10"/>
+  <rect x="318" y="255" width="150" height="100" rx="12" fill="#0f172a"/><circle cx="393" cy="305" r="39" fill="#334155" stroke="#e2e8f0" stroke-width="7"/><circle cx="393" cy="305" r="15" fill="#67e8f9"/>
+  <rect x="268" y="225" width="34" height="40" rx="6" fill="#cbd5e1"/><rect x="499" y="225" width="34" height="40" rx="6" fill="#cbd5e1"/><rect x="268" y="340" width="34" height="40" rx="6" fill="#cbd5e1"/><rect x="499" y="340" width="34" height="40" rx="6" fill="#cbd5e1"/>
+  <g fill="#facc15"><circle cx="278" cy="198" r="7"/><circle cx="308" cy="198" r="7"/><circle cx="338" cy="198" r="7"/><circle cx="368" cy="198" r="7"/><circle cx="398" cy="198" r="7"/><circle cx="428" cy="198" r="7"/><circle cx="458" cy="198" r="7"/><circle cx="488" cy="198" r="7"/><circle cx="518" cy="198" r="7"/></g>
+  <path d="M303 282h15M468 282h22M303 355h15M468 355h22M390 255v-34" stroke="#a5f3fc" stroke-width="5" fill="none"/><circle cx="245" cy="210" r="8" fill="#f8fafc"/><circle cx="555" cy="395" r="8" fill="#f8fafc"/></g>
+</svg>

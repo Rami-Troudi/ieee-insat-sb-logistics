@@ -6,6 +6,7 @@ import {
   UpdateUserClearancePayload,
   UpdateUserRolePayload,
   UpdateUserStatusPayload,
+  CreateUserPayload,
 } from "@/services/contracts/board/users";
 import { Role, ClearanceLevel, Affiliation, UserStatus } from "@/types";
 
@@ -39,6 +40,18 @@ export interface UpdateRoleParams {
 
 export interface UpdateStatusParams {
   payload: UpdateUserStatusPayload;
+  actorUserId: string;
+  actorRole: string;
+}
+
+export interface CreateUserParams {
+  payload: CreateUserPayload;
+  actorUserId: string;
+  actorRole: string;
+}
+
+export interface RemoveUserParams {
+  userId: string;
   actorUserId: string;
   actorRole: string;
 }
@@ -114,6 +127,30 @@ export function useUpdateUserStatus() {
       queryClient.invalidateQueries({
         queryKey: QUERY_KEYS.boardUsers.detail(variables.payload.userId),
       });
+    },
+  });
+}
+
+export function useCreateUser() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ payload, actorUserId, actorRole }: CreateUserParams) =>
+      boardUserService.createUser(payload, actorUserId, actorRole),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.boardUsers.all });
+    },
+  });
+}
+
+export function useRemoveUser() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ userId, actorUserId, actorRole }: RemoveUserParams) =>
+      boardUserService.removeUser(userId, actorUserId, actorRole),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.boardUsers.all });
     },
   });
 }

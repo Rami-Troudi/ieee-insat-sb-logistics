@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" role="img" aria-label="Illustration of a compact single-board computer">
+  <defs><linearGradient id="bg" x2="0" y2="1"><stop stop-color="#fdf2f8"/><stop offset="1" stop-color="#fce7f3"/></linearGradient><linearGradient id="pcb" x2="1" y2="1"><stop stop-color="#8c3158"/><stop offset="1" stop-color="#59233f"/></linearGradient></defs>
+  <rect width="800" height="600" rx="32" fill="url(#bg)"/><ellipse cx="400" cy="465" rx="245" ry="34" fill="#64748b" opacity=".2"/>
+  <g transform="rotate(-5 400 300)"><rect x="190" y="150" width="420" height="300" rx="22" fill="url(#pcb)" stroke="#451a31" stroke-width="10"/>
+  <rect x="322" y="236" width="128" height="112" rx="7" fill="#111827"/><path d="M340 254h92v76h-92z" fill="#374151"/>
+  <rect x="505" y="202" width="74" height="46" rx="6" fill="#cbd5e1"/><rect x="505" y="264" width="74" height="46" rx="6" fill="#94a3b8"/><rect x="505" y="326" width="74" height="46" rx="6" fill="#cbd5e1"/>
+  <rect x="215" y="202" width="67" height="45" rx="5" fill="#1e293b"/><rect x="215" y="264" width="67" height="45" rx="5" fill="#334155"/><rect x="215" y="326" width="67" height="45" rx="5" fill="#1e293b"/>
+  <g fill="#f8fafc"><circle cx="216" cy="176" r="8"/><circle cx="584" cy="176" r="8"/><circle cx="216" cy="424" r="8"/><circle cx="584" cy="424" r="8"/></g>
+  <g fill="#facc15"><rect x="308" y="178" width="9" height="46"/><rect x="328" y="178" width="9" height="46"/><rect x="348" y="178" width="9" height="46"/><rect x="368" y="178" width="9" height="46"/><rect x="388" y="178" width="9" height="46"/><rect x="408" y="178" width="9" height="46"/><rect x="428" y="178" width="9" height="46"/><rect x="448" y="178" width="9" height="46"/><rect x="468" y="178" width="9" height="46"/></g>
+  <path d="M286 389h52M455 390h38M296 222v20M470 245v40" stroke="#fbcfe8" stroke-width="5" fill="none"/></g>
+</svg>

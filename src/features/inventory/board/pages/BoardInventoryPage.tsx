@@ -13,6 +13,7 @@ import {
 import { Package, Search, Plus, Eye, EyeOff } from "lucide-react";
 import { EquipmentClass } from "@/types";
 import { isBorrowerCatalogVisible } from "@/features/inventory/utils/catalogAccess";
+import { DEFAULT_EQUIPMENT_IMAGE } from "@/assets/equipmentImages";
 
 export const BoardInventoryPage: React.FC = () => {
   const { currentPersona } = useSession();
@@ -202,13 +203,14 @@ export const BoardInventoryPage: React.FC = () => {
                       <tr key={item.id} className="hover:bg-accent/40 transition-colors">
                         <td className="py-3 px-4">
                           <div className="flex items-center gap-2.5">
-                            {item.imageUrl && (
-                              <img
-                                src={item.imageUrl}
-                                alt={item.name}
-                                className="w-9 h-9 rounded object-cover border border-border shrink-0"
-                              />
-                            )}
+                            <img
+                              src={item.imageUrl || DEFAULT_EQUIPMENT_IMAGE}
+                              alt={item.name}
+                              className="w-9 h-9 rounded object-cover border border-border shrink-0 bg-muted"
+                              onError={(e) => {
+                                e.currentTarget.src = DEFAULT_EQUIPMENT_IMAGE;
+                              }}
+                            />
                             <div>
                               <div className="font-semibold text-foreground">{item.name}</div>
                               <div className="text-[11px] font-mono text-muted-foreground">

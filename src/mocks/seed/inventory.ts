@@ -1,5 +1,5 @@
-import { EQUIPMENT_IMAGES, DEFAULT_EQUIPMENT_IMAGE } from "@/assets/equipmentImages";
-import { InventoryItemSummary } from "@/types";
+import { EQUIPMENT_IMAGES, DEFAULT_EQUIPMENT_IMAGE } from "../../assets/equipmentImages";
+import { InventoryItemSummary } from "../../types";
 
 export const INITIAL_INVENTORY: InventoryItemSummary[] = [
   // Class A — Consumables (hot glue, strong glue, adhesive, solder wick)

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" role="img" aria-label="Illustration of a microcontroller board with USB connector">
+  <defs><linearGradient id="bg" x2="0" y2="1"><stop stop-color="#ecfdf5"/><stop offset="1" stop-color="#d1fae5"/></linearGradient><linearGradient id="pcb" x2="1" y2="1"><stop stop-color="#16a36b"/><stop offset="1" stop-color="#08784f"/></linearGradient></defs>
+  <rect width="800" height="600" rx="32" fill="url(#bg)"/><ellipse cx="405" cy="474" rx="248" ry="34" fill="#64748b" opacity=".2"/>
+  <g transform="rotate(5 400 300)"><rect x="192" y="155" width="416" height="290" rx="30" fill="url(#pcb)" stroke="#07583c" stroke-width="9"/>
+  <rect x="163" y="248" width="82" height="105" rx="12" fill="#cbd5e1" stroke="#64748b" stroke-width="8"/><rect x="179" y="268" width="50" height="66" rx="5" fill="#94a3b8"/>
+  <rect x="334" y="222" width="137" height="112" rx="9" fill="#111827"/><path d="M351 241h103v74H351z" fill="#374151"/>
+  <rect x="500" y="215" width="62" height="54" rx="8" fill="#e2e8f0"/><rect x="500" y="291" width="62" height="54" rx="8" fill="#cbd5e1"/>
+  <g fill="#facc15"><circle cx="272" cy="188" r="7"/><circle cx="272" cy="222" r="7"/><circle cx="272" cy="256" r="7"/><circle cx="272" cy="290" r="7"/><circle cx="272" cy="324" r="7"/><circle cx="272" cy="358" r="7"/><circle cx="534" cy="365" r="7"/><circle cx="500" cy="365" r="7"/><circle cx="466" cy="365" r="7"/><circle cx="432" cy="365" r="7"/></g>
+  <circle cx="222" cy="185" r="9" fill="#f8fafc"/><circle cx="578" cy="185" r="9" fill="#f8fafc"/><circle cx="222" cy="415" r="9" fill="#f8fafc"/><circle cx="578" cy="415" r="9" fill="#f8fafc"/><path d="M303 197h25v35M473 205h23M305 342h25v30M476 346h24" stroke="#bbf7d0" stroke-width="5" fill="none"/></g>
+</svg>

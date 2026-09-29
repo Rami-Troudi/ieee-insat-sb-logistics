@@ -68,7 +68,7 @@ export const MemberCartPage: React.FC = () => {
             {state.items.map(({ item, quantity }) => (
               <div key={item.id} className="flex items-center gap-3 rounded-xl border bg-card p-3">
                 <img
-                  src={item.imageUrl}
+                  src={item.imageUrl || DEFAULT_EQUIPMENT_IMAGE}
                   alt={item.name}
                   className="h-16 w-16 shrink-0 rounded-lg object-contain bg-muted"
                   onError={(event) => {

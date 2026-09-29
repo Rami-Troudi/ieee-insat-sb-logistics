@@ -58,7 +58,7 @@ export const EquipmentCard: React.FC<EquipmentCardProps> = ({ item }) => {
         {/* Photo Container with fixed 4:3 aspect ratio */}
         <div className="relative aspect-[4/3] w-full bg-muted/40 overflow-hidden">
           <img
-            src={imageError ? DEFAULT_EQUIPMENT_IMAGE : item.imageUrl}
+            src={imageError || !item.imageUrl ? DEFAULT_EQUIPMENT_IMAGE : item.imageUrl}
             alt={item.name}
             onError={() => setImageError(true)}
             className="w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-300"
@@ -82,6 +82,13 @@ export const EquipmentCard: React.FC<EquipmentCardProps> = ({ item }) => {
             <div className="absolute top-2 right-2 bg-primary text-primary-foreground text-[10px] font-bold px-1.5 py-0.5 rounded-full flex items-center gap-1 shadow-sm">
               <Check className="w-2.5 h-2.5 stroke-[3]" />
               <span>{currentQuantity}</span>
+            </div>
+          )}
+
+          {/* Flagged Badge if level restriction */}
+          {item.flagged && (
+            <div className="absolute bottom-2 left-2 px-2 py-0.5 rounded bg-amber-500/90 text-amber-950 font-bold text-[9px] shadow-xs backdrop-blur-xs">
+              ⚠️ Clearance Flagged
             </div>
           )}
         </div>

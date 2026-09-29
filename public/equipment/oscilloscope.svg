@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" role="img" aria-label="Illustration of a digital oscilloscope">
+  <defs><linearGradient id="bg" x2="0" y2="1"><stop stop-color="#f1f5f9"/><stop offset="1" stop-color="#e2e8f0"/></linearGradient><linearGradient id="case" x2="0" y2="1"><stop stop-color="#475569"/><stop offset="1" stop-color="#1e293b"/></linearGradient></defs>
+  <rect width="800" height="600" rx="32" fill="url(#bg)"/><ellipse cx="400" cy="475" rx="255" ry="34" fill="#475569" opacity=".2"/>
+  <g transform="rotate(-3 400 300)"><rect x="157" y="155" width="486" height="290" rx="30" fill="url(#case)" stroke="#0f172a" stroke-width="9"/><rect x="195" y="192" width="280" height="208" rx="12" fill="#071a2e" stroke="#94a3b8" stroke-width="7"/>
+  <g stroke="#1e3a5f" stroke-width="2"><path d="M230 200v190M270 200v190M310 200v190M350 200v190M390 200v190M430 200v190M205 230h260M205 270h260M205 310h260M205 350h260M205 390h260"/></g>
+  <path d="M207 302h28l13-50 17 102 18-69 15 17h24l16-34 15 72 20-48 18 9h39" fill="none" stroke="#22d3ee" stroke-width="7" stroke-linejoin="round"/>
+  <g fill="#cbd5e1"><circle cx="526" cy="217" r="15"/><circle cx="580" cy="217" r="15"/><circle cx="526" cy="275" r="24"/><circle cx="580" cy="275" r="24"/><circle cx="526" cy="344" r="20"/><circle cx="580" cy="344" r="20"/></g><g fill="#0f172a"><circle cx="526" cy="275" r="8"/><circle cx="580" cy="275" r="8"/><circle cx="526" cy="344" r="7"/><circle cx="580" cy="344" r="7"/></g><rect x="516" y="389" width="75" height="16" rx="7" fill="#94a3b8"/></g>
+</svg>

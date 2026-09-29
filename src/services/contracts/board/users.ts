@@ -32,6 +32,16 @@ export interface UpdateUserStatusPayload {
   reason: string;
 }
 
+export interface CreateUserPayload {
+  name: string;
+  email: string;
+  phone?: string;
+  role: Role;
+  clearance?: ClearanceLevel;
+  affiliation?: Affiliation;
+  password?: string;
+}
+
 export interface IBoardUserService {
   getUsers(filters?: {
     search?: string;
@@ -42,6 +52,16 @@ export interface IBoardUserService {
     status?: UserStatus | "ALL";
   }): Promise<UserProfile[]>;
   getUserById(userId: string): Promise<UserProfile | null>;
+  createUser(
+    payload: CreateUserPayload,
+    actorUserId: string,
+    actorRole: string
+  ): Promise<UserProfile>;
+  removeUser(
+    userId: string,
+    actorUserId: string,
+    actorRole: string
+  ): Promise<{ success: boolean }>;
   processUser(
     payload: ProcessUserPayload,
     actorUserId: string,

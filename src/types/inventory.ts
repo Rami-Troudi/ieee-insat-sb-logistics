@@ -59,4 +59,6 @@ export interface BorrowerCatalogItem {
   datasheetUrl?: string;
   availability: "AVAILABLE" | "LIMITED" | "UNAVAILABLE";
   action: "REQUEST" | "ASK_OPERATOR" | "WORKSPACE" | "NONE";
+  flagged?: boolean;
+  flagReason?: string;
 }
