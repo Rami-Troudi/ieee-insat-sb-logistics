@@ -12,7 +12,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
-import { Sparkles, ShieldCheck, KeyRound, AlertCircle, UserCheck } from "lucide-react";
+import { Sparkles, ShieldCheck, AlertCircle, UserCheck } from "lucide-react";
 import { authService } from "@/services";
 import { useSession } from "@/hooks/useSession";
 import { useUserProfile } from "@/features/profile/hooks/useProfile";
@@ -49,7 +49,6 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
 
   // Staff login state
   const [staffEmail, setStaffEmail] = useState("");
-  const [rememberDevice, setRememberDevice] = useState(true);
   const [staffError, setStaffError] = useState("");
   const [staffSubmitting, setStaffSubmitting] = useState(false);
 
