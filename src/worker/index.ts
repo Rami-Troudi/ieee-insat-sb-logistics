@@ -1134,47 +1134,6 @@ app.post("/api/v1/board/rpc", async (c) => {
   return c.json(result.body as any, result.status as any);
 });
 
-app.post("/api/v1/board/loans/:id/return", async (c) => {
-  const actor = await requireBoard(c, true);
-  if (!actor) return jsonError(c, 403, "FORBIDDEN", "Fresh board verification is required");
-  const body = await c.req.json().catch(() => ({}));
-  const key = c.req.header("Idempotency-Key");
-  if (!key || key.length < 16 || key.length > 128)
-    return jsonError(c, 400, "VALIDATION", "A valid idempotency key is required");
-  const prior = await c.env.DB.prepare(
-    "SELECT response FROM idempotency_keys WHERE key=? AND actor_id=?"
-  )
-    .bind(key, actor.id)
-    .first<{ response: string }>();
-  if (prior) return c.json(parseJson(prior.response));
-  const row = await c.env.DB.prepare("SELECT data FROM record_store WHERE kind='loan' AND id=?")
-    .bind(c.req.param("id"))
-    .first<{ data: string }>();
-  if (!row) return jsonError(c, 404, "NOT_FOUND", "Loan not found");
-  const loan = parseJson<any>(row.data);
-  if (loan.status !== "ACTIVE" && loan.status !== "OVERDUE")
-    return jsonError(c, 409, "CONFLICT", "Loan has already been returned");
-  loan.status = "RETURNED";
-  loan.returnedAt = iso();
-  loan.returnedBy = actor.id;
-  loan.returnNotes = typeof body.notes === "string" ? body.notes.slice(0, 1000) : undefined;
-  const response = JSON.stringify(loan);
-  const batch = await c.env.DB.batch([
-    c.env.DB.prepare(
-      "UPDATE record_store SET status='RETURNED',data=?,updated_at=? WHERE kind='loan' AND id=? AND status IN ('ACTIVE','OVERDUE')"
-    ).bind(response, now(), loan.id),
-    c.env.DB.prepare(
-      "INSERT INTO idempotency_keys(key,actor_id,response,created_at) VALUES(?,?,?,?)"
-    ).bind(key, actor.id, response, now()),
-    c.env.DB.prepare(
-      "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)"
-    ).bind(uuid("audit"), actor.id, "LOAN", loan.id, "LOAN_RETURNED", now(), "{}"),
-  ]);
-  if (!batch[0]?.meta?.changes)
-    return jsonError(c, 409, "CONFLICT", "Loan state changed; reload and try again");
-  return c.json(loan);
-});
-
 app.notFound((c) =>
   c.req.path.startsWith("/api/")
     ? jsonError(c, 404, "NOT_FOUND", "API route not found")
