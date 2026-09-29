@@ -186,9 +186,20 @@ app.post("/api/v1/auth/borrower", async (c) => {
       ).bind(userId, email, name, phone, membership, timestamp, timestamp),
     ]);
   } else {
-    await c.env.DB.prepare(
-      "UPDATE app_users SET name=?,phone=?,claimed_affiliation=?,updated_at=? WHERE id=?"
-    ).bind(name, phone, membership, timestamp, existing.id).run();
+    const authUser = await c.env.DB.prepare("SELECT id FROM user WHERE id=?").bind(existing.id).first();
+    const statements = [
+      c.env.DB.prepare(
+        "UPDATE app_users SET name=?,phone=?,claimed_affiliation=?,updated_at=? WHERE id=?"
+      ).bind(name, phone, membership, timestamp, existing.id),
+    ];
+    if (!authUser) {
+      statements.push(
+        c.env.DB.prepare(
+          "INSERT INTO user(id,name,email,emailVerified,createdAt,updatedAt) VALUES(?,?,?,1,?,?)"
+        ).bind(existing.id, name, email, timestamp, timestamp)
+      );
+    }
+    await c.env.DB.batch(statements);
   }
 
   const origin = trustedAuthOrigin(c.env, c.req.url);
