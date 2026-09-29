@@ -39,7 +39,6 @@ export interface CreateUserPayload {
   role: Role;
   clearance?: ClearanceLevel;
   affiliation?: Affiliation;
-  password?: string;
 }
 
 export interface IBoardUserService {
@@ -62,11 +61,6 @@ export interface IBoardUserService {
     actorUserId: string,
     actorRole: string
   ): Promise<{ success: boolean }>;
-  resetPassword(
-    userId: string,
-    actorUserId: string,
-    actorRole: string
-  ): Promise<{ success: boolean; newPassword: string }>;
   processUser(
     payload: ProcessUserPayload,
     actorUserId: string,
@@ -75,8 +69,7 @@ export interface IBoardUserService {
   updateClearance(
     payload: UpdateUserClearancePayload,
     actorUserId: string,
-    actorRole: string,
-    actorClearance: string
+    actorRole: string
   ): Promise<UserProfile>;
   updateRole(
     payload: UpdateUserRolePayload,
