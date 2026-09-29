@@ -1,5 +1,4 @@
 import { BorrowerCatalogItem, InventoryItemSummary, UserProfile } from "@/types";
-import { clearanceToNumber } from "./eligibility";
 import { DEFAULT_EQUIPMENT_IMAGE } from "@/assets/equipmentImages";
 
 export function isFormalRequestClass(item: InventoryItemSummary): boolean {
@@ -26,17 +25,8 @@ export function getBorrowerCatalogAccess(
       : item.availableQuantity <= 3
         ? "LIMITED"
         : "AVAILABLE";
-  const clearance = clearanceToNumber(user.clearance);
-  const requiredClearance = { A: 1, B: 1, C: 2, D: 3, E: 3, F: 3, G: 4 }[item.equipmentClass] ?? 1;
-
-  // Level restrictions are removed from blocking visibility or requests:
-  // We flag clearance mismatches as invalid/restricted while still allowing the member to request them.
-  const hasClearanceMismatch =
-    clearance < requiredClearance || (item.equipmentClass === "G" && user.clearance !== "IV");
-  const flagged = hasClearanceMismatch;
-  const flagReason = hasClearanceMismatch
-    ? `Flagged: Requires Level ${requiredClearance} clearance (Member has Level ${user.clearance || "I"})`
-    : undefined;
+  const flagged = false;
+  const flagReason = undefined;
 
   const visible =
     isBorrowerCatalogVisible(item) &&
