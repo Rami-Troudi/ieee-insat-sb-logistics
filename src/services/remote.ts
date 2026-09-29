@@ -20,6 +20,10 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
       ...init?.headers,
     },
   });
+  const contentType = response.headers.get("Content-Type") ?? "";
+  if (contentType.includes("text/html")) {
+    throw new ApiError(404, "NOT_FOUND", "API endpoint not found");
+  }
   const body = (await response.json().catch(() => ({}))) as {
     error?: { code?: string; message?: string };
   } & T;
@@ -123,16 +127,18 @@ const listeners = new Set<(persona: UserPersona) => void>();
 async function refreshSession() {
   try {
     const persona = await get<UserPersona>("/api/v1/me");
+    if (!persona || !persona.id || !persona.role) {
+      cachedPersona = PROD_DEFAULT_PERSONA;
+      listeners.forEach((listener) => listener(cachedPersona));
+      return PROD_DEFAULT_PERSONA;
+    }
     cachedPersona = persona;
     listeners.forEach((listener) => listener(persona));
     return persona;
-  } catch (error) {
-    if (error instanceof ApiError && error.status === 401) {
-      cachedPersona = PROD_DEFAULT_PERSONA;
-      listeners.forEach((listener) => listener(cachedPersona));
-      return null;
-    }
-    throw error;
+  } catch (_error) {
+    cachedPersona = PROD_DEFAULT_PERSONA;
+    listeners.forEach((listener) => listener(cachedPersona));
+    return PROD_DEFAULT_PERSONA;
   }
 }
 
