@@ -3,62 +3,91 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { magicLink } from "better-auth/plugins";
 import type { Env } from "./env";
 import { escapeHtml, sendEmail } from "./email";
-import { authSchema } from "./database";
+import { schema } from "./database";
 
 export function trustedAuthOrigin(env: Env, requestUrl: string) {
   const requestOrigin = new URL(requestUrl);
-  const allowedHosts = new Set([env.VERCEL_URL, env.VERCEL_PROJECT_PRODUCTION_URL].filter(Boolean));
-  const isLocal = ["localhost", "127.0.0.1"].includes(requestOrigin.hostname);
-  if (env.APP_ORIGIN && requestOrigin.origin !== new URL(env.APP_ORIGIN).origin && !isLocal)
-    throw new Error("Request host is not the configured application address");
-  if (!env.APP_ORIGIN && !isLocal && !allowedHosts.has(requestOrigin.host))
-    throw new Error("Request host is not a Vercel deployment address");
-  const origin =
-    env.APP_ORIGIN && !isLocal ? new URL(env.APP_ORIGIN) : new URL(requestOrigin.origin);
-  if (origin.username || origin.password || origin.pathname !== "/" || origin.search || origin.hash)
-    throw new Error("APP_ORIGIN must be an origin without a path");
-  if (
-    origin.protocol !== "https:" &&
-    origin.hostname !== "localhost" &&
-    origin.hostname !== "127.0.0.1"
-  )
-    throw new Error("APP_ORIGIN must use HTTPS");
-  return origin.origin;
+  const configuredHosts = new Set(
+    [env.VERCEL_URL, env.VERCEL_PROJECT_PRODUCTION_URL]
+      .filter((host): host is string => Boolean(host))
+      .map((host) => host.replace(/^https?:\/\//, ""))
+  );
+  const local = ["localhost", "127.0.0.1"].includes(requestOrigin.hostname);
+  if (env.APP_ORIGIN) {
+    const appOrigin = new URL(env.APP_ORIGIN);
+    if (
+      appOrigin.pathname !== "/" ||
+      appOrigin.search ||
+      appOrigin.hash ||
+      appOrigin.username ||
+      appOrigin.password
+    ) {
+      throw new Error("APP_ORIGIN must be an origin without a path.");
+    }
+    if (appOrigin.protocol !== "https:" && !local) throw new Error("APP_ORIGIN must use HTTPS.");
+    if (!local && requestOrigin.origin !== appOrigin.origin)
+      throw new Error("Untrusted application origin.");
+    if (
+      local &&
+      (env.ENVIRONMENT === "development" || env.ENVIRONMENT === "test") &&
+      ["localhost", "127.0.0.1"].includes(appOrigin.hostname)
+    ) {
+      return appOrigin.origin;
+    }
+    return local ? requestOrigin.origin : appOrigin.origin;
+  }
+  if (local) return requestOrigin.origin;
+  if (!configuredHosts.has(requestOrigin.host)) throw new Error("Untrusted deployment origin.");
+  return requestOrigin.origin;
 }
 
-export function createAuth(env: Env, origin = env.APP_ORIGIN ?? "http://localhost:8787") {
+export function createAuth(env: Env, origin: string) {
   return betterAuth({
-    appName: "IEEE RAS INSAT Logistics",
+    appName: "IEEE INSAT SB Equipment Reservations",
     baseURL: origin,
     secret: env.BETTER_AUTH_SECRET,
-    database: drizzleAdapter(env.AUTH_DATABASE, { provider: "sqlite", schema: authSchema }),
+    database: drizzleAdapter(env.DB, { provider: "sqlite", schema: schema.authSchema }),
     trustedOrigins: [origin],
+    user: {
+      additionalFields: {
+        role: {
+          type: "string",
+          required: false,
+          defaultValue: "USER",
+          input: false,
+        },
+      },
+    },
     advanced: {
-      useSecureCookies: true,
+      useSecureCookies: origin.startsWith("https://"),
       defaultCookieAttributes: {
         httpOnly: true,
-        secure: true,
+        secure: origin.startsWith("https://"),
         sameSite: "lax",
         path: "/",
       },
     },
     session: {
-      expiresIn: 390 * 24 * 60 * 60,
+      expiresIn: 30 * 24 * 60 * 60,
       updateAge: 24 * 60 * 60,
       cookieCache: { enabled: false },
     },
-    rateLimit: { enabled: true, window: 60, max: 10, storage: "database" },
+    rateLimit: {
+      enabled: true,
+      window: 60,
+      max: env.AUTH_RATE_LIMIT_PER_MINUTE,
+      storage: "database",
+    },
     emailAndPassword: { enabled: false },
     plugins: [
       magicLink({
         expiresIn: 10 * 60,
         storeToken: "hashed",
-        disableSignUp: true,
         sendMagicLink: async ({ email, url }) => {
           await sendEmail(
             env,
             email,
-            "Your IEEE RAS INSAT Logistics sign-in link",
+            "Your IEEE INSAT SB sign-in link",
             `<p>Use this single-use link within 10 minutes to sign in:</p><p><a href="${escapeHtml(url)}">Sign in</a></p><p>If you did not request this email, you can ignore it.</p>`
           );
         },

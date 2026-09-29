@@ -1,73 +1,48 @@
-import type { Context, MiddlewareHandler } from "hono";
-import type { D1Database, Env } from "./env";
-import type { ContentfulStatusCode } from "hono/utils/http-status";
+import type { Context } from "hono";
+import type { Env } from "./env";
+import { trustedAuthOrigin } from "./auth";
+
+export class DomainError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    message: string
+  ) {
+    super(message);
+  }
+}
 
 export function jsonError(c: Context, status: number, code: string, message: string) {
-  return c.json({ error: { code, message } }, status as ContentfulStatusCode);
+  return c.json({ error: { code, message } }, status as 400);
 }
 
-export const sameOrigin: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
+export async function sameOrigin(c: Context<{ Bindings: Env }>, next: () => Promise<void>) {
   if (["GET", "HEAD", "OPTIONS"].includes(c.req.method)) return next();
   const origin = c.req.header("Origin");
-  if (!origin) return jsonError(c, 403, "ORIGIN_REJECTED", "Request origin is not allowed");
-  try {
-    const originUrl = new URL(origin);
-    const host =
-      c.req.header("x-forwarded-host") || c.req.header("host") || new URL(c.req.url).host;
-    const hostWithoutPort = host.split(":")[0];
-    if (originUrl.hostname !== hostWithoutPort && origin !== new URL(c.req.url).origin) {
-      return jsonError(c, 403, "ORIGIN_REJECTED", "Request origin is not allowed");
-    }
-  } catch {
-    return jsonError(c, 403, "ORIGIN_REJECTED", "Request origin is not allowed");
+  if (!origin || origin !== trustedAuthOrigin(c.env, c.req.url)) {
+    return jsonError(c, 403, "FORBIDDEN", "Request origin is not allowed.");
   }
-  return next();
-};
+  await next();
+}
 
-export async function verifyTurnstile(
-  env: Env,
-  token: string | undefined,
-  ip: string | undefined,
-  origin: string
-) {
-  if (!env.TURNSTILE_SECRET_KEY) return true;
-  if (!token || token.length > 2048) return false;
-  const body = new URLSearchParams({ secret: env.TURNSTILE_SECRET_KEY, response: token });
-  if (ip) body.set("remoteip", ip);
-  const response = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
-    method: "POST",
-    body,
+export async function isRateLimited(env: Env, key: string, max: number, windowMs = 60_000) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
+  const keyHash = [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+  const timestamp = Date.now();
+  const result = await env.CLIENT.execute({
+    sql: `INSERT INTO rate_limit_buckets(key_hash,window_start,count) VALUES(?,?,1)
+      ON CONFLICT(key_hash) DO UPDATE SET
+        window_start=CASE WHEN rate_limit_buckets.window_start + ? <= excluded.window_start THEN excluded.window_start ELSE rate_limit_buckets.window_start END,
+        count=CASE WHEN rate_limit_buckets.window_start + ? <= excluded.window_start THEN 1 ELSE rate_limit_buckets.count + 1 END
+      RETURNING count`,
+    args: [keyHash, timestamp, windowMs, windowMs],
   });
-  if (!response.ok) return false;
-  const result = (await response.json()) as { success?: boolean; hostname?: string };
-  return result.success === true && result.hostname === new URL(origin).hostname;
+  return Number(result.rows[0]?.count ?? max + 1) > max;
 }
 
-export async function digest(value: string) {
-  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-export function randomToken(bytes = 32) {
-  const data = crypto.getRandomValues(new Uint8Array(bytes));
-  return btoa(String.fromCharCode(...data))
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replaceAll("=", "");
-}
-
-export async function rateLimit(db: D1Database, key: string, max: number, windowSeconds: number) {
-  const now = Math.floor(Date.now() / 1000);
-  const keyHash = await digest(key);
-  const windowStart = Math.floor(now / windowSeconds) * windowSeconds;
-  const row = await db
-    .prepare(
-      `INSERT INTO rate_limit_buckets(key_hash,window_start,count)
-    VALUES(?,?,1) ON CONFLICT(key_hash) DO UPDATE SET
-    count=CASE WHEN window_start=? THEN count+1 ELSE 1 END,
-    window_start=? WHERE window_start<>? OR count<? RETURNING count`
-    )
-    .bind(keyHash, windowStart, windowStart, windowStart, windowStart, max)
-    .first<{ count: number }>();
-  return row !== null && row.count <= max;
+export function requestIp(c: Context) {
+  const forwarded = c.req.header("x-forwarded-for")?.split(",", 1)[0]?.trim();
+  return forwarded || c.req.header("x-real-ip") || "unknown";
 }

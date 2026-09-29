@@ -1,5 +1,13 @@
 import { sql } from "drizzle-orm";
-import { check, index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import {
+  check,
+  index,
+  integer,
+  primaryKey,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 
 export const authUsers = sqliteTable(
   "user",
@@ -9,10 +17,13 @@ export const authUsers = sqliteTable(
     email: text("email").notNull(),
     emailVerified: integer("emailVerified", { mode: "boolean" }).notNull().default(false),
     image: text("image"),
+    role: text("role", { enum: ["USER", "BOARD", "SUPERADMIN"] })
+      .notNull()
+      .default("USER"),
     createdAt: integer("createdAt", { mode: "timestamp_ms" }).notNull(),
     updatedAt: integer("updatedAt", { mode: "timestamp_ms" }).notNull(),
   },
-  (table) => [uniqueIndex("user_email").on(table.email)]
+  (table) => [uniqueIndex("user_email").on(table.email), index("user_role").on(table.role)]
 );
 
 export const authSessions = sqliteTable(
@@ -81,189 +92,210 @@ export const authRateLimits = sqliteTable(
   (table) => [uniqueIndex("rate_limit_key").on(table.key)]
 );
 
-export const appUsers = sqliteTable(
-  "app_users",
+export const chapters = sqliteTable(
+  "chapters",
   {
     id: text("id").primaryKey(),
-    email: text("email").notNull(),
     name: text("name").notNull(),
-    phone: text("phone"),
-    role: text("role", { enum: ["MEMBER", "OPERATOR", "SUPERADMIN"] })
-      .notNull()
-      .default("MEMBER"),
-    clearance: text("clearance").notNull().default("I"),
-    clearanceSource: text("clearance_source"),
-    affiliation: text("affiliation").notNull().default("EXTERNAL"),
-    claimedAffiliation: text("claimed_affiliation"),
-    affiliationVerified: integer("affiliation_verified", { mode: "boolean" })
-      .notNull()
-      .default(false),
-    status: text("status").notNull().default("ACTIVE"),
-    data: text("data", { mode: "json" }).notNull().default("{}"),
+    shortCode: text("short_code").notNull(),
+    active: integer("active", { mode: "boolean" }).notNull().default(true),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },
   (table) => [
-    uniqueIndex("app_users_email").on(table.email),
-    index("app_users_role_status").on(table.role, table.status),
+    uniqueIndex("chapters_name").on(table.name),
+    uniqueIndex("chapters_short_code").on(table.shortCode),
   ]
 );
 
-export const inventory = sqliteTable(
-  "inventory",
+export const equipmentItems = sqliteTable(
+  "equipment_items",
   {
     id: text("id").primaryKey(),
     name: text("name").notNull(),
+    description: text("description").notNull().default(""),
     category: text("category").notNull(),
-    equipmentClass: text("equipment_class").notNull(),
-    trackingMode: text("tracking_mode").notNull(),
-    totalQuantity: integer("total_quantity").notNull().default(0),
-    availableQuantity: integer("available_quantity").notNull().default(0),
-    allocatedQuantity: integer("allocated_quantity").notNull().default(0),
-    borrowedQuantity: integer("borrowed_quantity").notNull().default(0),
-    damagedQuantity: integer("damaged_quantity").notNull().default(0),
-    maintenanceQuantity: integer("maintenance_quantity").notNull().default(0),
-    lostQuantity: integer("lost_quantity").notNull().default(0),
-    borrowerVisible: integer("borrower_visible", { mode: "boolean" }).notNull().default(false),
-    data: text("data", { mode: "json" }).notNull(),
+    imageUrl: text("image_url"),
+    active: integer("active", { mode: "boolean" }).notNull().default(true),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [index("equipment_active_name").on(table.active, table.name)]
+);
+
+export const assets = sqliteTable(
+  "assets",
+  {
+    id: text("id").primaryKey(),
+    equipmentItemId: text("equipment_item_id")
+      .notNull()
+      .references(() => equipmentItems.id, { onDelete: "restrict" }),
+    assetCode: text("asset_code").notNull(),
+    qrToken: text("qr_token").notNull(),
+    serialNumber: text("serial_number"),
+    state: text("state", {
+      enum: ["AVAILABLE", "RESERVED", "BORROWED", "OUT_OF_SERVICE", "RETIRED"],
+    })
+      .notNull()
+      .default("AVAILABLE"),
+    active: integer("active", { mode: "boolean" }).notNull().default(true),
+    lastScanAt: integer("last_scan_at"),
+    createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },
   (table) => [
-    index("inventory_class_visibility").on(table.equipmentClass, table.borrowerVisible),
-    check(
-      "inventory_stock_conservation",
-      sql`${table.totalQuantity} = ${table.availableQuantity} + ${table.allocatedQuantity} + ${table.borrowedQuantity} + ${table.damagedQuantity} + ${table.maintenanceQuantity} + ${table.lostQuantity}`
-    ),
-    check("inventory_timestamp_nonnegative", sql`${table.updatedAt} >= 0`),
+    uniqueIndex("assets_code").on(table.assetCode),
+    uniqueIndex("assets_qr_token").on(table.qrToken),
+    uniqueIndex("assets_serial_number").on(table.serialNumber),
+    index("assets_item_state").on(table.equipmentItemId, table.state, table.active),
   ]
 );
 
-export const inventoryAssets = sqliteTable(
-  "inventory_assets",
+export const reservations = sqliteTable(
+  "reservations",
   {
     id: text("id").primaryKey(),
-    itemId: text("item_id")
+    requestedByUserId: text("requested_by_user_id")
       .notNull()
-      .references(() => inventory.id, { onDelete: "cascade" }),
-    serialNumber: text("serial_number").notNull(),
-    state: text("state").notNull(),
-    data: text("data", { mode: "json" }).notNull(),
-  },
-  (table) => [
-    uniqueIndex("inventory_asset_serial").on(table.serialNumber),
-    index("asset_item_state").on(table.itemId, table.state),
-    check(
-      "asset_state_valid",
-      sql`${table.state} IN ('AVAILABLE','ALLOCATED','BORROWED','DAMAGED','MAINTENANCE','LOST')`
-    ),
-  ]
-);
-
-export const requests = sqliteTable(
-  "requests",
-  {
-    id: text("id").primaryKey(),
-    userId: text("user_id")
+      .references(() => authUsers.id, { onDelete: "restrict" }),
+    borrowerType: text("borrower_type", { enum: ["PERSON", "CHAPTER"] }).notNull(),
+    borrowerUserId: text("borrower_user_id").references(() => authUsers.id, {
+      onDelete: "restrict",
+    }),
+    chapterId: text("chapter_id").references(() => chapters.id, { onDelete: "restrict" }),
+    pickupAt: integer("pickup_at").notNull(),
+    returnAt: integer("return_at").notNull(),
+    note: text("note"),
+    status: text("status", {
+      enum: ["PENDING", "APPROVED", "DECLINED", "CANCELLED", "COMPLETED"],
+    })
       .notNull()
-      .references(() => appUsers.id),
-    status: text("status").notNull(),
+      .default("PENDING"),
+    approvedByUserId: text("approved_by_user_id").references(() => authUsers.id, {
+      onDelete: "set null",
+    }),
     createdAt: integer("created_at").notNull(),
-    data: text("data", { mode: "json" }).notNull(),
+    updatedAt: integer("updated_at").notNull(),
   },
   (table) => [
-    index("requests_owner_created").on(table.userId, table.createdAt),
-    index("requests_status").on(table.status),
-    check("request_no_invalid_sentinel", sql`${table.status} <> 'INVALID'`),
+    index("reservations_pickup").on(table.pickupAt),
+    index("reservations_return").on(table.returnAt),
+    index("reservations_status").on(table.status),
+    index("reservations_requester_created").on(table.requestedByUserId, table.createdAt),
+    check("reservation_time_range", sql`${table.pickupAt} < ${table.returnAt}`),
+    check(
+      "reservation_borrower_party",
+      sql`(${table.borrowerType} = 'PERSON' AND ${table.borrowerUserId} IS NOT NULL AND ${table.chapterId} IS NULL) OR (${table.borrowerType} = 'CHAPTER' AND ${table.borrowerUserId} IS NULL AND ${table.chapterId} IS NOT NULL)`
+    ),
   ]
 );
 
-export const requestLines = sqliteTable(
-  "request_lines",
+export const reservationLines = sqliteTable(
+  "reservation_lines",
   {
     id: text("id").primaryKey(),
-    requestId: text("request_id")
+    reservationId: text("reservation_id")
       .notNull()
-      .references(() => requests.id, { onDelete: "cascade" }),
-    itemId: text("item_id")
+      .references(() => reservations.id, { onDelete: "cascade" }),
+    equipmentItemId: text("equipment_item_id")
       .notNull()
-      .references(() => inventory.id),
-    equipmentClass: text("equipment_class").notNull(),
+      .references(() => equipmentItems.id, { onDelete: "restrict" }),
     quantity: integer("quantity").notNull(),
-    data: text("data", { mode: "json" }).notNull(),
-  },
-  (table) => [index("request_lines_item").on(table.itemId)]
-);
-
-export const recordStore = sqliteTable(
-  "record_store",
-  {
-    kind: text("kind").notNull(),
-    id: text("id").notNull(),
-    ownerId: text("owner_id"),
-    status: text("status"),
-    expiresAt: integer("expires_at"),
-    data: text("data", { mode: "json" }).notNull(),
-    updatedAt: integer("updated_at").notNull(),
   },
   (table) => [
-    index("record_owner_kind").on(table.kind, table.ownerId),
-    index("record_status_kind").on(table.kind, table.status),
-    index("record_expiry").on(table.kind, table.expiresAt),
-    check("record_timestamp_nonnegative", sql`${table.updatedAt} >= 0`),
+    uniqueIndex("reservation_line_equipment").on(table.reservationId, table.equipmentItemId),
+    index("reservation_lines_equipment").on(table.equipmentItemId),
+    check("reservation_line_quantity", sql`${table.quantity} > 0`),
   ]
 );
 
-export const staffChallenges = sqliteTable(
-  "staff_challenges",
+export const reservationAssets = sqliteTable(
+  "reservation_assets",
+  {
+    id: text("id").primaryKey(),
+    reservationId: text("reservation_id")
+      .notNull()
+      .references(() => reservations.id, { onDelete: "restrict" }),
+    reservationLineId: text("reservation_line_id")
+      .notNull()
+      .references(() => reservationLines.id, { onDelete: "restrict" }),
+    assetId: text("asset_id")
+      .notNull()
+      .references(() => assets.id, { onDelete: "restrict" }),
+    state: text("state", { enum: ["RESERVED", "BORROWED", "RETURNED", "RELEASED"] })
+      .notNull()
+      .default("RESERVED"),
+    actualPickupAt: integer("actual_pickup_at"),
+    checkedOutByUserId: text("checked_out_by_user_id").references(() => authUsers.id, {
+      onDelete: "set null",
+    }),
+    actualReturnAt: integer("actual_return_at"),
+    checkedInByUserId: text("checked_in_by_user_id").references(() => authUsers.id, {
+      onDelete: "set null",
+    }),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("reservation_asset_once").on(table.reservationId, table.assetId),
+    index("reservation_assets_asset").on(table.assetId),
+    index("reservation_assets_reservation").on(table.reservationId),
+    index("reservation_assets_line").on(table.reservationLineId),
+  ]
+);
+
+export const notifications = sqliteTable(
+  "notifications",
   {
     id: text("id").primaryKey(),
     userId: text("user_id")
       .notNull()
-      .references(() => appUsers.id, { onDelete: "cascade" }),
-    codeHash: text("code_hash").notNull(),
-    expiresAt: integer("expires_at").notNull(),
-    attempts: integer("attempts").notNull().default(0),
-    consumedAt: integer("consumed_at"),
+      .references(() => authUsers.id, { onDelete: "cascade" }),
+    type: text("type").notNull(),
+    title: text("title").notNull(),
+    message: text("message").notNull(),
+    reservationId: text("reservation_id").references(() => reservations.id, {
+      onDelete: "set null",
+    }),
+    readAt: integer("read_at"),
     createdAt: integer("created_at").notNull(),
   },
-  (table) => [index("staff_challenge_expiry").on(table.userId, table.expiresAt)]
-);
-
-export const staffSessions = sqliteTable("staff_sessions", {
-  userId: text("user_id")
-    .primaryKey()
-    .references(() => appUsers.id, { onDelete: "cascade" }),
-  expiresAt: integer("expires_at").notNull(),
-  freshUntil: integer("fresh_until").notNull(),
-  revokedAt: integer("revoked_at"),
-});
-
-export const idempotencyKeys = sqliteTable(
-  "idempotency_keys",
-  {
-    key: text("key").primaryKey(),
-    actorId: text("actor_id").notNull(),
-    response: text("response", { mode: "json" }).notNull(),
-    createdAt: integer("created_at").notNull(),
-  },
-  (table) => [index("idempotency_created").on(table.createdAt)]
+  (table) => [index("notifications_user_created").on(table.userId, table.createdAt)]
 );
 
 export const auditEvents = sqliteTable(
   "audit_events",
   {
     id: text("id").primaryKey(),
-    actorUserId: text("actor_user_id").notNull(),
+    actorUserId: text("actor_user_id")
+      .notNull()
+      .references(() => authUsers.id, { onDelete: "restrict" }),
     entityType: text("entity_type").notNull(),
     entityId: text("entity_id").notNull(),
     action: text("action").notNull(),
-    reason: text("reason"),
     createdAt: integer("created_at").notNull(),
-    data: text("data", { mode: "json" }).notNull(),
+    data: text("data", { mode: "json" }).notNull().default("{}"),
   },
   (table) => [
-    index("audit_entity").on(table.entityType, table.entityId, table.createdAt),
-    index("audit_actor").on(table.actorUserId, table.createdAt),
+    index("audit_entity_time").on(table.entityType, table.entityId, table.createdAt),
+    index("audit_actor_time").on(table.actorUserId, table.createdAt),
+  ]
+);
+
+export const idempotencyKeys = sqliteTable(
+  "idempotency_keys",
+  {
+    actorId: text("actor_id")
+      .notNull()
+      .references(() => authUsers.id, { onDelete: "cascade" }),
+    operation: text("operation").notNull(),
+    key: text("key").notNull(),
+    response: text("response", { mode: "json" }).notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.actorId, table.operation, table.key] }),
+    index("idempotency_created").on(table.createdAt),
   ]
 );
 
@@ -273,11 +305,24 @@ export const rateLimitBuckets = sqliteTable("rate_limit_buckets", {
   count: integer("count").notNull(),
 });
 
-export const registrationIntents = sqliteTable("registration_intents", {
-  email: text("email").primaryKey(),
-  name: text("name").notNull(),
-  phone: text("phone").notNull(),
-  claimedAffiliation: text("claimed_affiliation").notNull(),
-  expiresAt: integer("expires_at").notNull(),
-  createdAt: integer("created_at").notNull(),
-});
+export const authSchema = {
+  user: authUsers,
+  session: authSessions,
+  account: authAccounts,
+  verification: authVerifications,
+  rateLimit: authRateLimits,
+};
+
+export const schema = {
+  ...authSchema,
+  chapters,
+  equipmentItems,
+  assets,
+  reservations,
+  reservationLines,
+  reservationAssets,
+  notifications,
+  auditEvents,
+  idempotencyKeys,
+  rateLimitBuckets,
+};

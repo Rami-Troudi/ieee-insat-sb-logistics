@@ -1,59 +1,28 @@
 import { createClient } from "@libsql/client";
-import { randomUUID } from "node:crypto";
-import { createInterface } from "node:readline/promises";
-import { stdin, stdout } from "node:process";
 
 const url = process.env.TURSO_DATABASE_URL;
 const authToken = process.env.TURSO_AUTH_TOKEN;
-if (!url || !authToken || url.startsWith("file:")) {
-  throw new Error("Set production TURSO_DATABASE_URL and TURSO_AUTH_TOKEN before bootstrapping.");
+const email = process.env.SUPERADMIN_EMAIL?.trim().toLowerCase();
+if (!url || !email) throw new Error("Set TURSO_DATABASE_URL and SUPERADMIN_EMAIL.");
+if (/ieee[-_]?ras[-_]?insat/i.test(url)) throw new Error("Refusing to modify the RAS database.");
+if (!url.startsWith("file:") && process.env.CONFIRM_SB_DATABASE !== "true") {
+  throw new Error(
+    "For a remote database, set CONFIRM_SB_DATABASE=true after checking the separate SB database URL."
+  );
 }
 
-const prompt = createInterface({ input: stdin, output: stdout });
 const client = createClient({ url, authToken });
 try {
-  const name = (await prompt.question("Initial superadmin full name: ")).trim();
-  const email = (await prompt.question("Individual staff email: ")).trim().toLowerCase();
-  if (name.length < 3 || name.length > 120 || !/^\S+@\S+\.\S+$/.test(email) || email.length > 254) {
-    throw new Error("Enter a valid name and email address.");
-  }
-  const confirmation = (
-    await prompt.question(
-      "Create this initial superadmin in the connected production database? (yes/no): "
-    )
-  ).trim();
-  if (confirmation !== "yes") throw new Error("Bootstrap cancelled.");
-
-  const transaction = await client.transaction("write");
-  try {
-    const existing = await transaction.execute(
-      "SELECT 1 FROM app_users WHERE role='SUPERADMIN' LIMIT 1"
+  const result = await client.execute({
+    sql: "UPDATE user SET role='SUPERADMIN',updatedAt=? WHERE lower(email)=?",
+    args: [Date.now(), email],
+  });
+  if (Number(result.rowsAffected) !== 1) {
+    throw new Error(
+      "No matching user was updated. The user must sign in once before superadmin access can be assigned."
     );
-    if (existing.rows.length)
-      throw new Error("A superadmin already exists; use the board invite flow instead.");
-    const id = randomUUID();
-    const timestamp = Date.now();
-    await transaction.execute({
-      sql: "INSERT INTO user(id,name,email,emailVerified,createdAt,updatedAt) VALUES(?,?,?,0,?,?)",
-      args: [id, name, email, timestamp, timestamp],
-    });
-    await transaction.execute({
-      sql: `INSERT INTO app_users(id,email,name,role,clearance,clearance_source,affiliation,claimed_affiliation,
-        affiliation_verified,status,data,created_at,updated_at)
-        VALUES(?,?,?,'SUPERADMIN','VI','SUPERADMIN_ROLE','RAS_BOARD','RAS_BOARD',1,'ACTIVE','{}',?,?)`,
-      args: [id, email, name, timestamp, timestamp],
-    });
-    await transaction.commit();
-    console.log(
-      "Initial superadmin created. Sign in using that person's email link and complete the board code challenge."
-    );
-  } catch (error) {
-    await transaction.rollback();
-    throw error;
-  } finally {
-    transaction.close();
   }
+  console.log("Superadmin role assigned to " + email + ".");
 } finally {
-  prompt.close();
   client.close();
 }

@@ -1,88 +1,137 @@
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
 import { createClient } from "@libsql/client";
 
 const url = process.env.TURSO_DATABASE_URL;
 const authToken = process.env.TURSO_AUTH_TOKEN;
-if (!url || !authToken || url.startsWith("file:")) {
-  throw new Error("Set production TURSO_DATABASE_URL and TURSO_AUTH_TOKEN before seeding.");
+if (!url) throw new Error("Set TURSO_DATABASE_URL before seeding inventory.");
+if (/ieee[-_]?ras[-_]?insat/i.test(url)) throw new Error("Refusing to seed the RAS database.");
+if (!url.startsWith("file:") && process.env.ALLOW_REMOTE_SEED !== "true") {
+  throw new Error(
+    "Inventory seed is local-only by default. Set ALLOW_REMOTE_SEED=true to seed a separately configured SB database."
+  );
 }
 
 const client = createClient({ url, authToken });
-const items = JSON.parse(await readFile(resolve("scripts/inventory.seed.json"), "utf8"));
-const now = Date.now();
+const timestamp = Date.now();
+const products = [
+  {
+    code: "ELEC-ARD",
+    name: "Arduino Uno",
+    category: "Microcontrollers",
+    description: "A dependable starting point for embedded builds.",
+    icon: "arduino-board.svg",
+    count: 6,
+  },
+  {
+    code: "ELEC-STM",
+    name: "STM32 Nucleo board",
+    category: "Microcontrollers",
+    description: "Development board for control and sensing projects.",
+    icon: "stm32-board.svg",
+    count: 4,
+  },
+  {
+    code: "MEAS-MUL",
+    name: "Digital multimeter",
+    category: "Measurement",
+    description: "Portable meter for everyday electronics work.",
+    icon: "multimeter.svg",
+    count: 5,
+  },
+  {
+    code: "MEAS-OSC",
+    name: "Oscilloscope",
+    category: "Measurement",
+    description: "Bench instrument for viewing electrical signals.",
+    icon: "oscilloscope.svg",
+    count: 2,
+  },
+  {
+    code: "COMP-RPI",
+    name: "Raspberry Pi 4",
+    category: "Computing",
+    description: "Single-board computer for robotics and vision prototypes.",
+    icon: "raspberry-pi.svg",
+    count: 3,
+  },
+  {
+    code: "TOOL-SOL",
+    name: "Soldering station",
+    category: "Workshop tools",
+    description: "Temperature-controlled station for through-hole and SMD work.",
+    icon: "soldering-station.svg",
+    count: 3,
+  },
+  {
+    code: "ROBO-MOT",
+    name: "DC gear motor",
+    category: "Robotics",
+    description: "Compact motor for small mobile robot builds.",
+    icon: "motor.svg",
+    count: 12,
+  },
+  {
+    code: "SENS-MOD",
+    name: "Sensor module kit",
+    category: "Sensors",
+    description: "A selection of modules for quick sensing experiments.",
+    icon: "sensor-module.svg",
+    count: 5,
+  },
+];
 
 try {
-  for (const item of items) {
-    const sum =
-      item.availableQuantity +
-      item.allocatedQuantity +
-      item.borrowedQuantity +
-      item.damagedQuantity +
-      item.maintenanceQuantity +
-      item.lostQuantity;
-    if (sum !== item.totalQuantity) {
-      throw new Error(
-        `Inventory conservation failed for ${item.id}: ${item.totalQuantity} != ${sum}`
-      );
-    }
-    if (item.trackingMode === "INDIVIDUAL_ASSET" && item.assets.length !== item.totalQuantity) {
-      throw new Error(`Asset count mismatch for ${item.id}`);
-    }
-
+  await client.execute("PRAGMA foreign_keys = ON");
+  const existing = await client.execute("SELECT COUNT(*) AS count FROM equipment_items");
+  if (Number(existing.rows[0]?.count ?? 0) > 0) {
+    console.log("Inventory already has equipment; seed skipped without changing existing records.");
+  } else {
     await client.execute({
-      sql: `INSERT INTO inventory (
-        id,name,category,equipment_class,tracking_mode,total_quantity,available_quantity,
-        allocated_quantity,borrowed_quantity,damaged_quantity,maintenance_quantity,lost_quantity,
-        borrower_visible,data,updated_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(id) DO UPDATE SET
-        name=excluded.name,
-        category=excluded.category,
-        equipment_class=excluded.equipment_class,
-        tracking_mode=excluded.tracking_mode,
-        total_quantity=excluded.total_quantity,
-        available_quantity=excluded.available_quantity,
-        allocated_quantity=excluded.allocated_quantity,
-        borrowed_quantity=excluded.borrowed_quantity,
-        damaged_quantity=excluded.damaged_quantity,
-        maintenance_quantity=excluded.maintenance_quantity,
-        lost_quantity=excluded.lost_quantity,
-        borrower_visible=excluded.borrower_visible,
-        data=excluded.data,
-        updated_at=excluded.updated_at`,
-      args: [
-        item.id,
-        item.name,
-        item.category,
-        item.equipmentClass,
-        item.trackingMode,
-        item.totalQuantity,
-        item.availableQuantity,
-        item.allocatedQuantity,
-        item.borrowedQuantity,
-        item.damagedQuantity,
-        item.maintenanceQuantity,
-        item.lostQuantity,
-        item.borrowerVisible ? 1 : 0,
-        JSON.stringify(item),
-        now,
-      ],
+      sql: "INSERT INTO chapters(id,name,short_code,active,created_at,updated_at) VALUES(?,?,?,1,?,?)",
+      args: ["chapter-robotics", "Robotics Club", "ROBO", timestamp, timestamp],
     });
-
-    for (const asset of item.assets) {
+    await client.execute({
+      sql: "INSERT INTO chapters(id,name,short_code,active,created_at,updated_at) VALUES(?,?,?,1,?,?)",
+      args: ["chapter-embedded", "Embedded Systems Club", "EMBED", timestamp, timestamp],
+    });
+    for (const product of products) {
+      const itemId = crypto.randomUUID();
       await client.execute({
-        sql: `INSERT INTO inventory_assets(id,item_id,serial_number,state,data)
-              VALUES(?,?,?,?,?)
-              ON CONFLICT(id) DO UPDATE SET
-                serial_number=excluded.serial_number,
-                state=excluded.state,
-                data=excluded.data`,
-        args: [asset.id, item.id, asset.serialNumber, asset.state, JSON.stringify(asset)],
+        sql: "INSERT INTO equipment_items(id,name,description,category,image_url,active,created_at,updated_at) VALUES(?,?,?,?,?,1,?,?)",
+        args: [
+          itemId,
+          product.name,
+          product.description,
+          product.category,
+          "/equipment/" + product.icon,
+          timestamp,
+          timestamp,
+        ],
       });
+      for (let number = 1; number <= product.count; number += 1) {
+        const qrToken = [...crypto.getRandomValues(new Uint8Array(32))]
+          .map((byte) => byte.toString(16).padStart(2, "0"))
+          .join("");
+        await client.execute({
+          sql: "INSERT INTO assets(id,equipment_item_id,asset_code,qr_token,state,active,created_at,updated_at) VALUES(?,?,?,?, 'AVAILABLE',1,?,?)",
+          args: [
+            crypto.randomUUID(),
+            itemId,
+            product.code + "-" + String(number).padStart(2, "0"),
+            qrToken,
+            timestamp,
+            timestamp,
+          ],
+        });
+      }
     }
+    console.log(
+      "Seeded " +
+        products.length +
+        " equipment types and " +
+        products.reduce((sum, item) => sum + item.count, 0) +
+        " individually tracked assets."
+    );
   }
-  console.log(`Seeded ${items.length} production inventory items.`);
 } finally {
   client.close();
 }

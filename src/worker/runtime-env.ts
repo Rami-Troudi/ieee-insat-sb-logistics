@@ -1,66 +1,65 @@
-import { rateLimit } from "./security";
-import { createAuthDatabase, createLibSqlClient, LibSqlD1Database } from "./database";
-import type { Env, RateLimit } from "./env";
+import type { Client } from "@libsql/client";
+import type { AppDatabase } from "./database";
+import { createDatabase, createLibSqlClient } from "./database";
+import type { Env, RuntimeEnvironment } from "./env";
 
 let cachedUrl: string | undefined;
-let cachedClient: ReturnType<typeof createLibSqlClient> | undefined;
-let cachedDatabase: LibSqlD1Database | undefined;
-let cachedAuthDatabase: ReturnType<typeof createAuthDatabase> | undefined;
+let cachedToken: string | undefined;
+let cachedClient: Client | undefined;
+let cachedDatabase: AppDatabase | undefined;
 
 function database(url: string, authToken?: string) {
-  if (!cachedClient || cachedUrl !== url) {
+  if (!cachedClient || cachedUrl !== url || cachedToken !== authToken) {
     cachedClient?.close();
     cachedUrl = url;
+    cachedToken = authToken;
     cachedClient = createLibSqlClient(url, authToken);
-    cachedDatabase = new LibSqlD1Database(cachedClient);
-    cachedAuthDatabase = createAuthDatabase(cachedClient);
+    cachedDatabase = createDatabase(cachedClient);
   }
-  return { DB: cachedDatabase!, AUTH_DATABASE: cachedAuthDatabase! };
+  return { CLIENT: cachedClient!, DB: cachedDatabase! };
 }
 
-function databaseRateLimit(
-  db: LibSqlD1Database,
-  prefix: string,
-  max: number,
-  windowSeconds: number
-): RateLimit {
-  return {
-    limit: async ({ key }) => ({
-      success: await rateLimit(db, `${prefix}:${key}`, max, windowSeconds),
-    }),
-  };
-}
-
-export function createRuntimeEnv(source: NodeJS.ProcessEnv = process.env): Env {
+export async function createRuntimeEnv(source: NodeJS.ProcessEnv = process.env): Promise<Env> {
   const url = source.TURSO_DATABASE_URL;
   const authToken = source.TURSO_AUTH_TOKEN;
   const secret = source.BETTER_AUTH_SECRET;
   const remoteDatabase = Boolean(url && !url.startsWith("file:"));
-  const required = [url, secret];
-  if (
-    required.some((value) => !value) ||
-    (remoteDatabase && !authToken) ||
-    (secret?.length ?? 0) < 32
-  ) {
-    throw new Error("Required server configuration is missing");
+  if (!url || !secret || secret.length < 32 || (remoteDatabase && !authToken)) {
+    throw new Error(
+      "Set TURSO_DATABASE_URL, BETTER_AUTH_SECRET (32+ characters), and a remote TURSO_AUTH_TOKEN."
+    );
+  }
+  if (/ieee[-_]?ras[-_]?insat/i.test(url))
+    throw new Error("The reservation app refuses to connect to the RAS database.");
+
+  const vercelEnvironment = source.VERCEL_ENV;
+  const environment: RuntimeEnvironment =
+    source.NODE_ENV === "test"
+      ? "test"
+      : vercelEnvironment === "production"
+        ? "production"
+        : vercelEnvironment === "preview"
+          ? "preview"
+          : "development";
+
+  if (environment === "production" && !source.APP_ORIGIN) {
+    throw new Error("APP_ORIGIN must be set to the separate IEEE INSAT SB application origin.");
   }
 
-  const { DB, AUTH_DATABASE } = database(url!, authToken);
+  const { CLIENT, DB } = database(url, authToken);
+  await CLIENT.execute("PRAGMA foreign_keys = ON");
   return {
+    CLIENT,
     DB,
-    AUTH_DATABASE,
-    API_RATE_LIMITER: databaseRateLimit(DB, "api", 600, 60),
-    AUTH_RATE_LIMITER: databaseRateLimit(DB, "auth", 20, 60),
     APP_ORIGIN: source.APP_ORIGIN,
-    ENVIRONMENT: source.VERCEL_ENV === "preview" ? "staging" : "production",
-    BETTER_AUTH_SECRET: secret!,
+    ENVIRONMENT: environment,
+    BETTER_AUTH_SECRET: secret,
     BREVO_API_KEY: source.BREVO_API_KEY,
     BREVO_SENDER_EMAIL: source.BREVO_SENDER_EMAIL,
     BREVO_SENDER_NAME: source.BREVO_SENDER_NAME,
-    TURNSTILE_SECRET_KEY: source.TURNSTILE_SECRET_KEY,
-    TURNSTILE_SITE_KEY: source.TURNSTILE_SITE_KEY,
-    CRON_SECRET: source.CRON_SECRET,
     VERCEL_URL: source.VERCEL_URL,
     VERCEL_PROJECT_PRODUCTION_URL: source.VERCEL_PROJECT_PRODUCTION_URL,
+    API_RATE_LIMIT_PER_MINUTE: 1200,
+    AUTH_RATE_LIMIT_PER_MINUTE: 10,
   };
 }

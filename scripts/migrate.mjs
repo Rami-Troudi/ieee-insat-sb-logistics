@@ -4,12 +4,18 @@ import { resolve } from "node:path";
 
 const url = process.env.TURSO_DATABASE_URL;
 const authToken = process.env.TURSO_AUTH_TOKEN;
+if (url && /ieee[-_]?ras[-_]?insat/i.test(url)) {
+  throw new Error(
+    "Refusing to migrate the RAS database; configure a separate IEEE INSAT SB database."
+  );
+}
 if (!url || (!url.startsWith("file:") && !authToken)) {
   throw new Error("Set TURSO_DATABASE_URL and, for a remote database, TURSO_AUTH_TOKEN.");
 }
 
 const client = createClient({ url, authToken });
 try {
+  await client.execute("PRAGMA foreign_keys = ON");
   await client.execute(`CREATE TABLE IF NOT EXISTS app_schema_migrations (
     name TEXT PRIMARY KEY,
     applied_at INTEGER NOT NULL

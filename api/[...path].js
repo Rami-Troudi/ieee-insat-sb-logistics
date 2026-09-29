@@ -1,1708 +1,55 @@
+var __defProp = Object.defineProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+
 // src/worker/serverless.ts
 import { getRequestListener } from "@hono/node-server";
 
 // src/worker/index.ts
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import { secureHeaders } from "hono/secure-headers";
 import { requestId } from "hono/request-id";
-
-// src/worker/board-rpc.ts
-var stamp = () => Date.now();
-var iso = (n = stamp()) => new Date(n).toISOString();
-var id = (prefix) => `${prefix}-${crypto.randomUUID()}`;
-var decode = (s) => JSON.parse(s);
-var scopedKey = async (actorId, key) => [
-  ...new Uint8Array(
-    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${actorId}:${key}`))
-  )
-].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-var ok = (body, status = 200) => ({ status, body });
-var fail = (status, code, message) => ({
-  status,
-  body: { error: { code, message } }
-});
-async function readOne(env, kind, recordId) {
-  const row = await env.DB.prepare("SELECT * FROM record_store WHERE kind=? AND id=?").bind(kind, recordId).first();
-  return row ? decode(row.data) : null;
-}
-async function readMany(env, kind, limit = 500) {
-  const result = await env.DB.prepare(
-    "SELECT data FROM record_store WHERE kind=? ORDER BY updated_at DESC LIMIT ?"
-  ).bind(kind, limit).all();
-  return (result.results ?? []).map((row) => decode(row.data));
-}
-function put(env, kind, record, ownerId = null, status = null, expiry = null) {
-  return env.DB.prepare(
-    `INSERT INTO record_store(kind,id,owner_id,status,expires_at,data,updated_at) VALUES(?,?,?,?,?,?,?)
-    ON CONFLICT(kind,id) DO UPDATE SET owner_id=excluded.owner_id,status=excluded.status,expires_at=excluded.expires_at,data=excluded.data,updated_at=excluded.updated_at`
-  ).bind(kind, record.id, ownerId, status, expiry, JSON.stringify(record), stamp());
-}
-function audit(env, actor, entityType, entityId, action, data = {}) {
-  return env.DB.prepare(
-    "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)"
-  ).bind(id("audit"), actor.id, entityType, entityId, action, stamp(), JSON.stringify(data));
-}
-function notify(env, userId, title, message, type, metadata = {}) {
-  const createdAt = iso();
-  const notification = {
-    id: id("notif"),
-    userId,
-    title,
-    message,
-    type,
-    read: false,
-    createdAt,
-    ...Object.keys(metadata).length ? { metadata } : {}
-  };
-  return put(env, "notification", notification, userId, "UNREAD");
-}
-var isFresh = (method) => [
-  "createItem",
-  "mutateStock",
-  "updateAsset",
-  "reviewRequest",
-  "rejectEntireRequest",
-  "confirmHandover",
-  "confirmReturn",
-  "updateDueDate",
-  "releaseAllocation",
-  "createProject",
-  "updateProject",
-  "assignMember",
-  "removeMember",
-  "startAudit",
-  "recordCounts",
-  "reconcileItem",
-  "completeAudit",
-  "createIncident",
-  "resolveIncident",
-  "issueStrike",
-  "overturnStrike",
-  "recordCompensation",
-  "updateCompensationStatus",
-  "processUser",
-  "updateClearance",
-  "updateRole",
-  "updateStatus",
-  "createUser",
-  "removeUser",
-  "exportCsv",
-  "logEvent"
-].includes(method);
-var superadminOnly = (service, method, args) => service === "user" && ["updateClearance", "updateRole", "updateStatus"].includes(method) || service === "export" && ["USERS", "AUDITS", "STRIKES", "INCIDENTS", "COMPENSATIONS", "AUDIT_LOG"].includes(args[0]);
-async function dispatchBoardRpc(env, actor, input) {
-  if (!input || typeof input !== "object") return fail(400, "VALIDATION", "Invalid operation");
-  const { service, method, args } = input;
-  if (typeof service !== "string" || typeof method !== "string" || !Array.isArray(args) || args.length > 8)
-    return fail(400, "VALIDATION", "Invalid operation");
-  if (isFresh(method)) {
-    const session = await env.DB.prepare(
-      "SELECT fresh_until,revoked_at FROM staff_sessions WHERE user_id=?"
-    ).bind(actor.id).first();
-    if (!session || session.revoked_at || session.fresh_until <= stamp())
-      return fail(403, "FRESH_AUTH_REQUIRED", "Reverify with a new staff code");
-  }
-  if (superadminOnly(service, method, args) && actor.role !== "SUPERADMIN")
-    return fail(403, "FORBIDDEN", "Superadmin access is required");
-  if (service === "inventory") {
-    if (method === "getItems") {
-      const rows = await env.DB.prepare("SELECT data FROM inventory ORDER BY name LIMIT 1000").all();
-      const filter = args[0] ?? {};
-      return ok(
-        (rows.results ?? []).map((r) => decode(r.data)).filter(
-          (item) => (!filter.search || `${item.name} ${item.description} ${item.category}`.toLowerCase().includes(String(filter.search).toLowerCase())) && (!filter.category || item.category === filter.category) && (!filter.equipmentClass || item.equipmentClass === filter.equipmentClass) && (!filter.lowStockOnly || item.availableQuantity <= 3)
-        )
-      );
-    }
-    if (method === "getItemById") {
-      const row = await env.DB.prepare("SELECT data FROM inventory WHERE id=?").bind(args[0]).first();
-      return ok(row ? decode(row.data) : null);
-    }
-    if (method === "createItem") {
-      const data = args[0];
-      if (!data || typeof data.name !== "string" || data.name.trim().length < 1 || data.name.length > 160 || typeof data.category !== "string" || data.category.length > 80 || !["A", "B", "C", "D", "E", "F", "G"].includes(data.equipmentClass) || !["QUANTITY", "INDIVIDUAL_ASSET"].includes(data.trackingMode) || !Number.isInteger(data.totalQuantity) || data.totalQuantity < 0 || data.totalQuantity > 1e5)
-        return fail(400, "VALIDATION", "Invalid inventory item");
-      const initialAssets = data.initialAssets ?? [];
-      const serials = Array.isArray(initialAssets) ? initialAssets.map(
-        (asset) => typeof asset?.serialNumber === "string" ? asset.serialNumber.trim() : ""
-      ) : [];
-      if (!Array.isArray(initialAssets) || data.trackingMode === "INDIVIDUAL_ASSET" && initialAssets.length !== data.totalQuantity || data.trackingMode === "QUANTITY" && initialAssets.length > 0 || serials.some((serial) => !serial || serial.length > 120) || new Set(serials).size !== serials.length)
-        return fail(
-          400,
-          "VALIDATION",
-          "Enter a unique serial number for every individually tracked asset"
-        );
-      const item = {
-        ...data,
-        id: id("item"),
-        availableQuantity: data.totalQuantity,
-        allocatedQuantity: 0,
-        borrowedQuantity: 0,
-        damagedQuantity: 0,
-        maintenanceQuantity: 0,
-        lostQuantity: 0,
-        borrowerVisible: data.borrowerVisible ?? ["C", "E"].includes(data.equipmentClass),
-        assets: initialAssets.map((asset, index2) => ({
-          serialNumber: serials[index2],
-          condition: asset.condition ?? "GOOD",
-          id: id("asset"),
-          state: "AVAILABLE"
-        }))
-      };
-      const statements = [
-        env.DB.prepare(
-          `INSERT INTO inventory(id,name,category,equipment_class,tracking_mode,total_quantity,available_quantity,allocated_quantity,borrowed_quantity,damaged_quantity,maintenance_quantity,lost_quantity,borrower_visible,data,updated_at)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-        ).bind(
-          item.id,
-          item.name,
-          item.category,
-          item.equipmentClass,
-          item.trackingMode,
-          item.totalQuantity,
-          item.availableQuantity,
-          0,
-          0,
-          0,
-          0,
-          0,
-          item.borrowerVisible ? 1 : 0,
-          JSON.stringify(item),
-          stamp()
-        ),
-        audit(env, actor, "INVENTORY", item.id, "INVENTORY_CREATED")
-      ];
-      for (const asset of item.assets)
-        statements.push(
-          env.DB.prepare(
-            "INSERT INTO inventory_assets(id,item_id,serial_number,state,data) VALUES(?,?,?,?,?)"
-          ).bind(asset.id, item.id, asset.serialNumber, asset.state, JSON.stringify(asset))
-        );
-      try {
-        await env.DB.batch(statements);
-      } catch {
-        return fail(409, "CONFLICT", "Inventory item or serial number already exists");
-      }
-      return ok(item, 201);
-    }
-    if (method === "setBorrowerVisibility") {
-      const [itemId, visible] = args;
-      if (typeof visible !== "boolean")
-        return fail(400, "VALIDATION", "Visibility must be true or false");
-      const row = await env.DB.prepare("SELECT data,updated_at FROM inventory WHERE id=?").bind(itemId).first();
-      if (!row) return fail(404, "NOT_FOUND", "Inventory item not found");
-      const item = decode(row.data);
-      item.borrowerVisible = visible;
-      try {
-        await env.DB.batch([
-          env.DB.prepare(
-            "UPDATE inventory SET borrower_visible=?,data=?,updated_at=CASE WHEN updated_at=? THEN ? ELSE -1 END WHERE id=?"
-          ).bind(
-            visible ? 1 : 0,
-            JSON.stringify(item),
-            row.updated_at,
-            Math.max(stamp(), row.updated_at + 1),
-            itemId
-          ),
-          audit(
-            env,
-            actor,
-            "INVENTORY",
-            itemId,
-            visible ? "VISIBILITY_ENABLED" : "VISIBILITY_DISABLED"
-          )
-        ]);
-      } catch {
-        return fail(409, "CONFLICT", "Inventory changed; reload and retry");
-      }
-      return ok(item);
-    }
-    if (method === "mutateStock") return mutateStock(env, actor, args[0]);
-    if (method === "updateAsset") return updateAsset(env, actor, args[0]);
-    if (method === "getMovementHistory") {
-      const rows = await env.DB.prepare(
-        `SELECT data FROM record_store WHERE kind='inventory_event' ${args[0] ? "AND owner_id=?" : ""} ORDER BY updated_at DESC LIMIT 500`
-      ).bind(...args[0] ? [args[0]] : []).all();
-      return ok((rows.results ?? []).map((r) => decode(r.data)));
-    }
-  }
-  if (service === "request") {
-    if (method === "getRequests") {
-      const filter = args[0] ?? {};
-      const rows = await env.DB.prepare(
-        "SELECT data FROM requests ORDER BY created_at DESC LIMIT 500"
-      ).all();
-      return ok(
-        (rows.results ?? []).map((r) => decode(r.data)).filter(
-          (r) => (!filter.decisionStatus || filter.decisionStatus === "ALL" || r.decisionStatus === filter.decisionStatus) && (!filter.handoverStatus || filter.handoverStatus === "ALL" || r.handoverStatus === filter.handoverStatus) && (!filter.search || `${r.userName} ${r.userEmail} ${r.items.map((i) => i.itemName).join(" ")}`.toLowerCase().includes(String(filter.search).toLowerCase()))
-        )
-      );
-    }
-    if (method === "getRequestById") {
-      const row = await env.DB.prepare("SELECT data FROM requests WHERE id=?").bind(args[0]).first();
-      return ok(row ? decode(row.data) : null);
-    }
-    if (method === "reviewRequest") return reviewRequest(env, actor, args[0]);
-    if (method === "rejectEntireRequest") return rejectRequest(env, actor, args[0], args[1]);
-    if (method === "confirmHandover") return handover(env, actor, args[0]);
-  }
-  if (service === "loan") {
-    if (method === "getLoans") return ok(await readMany(env, "loan"));
-    if (method === "getLoanById") return ok(await readOne(env, "loan", String(args[0])));
-    if (method === "confirmReturn") return confirmReturn(env, actor, args[0]);
-    if (method === "updateDueDate") {
-      const [loanId, dueDate] = args;
-      if (!Number.isFinite(Date.parse(dueDate))) return fail(400, "VALIDATION", "Invalid due date");
-      const loan = await readOne(env, "loan", loanId);
-      if (!loan) return fail(404, "NOT_FOUND", "Loan not found");
-      loan.dueDate = dueDate;
-      loan.updatedAt = iso();
-      await env.DB.batch([
-        put(env, "loan", loan, loan.userId, loan.status),
-        audit(env, actor, "LOAN", loanId, "DUE_DATE_UPDATED")
-      ]);
-      return ok(loan);
-    }
-  }
-  if (service === "allocation") {
-    if (method === "getAllocations") {
-      const f = args[0] ?? {};
-      return ok(
-        (await readMany(env, "allocation")).filter(
-          (a) => (!f.requestId || a.requestId === f.requestId) && (!f.itemId || a.itemId === f.itemId) && (!f.status || a.status === f.status)
-        )
-      );
-    }
-    if (method === "releaseAllocation") {
-      const allocation = await readOne(env, "allocation", String(args[0]));
-      if (!allocation) return fail(404, "NOT_FOUND", "Allocation not found");
-      if (allocation.status !== "ACTIVE")
-        return fail(409, "CONFLICT", "Allocation is no longer active");
-      if (Date.parse(allocation.expiresAt) <= stamp()) return expireOne(env, actor, allocation);
-      allocation.releaseReason = String(args[1] ?? "").slice(0, 1e3);
-      return releaseOne(env, actor, allocation, "RELEASED");
-    }
-    if (method === "checkAndExpireAllocations") return ok(await expireDue(env, actor));
-  }
-  const generic = await genericRecords(env, actor, service, method, args);
-  if (generic) return generic;
-  return fail(501, "NOT_IMPLEMENTED", "This board operation is not available yet");
-}
-async function mutateStock(env, actor, payload) {
-  if (!payload || typeof payload.itemId !== "string" || !Number.isInteger(payload.quantity) || payload.quantity === 0 || Math.abs(payload.quantity) > 1e5 || typeof payload.reason !== "string" || !payload.reason.trim() || payload.reason.length > 1e3)
-    return fail(400, "VALIDATION", "Stock movement details are invalid");
-  const sensitive = ["CORRECT", "REMOVE", "RETIRE", "CONSUME"].includes(payload.type);
-  if (sensitive && actor.role !== "SUPERADMIN")
-    return fail(403, "FORBIDDEN", "Superadmin access is required for this stock correction");
-  if (payload.type !== "CORRECT" && payload.quantity < 1)
-    return fail(400, "VALIDATION", "Stock movement quantity must be positive");
-  const row = await env.DB.prepare("SELECT data,updated_at FROM inventory WHERE id=?").bind(payload.itemId).first();
-  if (!row) return fail(404, "NOT_FOUND", "Inventory item not found");
-  const item = decode(row.data);
-  const before = {
-    total: item.totalQuantity,
-    available: item.availableQuantity,
-    allocated: item.allocatedQuantity,
-    borrowed: item.borrowedQuantity,
-    damaged: item.damagedQuantity,
-    maintenance: item.maintenanceQuantity,
-    lost: item.lostQuantity
-  };
-  const q = Math.abs(payload.quantity);
-  const selected = payload.assetIds ?? (payload.assetId ? [payload.assetId] : []);
-  const assetUpdates = [];
-  const assetDeletes = [];
-  const assetAdds = [];
-  const touched = [];
-  const requireAssets = (count, state) => {
-    if (item.trackingMode === "QUANTITY") {
-      if (selected.length)
-        throw new Error("Quantity-tracked inventory does not accept asset identifiers");
-      return [];
-    }
-    if (selected.length !== count || new Set(selected).size !== count)
-      throw new Error(`Select exactly ${count} individual assets`);
-    const assets = selected.map(
-      (assetId) => item.assets?.find((asset) => asset.id === assetId)
-    );
-    if (assets.some((asset) => !asset || asset.state !== state))
-      throw new Error("One or more assets are not in the required stock state");
-    return assets;
-  };
-  const addAssets = (count) => {
-    if (selected.length)
-      throw new Error("Additions require new serial numbers, not existing asset IDs");
-    if (item.trackingMode === "QUANTITY") {
-      if (payload.newAssets?.length)
-        throw new Error("Quantity-tracked inventory does not accept asset serial numbers");
-      return [];
-    }
-    if (!Array.isArray(payload.newAssets) || payload.newAssets.length !== count)
-      throw new Error(`Enter serial numbers for all ${count} added units`);
-    const existing = new Set((item.assets ?? []).map((asset) => asset.serialNumber));
-    const serials = payload.newAssets.map(
-      (asset) => typeof asset.serialNumber === "string" ? asset.serialNumber.trim() : ""
-    );
-    if (serials.some((serial) => !serial || serial.length > 120) || new Set(serials).size !== serials.length || serials.some((serial) => existing.has(serial)))
-      throw new Error("Added asset serial numbers must be unique and nonempty");
-    const added = payload.newAssets.map((asset, index2) => ({
-      id: id("asset"),
-      serialNumber: serials[index2],
-      condition: asset.condition ?? "GOOD",
-      state: "AVAILABLE"
-    }));
-    item.assets ??= [];
-    item.assets.push(...added);
-    assetAdds.push(...added);
-    touched.push(...added.map((asset) => asset.id));
-    return added;
-  };
-  try {
-    if (payload.type === "ADD" || payload.type === "CORRECT" && payload.quantity > 0) {
-      addAssets(q);
-      item.totalQuantity += q;
-      item.availableQuantity += q;
-    } else if (payload.type === "REMOVE" || payload.type === "RETIRE" || payload.type === "CONSUME" || payload.type === "CORRECT" && payload.quantity < 0) {
-      if (item.availableQuantity < q)
-        return fail(409, "CONFLICT", "Only available units can be removed");
-      const assets = requireAssets(q, "AVAILABLE");
-      if (assets.length) {
-        item.assets = item.assets.filter((asset) => !selected.includes(asset.id));
-        assetDeletes.push(...selected);
-        touched.push(...selected);
-      }
-      item.totalQuantity -= q;
-      item.availableQuantity -= q;
-    } else if (["DAMAGE", "REPAIR", "RECOVER"].includes(payload.type)) {
-      const [from, to, fromState, toState, condition] = payload.type === "DAMAGE" ? ["availableQuantity", "damagedQuantity", "AVAILABLE", "DAMAGED", "DAMAGED"] : payload.type === "REPAIR" ? ["damagedQuantity", "availableQuantity", "DAMAGED", "AVAILABLE", "GOOD"] : ["lostQuantity", "availableQuantity", "LOST", "AVAILABLE", "GOOD"];
-      if (item[from] < q) return fail(409, "CONFLICT", "Insufficient stock in the source state");
-      const assets = requireAssets(q, fromState);
-      if (assets.length)
-        for (const asset of assets) {
-          asset.state = toState;
-          asset.condition = condition;
-          assetUpdates.push(asset);
-          touched.push(asset.id);
-        }
-      item[from] -= q;
-      item[to] += q;
-    } else
-      return fail(
-        400,
-        "VALIDATION",
-        "This stock movement requires its dedicated loan or return workflow"
-      );
-  } catch (error) {
-    return fail(
-      400,
-      "VALIDATION",
-      error instanceof Error ? error.message : "Invalid stock movement"
-    );
-  }
-  if (item.totalQuantity < 0 || [
-    "availableQuantity",
-    "allocatedQuantity",
-    "borrowedQuantity",
-    "damagedQuantity",
-    "maintenanceQuantity",
-    "lostQuantity"
-  ].some((k) => item[k] < 0) || item.totalQuantity !== item.availableQuantity + item.allocatedQuantity + item.borrowedQuantity + item.damagedQuantity + item.maintenanceQuantity + item.lostQuantity)
-    return fail(409, "CONFLICT", "Stock change violates inventory conservation");
-  const timestamp = iso();
-  const event = {
-    id: id("iev"),
-    itemId: item.id,
-    itemName: item.name,
-    type: payload.type,
-    quantity: payload.quantity,
-    beforeState: before,
-    afterState: {
-      total: item.totalQuantity,
-      available: item.availableQuantity,
-      allocated: item.allocatedQuantity,
-      borrowed: item.borrowedQuantity,
-      damaged: item.damagedQuantity,
-      maintenance: item.maintenanceQuantity,
-      lost: item.lostQuantity
-    },
-    reason: payload.reason.trim(),
-    actorUserId: actor.id,
-    actorName: actor.name,
-    timestamp,
-    ...touched.length ? { assetIds: touched } : {}
-  };
-  const updatedAt = Math.max(stamp(), row.updated_at + 1);
-  const stmts = [
-    env.DB.prepare(
-      "UPDATE inventory SET total_quantity=?,available_quantity=?,allocated_quantity=?,borrowed_quantity=?,damaged_quantity=?,maintenance_quantity=?,lost_quantity=?,data=?,updated_at=CASE WHEN updated_at=? THEN ? ELSE -1 END WHERE id=?"
-    ).bind(
-      item.totalQuantity,
-      item.availableQuantity,
-      item.allocatedQuantity,
-      item.borrowedQuantity,
-      item.damagedQuantity,
-      item.maintenanceQuantity,
-      item.lostQuantity,
-      JSON.stringify(item),
-      row.updated_at,
-      updatedAt,
-      item.id
-    ),
-    ...assetDeletes.map(
-      (assetId) => env.DB.prepare(
-        "DELETE FROM inventory_assets WHERE id=? AND item_id=? AND state='AVAILABLE'"
-      ).bind(assetId, item.id)
-    ),
-    ...assetAdds.map(
-      (asset) => env.DB.prepare(
-        "INSERT INTO inventory_assets(id,item_id,serial_number,state,data) VALUES(?,?,?,?,?)"
-      ).bind(asset.id, item.id, asset.serialNumber, asset.state, JSON.stringify(asset))
-    ),
-    ...assetUpdates.map(
-      (asset) => env.DB.prepare(
-        "UPDATE inventory_assets SET state=CASE WHEN state IN ('AVAILABLE','DAMAGED','LOST') THEN ? ELSE 'INVALID' END,data=? WHERE id=? AND item_id=?"
-      ).bind(asset.state, JSON.stringify(asset), asset.id, item.id)
-    ),
-    put(env, "inventory_event", event, item.id, event.type),
-    audit(env, actor, "INVENTORY", item.id, "STOCK_" + payload.type, { quantity: q })
-  ];
-  try {
-    await env.DB.batch(stmts);
-  } catch {
-    return fail(409, "CONFLICT", "Inventory or asset state changed; reload and try again");
-  }
-  return ok({ item, event });
-}
-async function updateAsset(env, actor, payload) {
-  if (!payload?.itemId || !payload?.assetId)
-    return fail(400, "VALIDATION", "Asset details are invalid");
-  const row = await env.DB.prepare("SELECT data,updated_at FROM inventory WHERE id=?").bind(payload.itemId).first();
-  if (!row) return fail(404, "NOT_FOUND", "Inventory item not found");
-  const item = decode(row.data);
-  const asset = item.assets?.find((entry) => entry.id === payload.assetId);
-  if (!asset) return fail(404, "NOT_FOUND", "Asset not found");
-  const oldState = asset.state;
-  const nextState = payload.state ?? (typeof payload.isAvailable === "boolean" ? payload.isAvailable ? "AVAILABLE" : payload.condition === "DAMAGED" ? "DAMAGED" : "MAINTENANCE" : oldState);
-  const buckets = {
-    AVAILABLE: "availableQuantity",
-    ALLOCATED: "allocatedQuantity",
-    BORROWED: "borrowedQuantity",
-    DAMAGED: "damagedQuantity",
-    MAINTENANCE: "maintenanceQuantity",
-    LOST: "lostQuantity"
-  };
-  if (!buckets[nextState] || !(/* @__PURE__ */ new Set(["AVAILABLE", "DAMAGED", "MAINTENANCE"])).has(oldState) || !(/* @__PURE__ */ new Set(["AVAILABLE", "DAMAGED", "MAINTENANCE"])).has(nextState))
-    return fail(
-      409,
-      "CONFLICT",
-      "Allocation, custody, and loss states use their dedicated workflows"
-    );
-  if (payload.condition && !(/* @__PURE__ */ new Set(["GOOD", "MINOR_ISSUE", "DAMAGED", "MAINTENANCE", "LOST"])).has(payload.condition))
-    return fail(400, "VALIDATION", "Asset condition is invalid");
-  asset.state = nextState;
-  if (payload.condition) asset.condition = payload.condition;
-  if (typeof payload.notes === "string") asset.notes = payload.notes.slice(0, 1e3);
-  if (oldState !== nextState) {
-    item[buckets[oldState]]--;
-    item[buckets[nextState]]++;
-  }
-  const updatedAt = Math.max(stamp(), row.updated_at + 1);
-  try {
-    await env.DB.batch([
-      env.DB.prepare(
-        "UPDATE inventory SET available_quantity=?,damaged_quantity=?,maintenance_quantity=?,data=?,updated_at=CASE WHEN updated_at=? THEN ? ELSE -1 END WHERE id=?"
-      ).bind(
-        item.availableQuantity,
-        item.damagedQuantity,
-        item.maintenanceQuantity,
-        JSON.stringify(item),
-        row.updated_at,
-        updatedAt,
-        item.id
-      ),
-      env.DB.prepare(
-        "UPDATE inventory_assets SET state=CASE WHEN state=? THEN ? ELSE 'INVALID' END,data=? WHERE id=? AND item_id=?"
-      ).bind(oldState, nextState, JSON.stringify(asset), asset.id, item.id),
-      audit(env, actor, "INVENTORY", item.id, "ASSET_UPDATED", {
-        assetId: asset.id,
-        from: oldState,
-        to: nextState
-      })
-    ]);
-  } catch {
-    return fail(409, "CONFLICT", "Asset state changed; reload and try again");
-  }
-  return ok(asset);
-}
-async function reviewRequest(env, actor, payload) {
-  if (!payload || typeof payload.requestId !== "string" || !Array.isArray(payload.lines) || payload.lines.length > 40)
-    return fail(400, "VALIDATION", "Request review is invalid");
-  const row = await env.DB.prepare("SELECT data FROM requests WHERE id=?").bind(payload.requestId).first();
-  if (!row) return fail(404, "NOT_FOUND", "Request not found");
-  const request = decode(row.data);
-  if (request.decisionStatus !== "PENDING")
-    return fail(409, "CONFLICT", "Request has already been reviewed");
-  if (payload.lines.length !== request.items.length || new Set(payload.lines.map((l) => l.lineId)).size !== request.items.length)
-    return fail(400, "VALIDATION", "Review each request line exactly once");
-  const member = await env.DB.prepare("SELECT status,clearance FROM app_users WHERE id=?").bind(request.userId).first();
-  if (!member || member.status !== "ACTIVE")
-    return fail(409, "CONFLICT", "Member is not eligible to borrow");
-  const strikes = await env.DB.prepare(
-    "SELECT COUNT(*) AS count FROM record_store WHERE kind='strike' AND owner_id=? AND status='ACTIVE'"
-  ).bind(request.userId).first();
-  if ((strikes?.count ?? 0) >= 4) return fail(409, "CONFLICT", "Member is not eligible to borrow");
-  const allocations = [];
-  const statements = [];
-  const timestamp = iso();
-  let total = 0;
-  for (const choice of payload.lines) {
-    const line = request.items.find((l) => l.id === choice.lineId);
-    if (!line || !Number.isInteger(choice.approvedQuantity) || choice.approvedQuantity < 0 || choice.approvedQuantity > line.requestedQuantity || !["C", "E"].includes(line.equipmentClass))
-      return fail(400, "VALIDATION", "Invalid line quantity or request class");
-    line.approvedQuantity = choice.approvedQuantity;
-    line.status = choice.approvedQuantity ? "APPROVED" : "REJECTED";
-    if (!choice.approvedQuantity) {
-      line.rejectionReason = String(choice.rejectionReason ?? "Not approved").slice(0, 500);
-      continue;
-    }
-    const itemRow = await env.DB.prepare("SELECT data,updated_at FROM inventory WHERE id=?").bind(line.itemId).first();
-    if (!itemRow) return fail(409, "CONFLICT", "Inventory item no longer exists");
-    const item = decode(itemRow.data);
-    const quantity = choice.approvedQuantity;
-    let assetIds = [];
-    if (item.trackingMode === "INDIVIDUAL_ASSET") {
-      assetIds = choice.assignedAssetIds ?? [];
-      if (!Array.isArray(assetIds) || assetIds.length !== quantity || new Set(assetIds).size !== quantity)
-        return fail(400, "VALIDATION", "Select exactly the approved number of unique assets");
-      const selected = item.assets?.filter((asset) => assetIds.includes(asset.id));
-      if (selected?.length !== quantity || selected.some((asset) => asset.state !== "AVAILABLE"))
-        return fail(409, "CONFLICT", "One or more selected assets are no longer available");
-      for (const asset of selected) {
-        asset.state = "ALLOCATED";
-        statements.push(
-          env.DB.prepare(
-            "UPDATE inventory_assets SET state=CASE WHEN state='AVAILABLE' THEN 'ALLOCATED' ELSE 'INVALID' END,data=? WHERE id=? AND item_id=?"
-          ).bind(JSON.stringify(asset), asset.id, item.id)
-        );
-      }
-    } else if (choice.assignedAssetIds?.length)
-      return fail(400, "VALIDATION", "Quantity-tracked items do not accept asset identifiers");
-    item.availableQuantity -= quantity;
-    item.allocatedQuantity += quantity;
-    line.assetIds = assetIds;
-    const allocation = {
-      id: id("alloc"),
-      requestId: request.id,
-      requestLineId: line.id,
-      itemId: item.id,
-      itemName: item.name,
-      quantity,
-      assetIds,
-      status: "ACTIVE",
-      allocatedAt: timestamp,
-      expiresAt: new Date(stamp() + 48 * 60 * 6e4).toISOString(),
-      allocatedBy: actor.id,
-      allocatedByName: actor.name
-    };
-    allocations.push(allocation);
-    statements.push(
-      env.DB.prepare(
-        "UPDATE inventory SET available_quantity=CASE WHEN available_quantity>=? THEN available_quantity-? ELSE -1 END,allocated_quantity=allocated_quantity+?,data=?,updated_at=CASE WHEN updated_at=? THEN ? ELSE -1 END WHERE id=?"
-      ).bind(
-        quantity,
-        quantity,
-        quantity,
-        JSON.stringify(item),
-        itemRow.updated_at,
-        Math.max(stamp(), itemRow.updated_at + 1),
-        item.id
-      )
-    );
-    statements.push(
-      put(env, "allocation", allocation, null, "ACTIVE", Date.parse(allocation.expiresAt))
-    );
-    total += quantity;
-  }
-  const requested = request.items.reduce(
-    (sum, line) => sum + line.requestedQuantity,
-    0
-  );
-  const decision = total === 0 ? "REJECTED" : total === requested ? "APPROVED" : "PARTIALLY_APPROVED";
-  request.decisionStatus = decision;
-  request.status = decision;
-  request.reviewedAt = timestamp;
-  request.reviewedBy = actor.name;
-  request.decisionNotes = String(payload.decisionNotes ?? "").slice(0, 1e3);
-  request.pickupDeadline = total ? new Date(stamp() + 48 * 60 * 6e4).toISOString() : void 0;
-  if (!total) request.lifecycleStatus = "CLOSED";
-  request.timeline.push({
-    status: decision,
-    timestamp,
-    description: `Request reviewed: ${decision}`,
-    actor: actor.name
-  });
-  request.updatedAt = timestamp;
-  statements.unshift(
-    env.DB.prepare(
-      "UPDATE requests SET status=CASE WHEN status='PENDING' THEN ? ELSE 'INVALID' END,data=? WHERE id=?"
-    ).bind(decision, JSON.stringify(request), request.id)
-  );
-  statements.push(
-    ...request.items.map(
-      (line) => env.DB.prepare("UPDATE request_lines SET data=? WHERE id=? AND request_id=?").bind(
-        JSON.stringify(line),
-        line.id,
-        request.id
-      )
-    )
-  );
-  statements.push(
-    notify(
-      env,
-      request.userId,
-      `Request ${decision.toLowerCase().replaceAll("_", " ")}`,
-      total ? `Your request ${request.id} is ready for collection within 48 hours.` : `Your request ${request.id} was declined.`,
-      decision === "REJECTED" ? "REQUEST_REJECTED" : decision === "APPROVED" ? "REQUEST_APPROVED" : "REQUEST_PARTIALLY_APPROVED",
-      { requestId: request.id }
-    ),
-    audit(env, actor, "REQUEST", request.id, "REQUEST_REVIEWED", {
-      decision,
-      allocationCount: allocations.length
-    })
-  );
-  try {
-    await env.DB.batch(statements);
-  } catch {
-    return fail(409, "CONFLICT", "Stock changed during review; reload the request");
-  }
-  return ok(request);
-}
-async function rejectRequest(env, actor, requestId2, reason) {
-  const row = await env.DB.prepare("SELECT data FROM requests WHERE id=?").bind(requestId2).first();
-  if (!row) return fail(404, "NOT_FOUND", "Request not found");
-  const request = decode(row.data);
-  if (request.decisionStatus !== "PENDING")
-    return fail(409, "CONFLICT", "Request has already been reviewed");
-  const time = iso();
-  request.decisionStatus = "REJECTED";
-  request.status = "REJECTED";
-  request.lifecycleStatus = "CLOSED";
-  request.rejectionReason = String(reason ?? "").slice(0, 1e3);
-  request.reviewedAt = time;
-  request.reviewedBy = actor.name;
-  request.updatedAt = time;
-  request.items.forEach((line) => {
-    line.approvedQuantity = 0;
-    line.status = "REJECTED";
-    line.rejectionReason = request.rejectionReason;
-  });
-  request.timeline.push({
-    status: "REJECTED",
-    timestamp: time,
-    description: request.rejectionReason,
-    actor: actor.name
-  });
-  try {
-    await env.DB.batch([
-      env.DB.prepare(
-        "UPDATE requests SET status=CASE WHEN status='PENDING' THEN 'REJECTED' ELSE 'INVALID' END,data=? WHERE id=?"
-      ).bind(JSON.stringify(request), request.id),
-      ...request.items.map(
-        (line) => env.DB.prepare("UPDATE request_lines SET data=? WHERE id=? AND request_id=?").bind(
-          JSON.stringify(line),
-          line.id,
-          request.id
-        )
-      ),
-      notify(
-        env,
-        request.userId,
-        "Request declined",
-        `Your request ${request.id} was declined: ${request.rejectionReason}`,
-        "REQUEST_REJECTED",
-        { requestId: request.id }
-      ),
-      audit(env, actor, "REQUEST", request.id, "REQUEST_REJECTED", {
-        reason: request.rejectionReason
-      })
-    ]);
-  } catch {
-    return fail(409, "CONFLICT", "Request has already been reviewed");
-  }
-  return ok(request);
-}
-async function handover(env, actor, payload) {
-  if (!payload || typeof payload.requestId !== "string")
-    return fail(400, "VALIDATION", "Handover details are invalid");
-  const row = await env.DB.prepare("SELECT data FROM requests WHERE id=?").bind(payload.requestId).first();
-  if (!row) return fail(404, "NOT_FOUND", "Request not found");
-  const request = decode(row.data);
-  const suppliedKey = payload.idempotencyKey;
-  if (typeof suppliedKey !== "string" || suppliedKey.length < 16 || suppliedKey.length > 128)
-    return fail(400, "VALIDATION", "A valid idempotency key is required");
-  const key = await scopedKey(actor.id, suppliedKey);
-  const replay = await env.DB.prepare(
-    "SELECT response FROM idempotency_keys WHERE key=? AND actor_id=?"
-  ).bind(key, actor.id).first();
-  if (replay) return ok(decode(replay.response));
-  if (request.handoverStatus !== "WAITING" || request.lifecycleStatus !== "ACTIVE")
-    return fail(409, "CONFLICT", "Request is not waiting for handover");
-  if (!request.pickupDeadline || Date.parse(request.pickupDeadline) <= stamp())
-    return fail(409, "ALLOCATION_EXPIRED", "The 48-hour reservation has expired");
-  const allocations = (await readMany(env, "allocation")).filter(
-    (a) => a.requestId === request.id && a.status === "ACTIVE"
-  );
-  if (!allocations.length) return fail(409, "CONFLICT", "No active allocation is available");
-  if (allocations.some((allocation) => Date.parse(allocation.expiresAt) <= stamp()))
-    return fail(409, "ALLOCATION_EXPIRED", "At least one reservation has expired");
-  const time = iso();
-  const loanId = id("LOAN");
-  const loanItems = [];
-  const stmts = [];
-  for (const allocation of allocations) {
-    const itemRow = await env.DB.prepare("SELECT data,updated_at FROM inventory WHERE id=?").bind(allocation.itemId).first();
-    if (!itemRow) return fail(409, "CONFLICT", "Reserved item no longer exists");
-    const item = decode(itemRow.data);
-    item.allocatedQuantity -= allocation.quantity;
-    item.borrowedQuantity += allocation.quantity;
-    if (item.trackingMode === "INDIVIDUAL_ASSET") {
-      const assetIds = allocation.assetIds ?? [];
-      const handover2 = payload.lineHandoverDetails?.find(
-        (entry) => entry.lineId === allocation.requestLineId
-      );
-      const serials = handover2?.serialNumbers ?? [];
-      if (assetIds.length !== allocation.quantity || serials.length !== assetIds.length)
-        return fail(409, "CONFLICT", "Confirm every reserved serial number at handover");
-      const selected = item.assets?.filter((asset) => assetIds.includes(asset.id));
-      if (selected?.length !== assetIds.length || selected.some((asset) => asset.state !== "ALLOCATED") || serials.some(
-        (serial) => !selected.some((asset) => asset.serialNumber === serial)
-      ))
-        return fail(
-          409,
-          "CONFLICT",
-          "Reserved asset selection changed or serial number did not match"
-        );
-      for (const asset of selected) {
-        asset.state = "BORROWED";
-        stmts.push(
-          env.DB.prepare(
-            "UPDATE inventory_assets SET state=CASE WHEN state='ALLOCATED' THEN 'BORROWED' ELSE 'INVALID' END,data=? WHERE id=? AND item_id=?"
-          ).bind(JSON.stringify(asset), asset.id, item.id)
-        );
-      }
-    }
-    stmts.push(
-      env.DB.prepare(
-        "UPDATE inventory SET allocated_quantity=CASE WHEN allocated_quantity>=? THEN allocated_quantity-? ELSE -1 END,borrowed_quantity=borrowed_quantity+?,data=?,updated_at=CASE WHEN updated_at=? THEN ? ELSE -1 END WHERE id=?"
-      ).bind(
-        allocation.quantity,
-        allocation.quantity,
-        allocation.quantity,
-        JSON.stringify(item),
-        itemRow.updated_at,
-        Math.max(stamp(), itemRow.updated_at + 1),
-        item.id
-      )
-    );
-    allocation.status = "HANDED_OVER";
-    allocation.handedOverAt = time;
-    stmts.push(put(env, "allocation", allocation, request.id, "HANDED_OVER"));
-    const line = request.items.find((l) => l.id === allocation.requestLineId);
-    if (line) line.handedOverQuantity = allocation.quantity;
-    loanItems.push({
-      id: id("loan-line"),
-      itemId: item.id,
-      itemName: item.name,
-      category: item.category,
-      equipmentClass: item.equipmentClass,
-      borrowedQuantity: allocation.quantity,
-      returnedQuantity: 0,
-      lostQuantity: 0,
-      conditionOnHandover: "GOOD",
-      assetIds: allocation.assetIds
-    });
-  }
-  request.handoverStatus = "HANDED_OVER";
-  request.status = "HANDED_OVER";
-  request.updatedAt = time;
-  request.timeline.push({
-    status: "HANDED_OVER",
-    timestamp: time,
-    description: "Equipment handed over",
-    actor: actor.name
-  });
-  const loan = {
-    id: loanId,
-    requestId: request.id,
-    userId: request.userId,
-    userName: request.userName,
-    userEmail: request.userEmail,
-    projectId: request.projectId,
-    projectName: request.projectName,
-    borrowDate: time,
-    dueDate: request.expectedReturnDate,
-    lifecycleStatus: "ACTIVE",
-    dueStatus: "ON_TIME",
-    returnStatus: "NONE",
-    status: "ACTIVE",
-    items: loanItems,
-    handedOverBy: actor.id,
-    notes: typeof payload.notes === "string" ? payload.notes.slice(0, 1e3) : void 0,
-    createdAt: time,
-    updatedAt: time
-  };
-  const result = { request, loanId };
-  const serialized = JSON.stringify(result);
-  stmts.unshift(
-    env.DB.prepare(
-      "UPDATE requests SET status=CASE WHEN status IN ('APPROVED','PARTIALLY_APPROVED') THEN 'HANDED_OVER' ELSE 'INVALID' END,data=? WHERE id=?"
-    ).bind(JSON.stringify(request), request.id)
-  );
-  stmts.push(
-    put(env, "loan", loan, loan.userId, loan.status),
-    notify(
-      env,
-      request.userId,
-      "Equipment handed over",
-      `Loan ${loanId} is active. Expected return: ${request.expectedReturnDate}.`,
-      "REQUEST_APPROVED",
-      { requestId: request.id, loanId }
-    )
-  );
-  stmts.push(
-    env.DB.prepare(
-      "INSERT INTO idempotency_keys(key,actor_id,response,created_at) VALUES(?,?,?,?)"
-    ).bind(key, actor.id, serialized, stamp())
-  );
-  stmts.push(audit(env, actor, "LOAN", loanId, "HANDOVER_CONFIRMED", { requestId: request.id }));
-  try {
-    await env.DB.batch(stmts);
-  } catch {
-    return fail(409, "CONFLICT", "Handover changed or was already completed");
-  }
-  return ok(result);
-}
-async function confirmReturn(env, actor, payload) {
-  if (!payload || typeof payload.loanId !== "string" || !Array.isArray(payload.items) || payload.items.length > 100 || typeof payload.idempotencyKey !== "string")
-    return fail(400, "VALIDATION", "Return inspection is invalid");
-  const suppliedKey = payload.idempotencyKey;
-  if (suppliedKey.length < 16 || suppliedKey.length > 128)
-    return fail(400, "VALIDATION", "A valid idempotency key is required");
-  const key = await scopedKey(actor.id, suppliedKey);
-  const replay = await env.DB.prepare(
-    "SELECT response FROM idempotency_keys WHERE key=? AND actor_id=?"
-  ).bind(key, actor.id).first();
-  if (replay) return ok(decode(replay.response));
-  const loan = await readOne(env, "loan", payload.loanId);
-  if (!loan) return fail(404, "NOT_FOUND", "Loan not found");
-  if (loan.lifecycleStatus !== "ACTIVE") return fail(409, "CONFLICT", "Loan is already closed");
-  const seen = /* @__PURE__ */ new Set();
-  const statements = [];
-  for (const entry of payload.items) {
-    if (!entry || typeof entry.lineItemId !== "string" || seen.has(entry.lineItemId) || !Number.isInteger(entry.returnedQuantity) || entry.returnedQuantity < 0)
-      return fail(400, "VALIDATION", "Return quantities are invalid");
-    seen.add(entry.lineItemId);
-    const line = loan.items.find((item2) => item2.id === entry.lineItemId);
-    if (!line || entry.returnedQuantity + line.returnedQuantity > line.borrowedQuantity)
-      return fail(409, "CONFLICT", "Return quantity exceeds the remaining loan quantity");
-    const damaged = Number(
-      entry.damagedQuantity ?? (entry.condition === "DAMAGED" ? entry.returnedQuantity : 0)
-    );
-    const lost = Number(entry.lostQuantity ?? 0);
-    if (!Number.isInteger(damaged) || !Number.isInteger(lost) || damaged < 0 || lost < 0 || damaged + lost > entry.returnedQuantity)
-      return fail(400, "VALIDATION", "Damaged and lost quantities exceed the returned quantity");
-    const itemRow = await env.DB.prepare("SELECT data,updated_at FROM inventory WHERE id=?").bind(line.itemId).first();
-    if (!itemRow) return fail(409, "CONFLICT", "Loan item no longer exists");
-    const item = decode(itemRow.data);
-    const returned = entry.returnedQuantity - damaged - lost;
-    let assetIds = [];
-    if (item.trackingMode === "INDIVIDUAL_ASSET" && entry.returnedQuantity) {
-      assetIds = entry.assetIds ?? [];
-      if (assetIds.length !== entry.returnedQuantity || new Set(assetIds).size !== assetIds.length)
-        return fail(400, "VALIDATION", "Select every returned or reconciled asset");
-      const already = new Set(line.returnedAssetIds ?? []);
-      const allowed = new Set(line.assetIds ?? []);
-      if (assetIds.some((assetId) => already.has(assetId) || !allowed.has(assetId)))
-        return fail(
-          409,
-          "CONFLICT",
-          "An asset was already returned or does not belong to this loan line"
-        );
-      const returnedStates = /* @__PURE__ */ new Map();
-      assetIds.forEach(
-        (assetId, index2) => returnedStates.set(
-          assetId,
-          index2 < damaged ? "DAMAGED" : index2 < damaged + lost ? "LOST" : "AVAILABLE"
-        )
-      );
-      const selected = item.assets?.filter((asset) => returnedStates.has(asset.id));
-      if (selected?.length !== entry.returnedQuantity || selected.some((asset) => asset.state !== "BORROWED"))
-        return fail(409, "CONFLICT", "One or more assets are no longer recorded as borrowed");
-      for (const asset of selected) {
-        asset.state = returnedStates.get(asset.id);
-        asset.condition = asset.state === "DAMAGED" ? "DAMAGED" : asset.state === "LOST" ? "LOST" : entry.condition ?? "GOOD";
-        statements.push(
-          env.DB.prepare(
-            "UPDATE inventory_assets SET state=CASE WHEN state='BORROWED' THEN ? ELSE 'INVALID' END,data=? WHERE id=? AND item_id=?"
-          ).bind(asset.state, JSON.stringify(asset), asset.id, item.id)
-        );
-      }
-      line.returnedAssetIds = [...already, ...assetIds];
-    } else if (item.trackingMode === "QUANTITY" && entry.assetIds?.length)
-      return fail(400, "VALIDATION", "Quantity-tracked loans do not accept asset identifiers");
-    item.borrowedQuantity -= entry.returnedQuantity;
-    item.availableQuantity += returned;
-    item.damagedQuantity += damaged;
-    item.lostQuantity += lost;
-    line.returnedQuantity += entry.returnedQuantity;
-    line.lostQuantity += lost;
-    const updatedAt = Math.max(stamp(), itemRow.updated_at + 1);
-    statements.push(
-      env.DB.prepare(
-        "UPDATE inventory SET borrowed_quantity=CASE WHEN borrowed_quantity>=? THEN borrowed_quantity-? ELSE -1 END,available_quantity=available_quantity+?,damaged_quantity=damaged_quantity+?,lost_quantity=lost_quantity+?,data=?,updated_at=CASE WHEN updated_at=? THEN ? ELSE -1 END WHERE id=?"
-      ).bind(
-        entry.returnedQuantity,
-        entry.returnedQuantity,
-        returned,
-        damaged,
-        lost,
-        JSON.stringify(item),
-        itemRow.updated_at,
-        updatedAt,
-        item.id
-      )
-    );
-  }
-  const allReturned = loan.items.every(
-    (line) => line.returnedQuantity >= line.borrowedQuantity
-  );
-  loan.returnStatus = allReturned ? "COMPLETE" : "PARTIAL";
-  loan.status = allReturned ? "RETURNED" : "PARTIALLY_RETURNED";
-  loan.lifecycleStatus = allReturned ? "CLOSED" : "ACTIVE";
-  loan.updatedAt = iso();
-  loan.returnNotes = String(payload.inspectionNotes ?? "").slice(0, 1e3);
-  const result = JSON.stringify(loan);
-  statements.unshift(put(env, "loan", loan, loan.userId, loan.status));
-  statements.push(
-    notify(
-      env,
-      loan.userId,
-      "Return inspection recorded",
-      allReturned ? `Loan ${loan.id} is closed.` : `The return for loan ${loan.id} was recorded. Remaining items stay in your custody.`,
-      "RETURN_CONFIRMED",
-      { loanId: loan.id }
-    ),
-    env.DB.prepare(
-      "INSERT INTO idempotency_keys(key,actor_id,response,created_at) VALUES(?,?,?,?)"
-    ).bind(key, actor.id, result, stamp()),
-    audit(env, actor, "LOAN", loan.id, "RETURN_CONFIRMED", { allReturned })
-  );
-  try {
-    await env.DB.batch(statements);
-  } catch {
-    return fail(409, "CONFLICT", "Stock changed during return; reload and try again");
-  }
-  return ok(loan);
-}
-async function releaseOne(env, actor, allocation, status) {
-  const row = await env.DB.prepare("SELECT data,updated_at FROM inventory WHERE id=?").bind(allocation.itemId).first();
-  if (!row) return fail(404, "NOT_FOUND", "Inventory item not found");
-  const item = decode(row.data);
-  const before = {
-    total: item.totalQuantity,
-    available: item.availableQuantity,
-    allocated: item.allocatedQuantity
-  };
-  item.availableQuantity += allocation.quantity;
-  item.allocatedQuantity -= allocation.quantity;
-  const statements = [
-    env.DB.prepare(
-      "UPDATE inventory SET available_quantity=available_quantity+?,allocated_quantity=CASE WHEN allocated_quantity>=? THEN allocated_quantity-? ELSE -1 END,data=?,updated_at=CASE WHEN updated_at=? THEN ? ELSE -1 END WHERE id=?"
-    ).bind(
-      allocation.quantity,
-      allocation.quantity,
-      allocation.quantity,
-      JSON.stringify(item),
-      row.updated_at,
-      Math.max(stamp(), row.updated_at + 1),
-      item.id
-    )
-  ];
-  if (item.trackingMode === "INDIVIDUAL_ASSET")
-    for (const assetId of allocation.assetIds ?? []) {
-      const asset = item.assets?.find((entry) => entry.id === assetId);
-      if (!asset || asset.state !== "ALLOCATED")
-        return fail(409, "CONFLICT", "Allocation asset state is inconsistent");
-      asset.state = "AVAILABLE";
-      statements.push(
-        env.DB.prepare(
-          "UPDATE inventory_assets SET state=CASE WHEN state='ALLOCATED' THEN 'AVAILABLE' ELSE 'INVALID' END,data=? WHERE id=? AND item_id=?"
-        ).bind(JSON.stringify(asset), asset.id, item.id)
-      );
-    }
-  allocation.status = status;
-  allocation.releasedAt = iso();
-  allocation.releasedBy = actor.id;
-  allocation.releaseReason = status === "EXPIRED" ? "48-hour collection window expired" : allocation.releaseReason;
-  const event = {
-    id: id("iev"),
-    itemId: item.id,
-    itemName: item.name,
-    type: "RELEASE_ALLOCATION",
-    quantity: allocation.quantity,
-    beforeState: before,
-    afterState: {
-      total: item.totalQuantity,
-      available: item.availableQuantity,
-      allocated: item.allocatedQuantity
-    },
-    reason: allocation.releaseReason ?? "Allocation released",
-    actorUserId: actor.id,
-    actorName: actor.name,
-    timestamp: allocation.releasedAt,
-    ...allocation.assetIds?.length ? { assetIds: allocation.assetIds } : {}
-  };
-  statements.push(
-    env.DB.prepare(
-      "UPDATE record_store SET status=?,data=?,updated_at=CASE WHEN status='ACTIVE' THEN ? ELSE -1 END WHERE kind='allocation' AND id=?"
-    ).bind(status, JSON.stringify(allocation), stamp(), allocation.id),
-    put(env, "inventory_event", event, item.id, event.type),
-    audit(env, actor, "ALLOCATION", allocation.id, `ALLOCATION_${status}`, {
-      itemId: item.id,
-      quantity: allocation.quantity,
-      reason: allocation.releaseReason ?? "Allocation released"
-    })
-  );
-  try {
-    await env.DB.batch(statements);
-  } catch {
-    return fail(409, "CONFLICT", "Allocation or stock changed; reload and try again");
-  }
-  if (status === "EXPIRED") {
-    const remaining = await env.DB.prepare(
-      "SELECT 1 FROM record_store WHERE kind='allocation' AND json_extract(data,'$.requestId')=? AND status='ACTIVE' LIMIT 1"
-    ).bind(allocation.requestId).first();
-    if (!remaining) {
-      const requestRow = await env.DB.prepare("SELECT data FROM requests WHERE id=?").bind(allocation.requestId).first();
-      if (requestRow) {
-        const request = decode(requestRow.data);
-        if (request.handoverStatus === "WAITING") {
-          request.lifecycleStatus = "EXPIRED";
-          request.status = "EXPIRED";
-          request.updatedAt = iso();
-          request.timeline.push({
-            status: "EXPIRED",
-            timestamp: request.updatedAt,
-            description: "The 48-hour collection window expired and reservations were released.",
-            actor: "System"
-          });
-          try {
-            await env.DB.batch([
-              env.DB.prepare(
-                "UPDATE requests SET status=CASE WHEN status IN ('APPROVED','PARTIALLY_APPROVED') THEN 'EXPIRED' ELSE 'INVALID' END,data=? WHERE id=?"
-              ).bind(JSON.stringify(request), request.id),
-              audit(env, actor, "REQUEST", request.id, "PICKUP_EXPIRED")
-            ]);
-          } catch {
-            return fail(409, "CONFLICT", "Request changed while expiring its allocation");
-          }
-        }
-      }
-    }
-  }
-  return ok(allocation);
-}
-async function expireOne(env, actor, allocation) {
-  return releaseOne(env, actor, allocation, "EXPIRED");
-}
-async function expireDue(env, actor) {
-  const rows = await env.DB.prepare(
-    "SELECT id,data FROM record_store WHERE kind='allocation' AND status='ACTIVE' AND expires_at<=? LIMIT 100"
-  ).bind(stamp()).all();
-  let expired = 0;
-  for (const row of rows.results ?? []) {
-    const result = await expireOne(env, actor, decode(row.data));
-    if (result.status === 200) expired++;
-  }
-  return expired;
-}
-async function genericRecords(env, actor, service, method, args) {
-  if (service === "discipline" && method.startsWith("getRecommendations"))
-    return ok(await readMany(env, "recommendation"));
-  if (service === "discipline" && method.startsWith("getIncidents"))
-    return ok(await readMany(env, "incident"));
-  if (service === "discipline" && method === "getIncidentById")
-    return ok(await readOne(env, "incident", String(args[0])));
-  if (service === "discipline" && method === "getStrikes") return ok(await readMany(env, "strike"));
-  if (service === "discipline" && method === "getCompensations")
-    return ok(await readMany(env, "compensation"));
-  if (service === "project" && method === "getProjects")
-    return ok(
-      (await readMany(env, "project")).filter(
-        (p) => !args[0]?.status || p.status === args[0].status
-      )
-    );
-  if (service === "project" && method === "getProjectById")
-    return ok(await readOne(env, "project", String(args[0])));
-  if (service === "audit" && method === "getAudits")
-    return ok(
-      (await readMany(env, "inventory_audit")).filter((a) => !args[0] || a.status === args[0])
-    );
-  if (service === "audit" && method === "getAuditById")
-    return ok(await readOne(env, "inventory_audit", String(args[0])));
-  if (service === "auditLog" && method === "getEvents") {
-    const limit = Math.min(500, args[0]?.limit ?? 200);
-    const rows = await env.DB.prepare(
-      `SELECT
-        a.id,
-        a.actor_user_id,
-        COALESCE(u.name, a.actor_user_id) as actor_name,
-        COALESCE(u.role, 'OPERATOR') as actor_role,
-        a.action,
-        a.entity_type,
-        a.entity_id,
-        a.reason,
-        a.created_at,
-        a.data
-      FROM audit_events a
-      LEFT JOIN app_users u ON u.id = a.actor_user_id
-      ORDER BY a.created_at DESC
-      LIMIT ?`
-    ).bind(limit).all();
-    const events = (rows.results ?? []).map((row) => {
-      const parsedData = decode(row.data) ?? {};
-      return {
-        id: row.id,
-        actorUserId: row.actor_user_id,
-        actorName: row.actor_name,
-        actorRole: row.actor_role,
-        action: row.action,
-        entityType: row.entity_type,
-        entityId: row.entity_id,
-        reason: row.reason || parsedData.reason || "",
-        before: parsedData.before,
-        after: parsedData.after,
-        createdAt: typeof row.created_at === "number" ? new Date(row.created_at).toISOString() : String(row.created_at)
-      };
-    });
-    return ok(events);
-  }
-  if (service === "insights" && method === "getInsights") return ok(await insights(env));
-  if (service === "export" && method === "exportCsv") return exportCsv(env, actor, args[0]);
-  if (service === "user" && method === "getUsers") return getUsers(env, args[0]);
-  if (service === "user" && method === "getUserById") {
-    const row = await env.DB.prepare("SELECT * FROM app_users WHERE id=?").bind(args[0]).first();
-    return ok(row ? publicProfile(row) : null);
-  }
-  if (service === "project" && ["createProject", "updateProject", "assignMember", "removeMember"].includes(method)) {
-    const projects = await readMany(env, "project");
-    let project;
-    if (method === "createProject") {
-      const input = args[0];
-      if (!input || typeof input.name !== "string" || input.name.length > 160)
-        return fail(400, "VALIDATION", "Project details are invalid");
-      project = { ...input, id: id("project"), memberIds: [], membersCount: 0 };
-    } else {
-      const projectId = method === "updateProject" ? args[0]?.projectId : args[0];
-      project = projects.find((p) => p.id === projectId);
-      if (!project) return fail(404, "NOT_FOUND", "Project not found");
-      if (method === "updateProject") Object.assign(project, args[0]);
-      if (method === "assignMember" || method === "removeMember") {
-        const memberId = args[1];
-        const ids = new Set(project.memberIds ?? []);
-        if (method === "assignMember") ids.add(memberId);
-        else ids.delete(memberId);
-        project.memberIds = [...ids];
-        project.membersCount = ids.size;
-      }
-    }
-    await env.DB.batch([
-      put(env, "project", project, null, project.status ?? "ACTIVE"),
-      audit(env, actor, "PROJECT", project.id, "PROJECT_" + method.toUpperCase())
-    ]);
-    return ok(project);
-  }
-  if (service === "discipline" && [
-    "createIncident",
-    "resolveIncident",
-    "issueStrike",
-    "overturnStrike",
-    "recordCompensation",
-    "updateCompensationStatus",
-    "reviewRecommendation"
-  ].includes(method)) {
-    let kind = "incident", record;
-    if (method === "createIncident") {
-      record = {
-        ...args[0],
-        id: id("incident"),
-        status: "OPEN",
-        reportedBy: actor.id,
-        reportedByName: actor.name,
-        reportedAt: iso()
-      };
-    } else if (method === "resolveIncident") {
-      kind = "incident";
-      record = await readOne(env, kind, String(args[0]));
-      if (!record) return fail(404, "NOT_FOUND", "Incident not found");
-      record.status = "RESOLVED";
-      record.resolutionNotes = String(args[1] ?? "").slice(0, 1e3);
-    } else if (method === "issueStrike") {
-      kind = "strike";
-      record = {
-        ...args[0],
-        id: id("strike"),
-        status: "ACTIVE",
-        issuedBy: actor.id,
-        issuedByName: actor.name,
-        issuedAt: iso()
-      };
-    } else if (method === "overturnStrike") {
-      kind = "strike";
-      record = await readOne(env, kind, String(args[0]));
-      if (!record) return fail(404, "NOT_FOUND", "Strike not found");
-      record.status = "OVERTURNED";
-      record.overturnedBy = actor.id;
-      record.overturnedAt = iso();
-      record.reason = String(args[1] ?? "").slice(0, 1e3);
-    } else if (method === "recordCompensation") {
-      kind = "compensation";
-      record = {
-        ...args[0],
-        id: id("comp"),
-        status: "PENDING",
-        createdAt: iso(),
-        updatedAt: iso()
-      };
-    } else if (method === "updateCompensationStatus") {
-      kind = "compensation";
-      record = await readOne(env, kind, String(args[0]?.compensationId));
-      if (!record) return fail(404, "NOT_FOUND", "Compensation not found");
-      Object.assign(record, args[0], { updatedAt: iso(), settledBy: actor.id });
-    } else {
-      kind = "recommendation";
-      record = await readOne(env, kind, String(args[0]));
-      if (!record) return fail(404, "NOT_FOUND", "Recommendation not found");
-      record.status = args[1] === "APPLY" ? "APPLIED" : "DISMISSED";
-      record.reviewedAt = iso();
-      record.reviewedBy = actor.id;
-      record.decisionNotes = String(args[2] ?? "").slice(0, 1e3);
-    }
-    const owner = record.userId ?? null;
-    await env.DB.batch([
-      put(env, kind, record, owner, record.status ?? null),
-      audit(env, actor, kind.toUpperCase(), record.id, method.toUpperCase())
-    ]);
-    return ok(
-      record,
-      method === "createIncident" || method === "issueStrike" || method === "recordCompensation" ? 201 : 200
-    );
-  }
-  if (service === "audit" && ["startAudit", "recordCounts", "reconcileItem", "completeAudit"].includes(method)) {
-    let auditRecord;
-    if (method === "startAudit") {
-      const input = args[0] ?? {};
-      const rows = await env.DB.prepare("SELECT id,data FROM inventory").all();
-      const items = (rows.results ?? []).map((r) => {
-        const item = decode(r.data);
-        return {
-          itemId: item.id,
-          itemName: item.name,
-          category: item.category,
-          equipmentClass: item.equipmentClass,
-          expectedSnapshotQuantity: item.availableQuantity + item.allocatedQuantity + item.damagedQuantity + item.maintenanceQuantity,
-          movementsSinceSnapshot: 0,
-          adjustedExpectedQuantity: item.availableQuantity + item.allocatedQuantity + item.damagedQuantity + item.maintenanceQuantity,
-          status: "PENDING_COUNT"
-        };
-      });
-      auditRecord = {
-        id: id("audit"),
-        title: String(input.title ?? "Inventory audit").slice(0, 160),
-        startedAt: iso(),
-        startedBy: actor.id,
-        startedByName: actor.name,
-        status: "IN_PROGRESS",
-        snapshotAt: iso(),
-        items,
-        notes: String(input.notes ?? "").slice(0, 1e3)
-      };
-    } else {
-      const input = args[0];
-      auditRecord = await readOne(env, "inventory_audit", String(input.auditId));
-      if (!auditRecord) return fail(404, "NOT_FOUND", "Audit not found");
-      if (method === "recordCounts") {
-        for (const count of input.counts ?? []) {
-          const item = auditRecord.items.find((i) => i.itemId === count.itemId);
-          if (item) {
-            item.physicalCount = count.physicalCount;
-            item.countedAt = iso();
-            item.discrepancy = count.physicalCount - item.adjustedExpectedQuantity;
-            item.status = item.discrepancy === 0 ? "MATCHED" : "DISCREPANCY";
-          }
-        }
-      } else if (method === "reconcileItem") {
-        const item = auditRecord.items.find((i) => i.itemId === input.itemId);
-        if (!item) return fail(404, "NOT_FOUND", "Audit item not found");
-        item.status = "RECONCILED";
-        item.resolutionNotes = String(input.resolutionNotes ?? "").slice(0, 1e3);
-      } else {
-        auditRecord.status = "RECONCILED";
-        auditRecord.completedAt = iso();
-        auditRecord.completedBy = actor.id;
-      }
-    }
-    auditRecord.updatedAt = iso();
-    await env.DB.batch([
-      put(env, "inventory_audit", auditRecord, null, auditRecord.status),
-      audit(env, actor, "AUDIT", auditRecord.id, "AUDIT_" + method.toUpperCase())
-    ]);
-    return ok(auditRecord);
-  }
-  if (service === "user" && method === "createUser") return createUser(env, actor, args[0]);
-  if (service === "user" && method === "removeUser") return removeUser(env, actor, args[0]);
-  if (service === "user" && ["processUser", "updateClearance", "updateRole", "updateStatus"].includes(method))
-    return updateUser(env, actor, method, args[0]);
-  if (service === "allocation" && method === "checkAndExpireAllocations")
-    return ok(await expireDue(env, actor));
-  if (service === "auditLog" && method === "logEvent") {
-    const input = args[0] ?? {};
-    const event = {
-      ...input,
-      id: id("audit"),
-      actorUserId: actor.id,
-      actorName: actor.name,
-      actorRole: actor.role,
-      createdAt: iso()
-    };
-    await env.DB.batch([
-      put(env, "audit_event", event, actor.id, event.action),
-      audit(env, actor, "AUDIT", event.id, "AUDIT_EVENT_RECORDED")
-    ]);
-    return ok(event, 201);
-  }
-  return null;
-}
-async function updateUser(env, actor, method, input) {
-  const targetId = String(input?.userId ?? "");
-  if (!targetId) return fail(400, "VALIDATION", "Member ID is required");
-  const row = await env.DB.prepare("SELECT * FROM app_users WHERE id=?").bind(targetId).first();
-  if (!row) return fail(404, "NOT_FOUND", "Member not found");
-  let values = {};
-  if (method === "processUser") {
-    const affiliation = input.verifiedAffiliation ?? input.affiliation;
-    if (!["IEEE", "AEROBOTIX", "EXTERNAL", "EUROBOT", "RAS_BOARD"].includes(affiliation))
-      return fail(400, "VALIDATION", "Affiliation is invalid");
-    values = {
-      affiliation,
-      claimed_affiliation: row.claimed_affiliation,
-      affiliation_verified: 1,
-      clearance: affiliation === "EUROBOT" || affiliation === "RAS_BOARD" ? "V" : affiliation === "IEEE" ? "III" : affiliation === "AEROBOTIX" ? "II" : "I"
-    };
-  }
-  if (method === "updateClearance") {
-    if (!["I", "II", "III", "IV", "V", "VI"].includes(input.newClearance))
-      return fail(400, "VALIDATION", "Clearance is invalid");
-    values = { clearance: input.newClearance, clearance_source: input.source };
-  }
-  if (method === "updateRole") {
-    if (!["MEMBER", "OPERATOR", "SUPERADMIN"].includes(input.newRole))
-      return fail(400, "VALIDATION", "Role is invalid");
-    if (input.newRole === "SUPERADMIN" && actor.id === targetId)
-      return fail(409, "CONFLICT", "Use another superadmin to change this account");
-    values = { role: input.newRole };
-  }
-  if (method === "updateStatus") {
-    if (!["ACTIVE", "RESTRICTED", "BANNED", "BLACKLISTED", "PENDING"].includes(input.status))
-      return fail(400, "VALIDATION", "Status is invalid");
-    if (actor.id === targetId && input.status !== "ACTIVE")
-      return fail(409, "CONFLICT", "You cannot suspend your own account");
-    values = { status: input.status };
-  }
-  const statements = [
-    env.DB.prepare(
-      `UPDATE app_users SET ${Object.keys(values).map((key) => `${key}=?`).join(",")},updated_at=? WHERE id=?`
-    ).bind(...Object.values(values), stamp(), targetId)
-  ];
-  if (method === "updateRole" && values.role === "MEMBER" || method === "updateStatus" && values.status !== "ACTIVE")
-    statements.push(
-      env.DB.prepare(
-        "UPDATE staff_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL"
-      ).bind(stamp(), targetId)
-    );
-  statements.push(
-    audit(env, actor, "USER", targetId, "USER_" + method.toUpperCase(), {
-      fields: Object.keys(values)
-    })
-  );
-  await env.DB.batch(statements);
-  const updated = await env.DB.prepare("SELECT * FROM app_users WHERE id=?").bind(targetId).first();
-  return ok(publicProfile(updated));
-}
-async function createUser(env, actor, input) {
-  if (actor.role !== "SUPERADMIN" && actor.role !== "OPERATOR")
-    return fail(403, "FORBIDDEN", "Staff access is required to add people");
-  if (!input || typeof input.email !== "string" || !input.email.includes("@"))
-    return fail(400, "VALIDATION", "Valid email address is required");
-  if (typeof input.name !== "string" || input.name.trim().length < 2)
-    return fail(400, "VALIDATION", "Valid name is required");
-  const email = input.email.trim().toLowerCase();
-  const existing = await env.DB.prepare("SELECT id FROM app_users WHERE email=? COLLATE NOCASE").bind(email).first();
-  if (existing) return fail(409, "CONFLICT", "A user with this email already exists");
-  const targetRole = input.role || "MEMBER";
-  if (!["MEMBER", "OPERATOR", "SUPERADMIN"].includes(targetRole))
-    return fail(400, "VALIDATION", "Invalid role specified");
-  if (targetRole === "SUPERADMIN" && actor.role !== "SUPERADMIN")
-    return fail(403, "FORBIDDEN", "Only Superadmins can create other Superadmins");
-  const affiliation = input.affiliation || (targetRole === "MEMBER" ? "IEEE" : "RAS_BOARD");
-  const clearance = input.clearance || (targetRole === "SUPERADMIN" ? "VI" : targetRole === "OPERATOR" ? "V" : affiliation === "IEEE" ? "III" : affiliation === "AEROBOTIX" ? "II" : "I");
-  const phone = input.phone ? String(input.phone).trim() : "";
-  const newId = crypto.randomUUID();
-  const timestamp = stamp();
-  const userData = {};
-  await env.DB.batch([
-    env.DB.prepare(
-      "INSERT INTO user(id, name, email, emailVerified, createdAt, updatedAt) VALUES(?,?,?,1,?,?)"
-    ).bind(newId, input.name.trim(), email, timestamp, timestamp),
-    env.DB.prepare(
-      `INSERT INTO app_users(id, email, name, phone, role, clearance, clearance_source, affiliation, claimed_affiliation, affiliation_verified, status, data, created_at, updated_at)
-      VALUES(?,?,?,?,?,?,?,?,?,1,'ACTIVE',?,?,?)`
-    ).bind(
-      newId,
-      email,
-      input.name.trim(),
-      phone,
-      targetRole,
-      clearance,
-      targetRole === "SUPERADMIN" ? "SUPERADMIN_ROLE" : targetRole === "OPERATOR" ? "OPERATOR_ROLE" : "AFFILIATION",
-      affiliation,
-      affiliation,
-      JSON.stringify(userData),
-      timestamp,
-      timestamp
-    ),
-    audit(env, actor, "USER", newId, "USER_CREATED", { email, role: targetRole, clearance })
-  ]);
-  const createdRow = await env.DB.prepare("SELECT * FROM app_users WHERE id=?").bind(newId).first();
-  return ok(createdRow ? publicProfile(createdRow) : null, 201);
-}
-async function removeUser(env, actor, input) {
-  const targetId = typeof input === "string" ? input : String(input?.userId ?? "");
-  if (!targetId) return fail(400, "VALIDATION", "User ID is required");
-  if (targetId === actor.id) return fail(400, "VALIDATION", "You cannot remove your own account");
-  const row = await env.DB.prepare("SELECT * FROM app_users WHERE id=?").bind(targetId).first();
-  if (!row) return fail(404, "NOT_FOUND", "User not found");
-  if (row.role === "SUPERADMIN" && actor.role !== "SUPERADMIN")
-    return fail(403, "FORBIDDEN", "Only Superadmins can remove another Superadmin");
-  const activeLoans = await env.DB.prepare(
-    "SELECT COUNT(*) AS count FROM record_store WHERE kind='loan' AND owner_id=? AND status IN ('ACTIVE', 'OVERDUE')"
-  ).bind(targetId).first();
-  if (activeLoans && activeLoans.count > 0) {
-    return fail(
-      409,
-      "CONFLICT",
-      `Cannot remove ${row.name}: user currently possesses ${activeLoans.count} active borrowed equipment item(s). Return all items first.`
-    );
-  }
-  const activeRequests = await env.DB.prepare(
-    "SELECT COUNT(*) AS count FROM requests WHERE user_id=? AND status IN ('PENDING', 'APPROVED', 'PARTIALLY_APPROVED')"
-  ).bind(targetId).first();
-  if (activeRequests && activeRequests.count > 0) {
-    return fail(
-      409,
-      "CONFLICT",
-      `Cannot remove ${row.name}: user has active or pending borrow requests. Review, reject, or complete them first.`
-    );
-  }
-  await env.DB.batch([
-    env.DB.prepare("DELETE FROM app_users WHERE id=?").bind(targetId),
-    env.DB.prepare("DELETE FROM user WHERE id=?").bind(targetId),
-    env.DB.prepare("DELETE FROM session WHERE userId=?").bind(targetId),
-    env.DB.prepare("DELETE FROM staff_sessions WHERE user_id=?").bind(targetId),
-    env.DB.prepare("DELETE FROM record_store WHERE kind='notification' AND owner_id=?").bind(
-      targetId
-    ),
-    audit(env, actor, "USER", targetId, "USER_REMOVED", {
-      email: row.email,
-      name: row.name,
-      role: row.role
-    })
-  ]);
-  return ok({ success: true });
-}
-function publicProfile(row) {
-  return {
-    id: row.id,
-    name: row.name,
-    email: row.email,
-    phone: row.phone ?? void 0,
-    role: row.role,
-    clearance: row.clearance,
-    clearanceSource: row.clearance_source ?? void 0,
-    affiliation: row.affiliation,
-    claimedAffiliation: row.claimed_affiliation ?? void 0,
-    verifiedAffiliation: row.affiliation_verified ? row.affiliation : void 0,
-    isProcessed: row.affiliation_verified === 1,
-    status: row.status,
-    strikesCount: 0,
-    strikes: [],
-    joinedDate: iso(row.created_at),
-    activeLoansCount: 0,
-    totalRequestsCount: 0
-  };
-}
-async function getUsers(env, filter) {
-  const rows = await env.DB.prepare(
-    "SELECT * FROM app_users ORDER BY created_at DESC LIMIT 1000"
-  ).all();
-  return ok(
-    (rows.results ?? []).map(publicProfile).filter(
-      (u) => (!filter?.search || `${u.name} ${u.email}`.toLowerCase().includes(String(filter.search).toLowerCase())) && (!filter?.role || filter.role === "ALL" || u.role === filter.role) && (!filter?.clearance || filter.clearance === "ALL" || u.clearance === filter.clearance) && (!filter?.status || filter.status === "ALL" || u.status === filter.status) && (!filter?.unprocessedOnly || !u.isProcessed)
-    )
-  );
-}
-async function insights(env) {
-  const [inventoryRows, requestCount, loans, projects, incidents, recommendations] = await Promise.all([
-    env.DB.prepare(
-      "SELECT COUNT(*) AS items,COALESCE(SUM(total_quantity),0) total,COALESCE(SUM(available_quantity),0) available,COALESCE(SUM(allocated_quantity),0) allocated FROM inventory"
-    ).first(),
-    env.DB.prepare("SELECT COUNT(*) count FROM requests").first(),
-    env.DB.prepare("SELECT data,status FROM record_store WHERE kind='loan'").all(),
-    env.DB.prepare("SELECT COUNT(*) count FROM record_store WHERE kind='project'").first(),
-    env.DB.prepare(
-      "SELECT COUNT(*) count FROM record_store WHERE kind='incident' AND status='OPEN'"
-    ).first(),
-    env.DB.prepare(
-      "SELECT COUNT(*) count FROM record_store WHERE kind='recommendation' AND status='PENDING_REVIEW'"
-    ).first()
-  ]);
-  const loanList = loans.results ?? [];
-  return {
-    inventory: {
-      totalDistinctItems: inventoryRows?.items ?? 0,
-      totalUnits: inventoryRows?.total ?? 0,
-      availableUnits: inventoryRows?.available ?? 0,
-      allocatedUnits: inventoryRows?.allocated ?? 0,
-      borrowedUnits: 0,
-      damagedUnits: 0,
-      maintenanceUnits: 0,
-      lostUnits: 0
-    },
-    borrowing: {
-      totalRequestsCount: requestCount?.count ?? 0,
-      requestsThisMonth: 0,
-      approvalRatePercent: 0,
-      partialApprovalRatePercent: 0,
-      activeLoansCount: loanList.filter((r) => r.status === "ACTIVE" || r.status === "OVERDUE").length,
-      averageDurationDays: null,
-      overdueLoansCount: loanList.filter((r) => r.status === "OVERDUE").length,
-      overdueRatePercent: 0
-    },
-    equipment: { topBorrowedItems: [], frequentlyUnavailableItems: [], mostDamagedItems: [] },
-    projects: {
-      projectsCount: projects?.count ?? 0,
-      equipmentByProject: [],
-      requestsByProject: []
-    },
-    discipline: {
-      activeStrikesByLevel: {},
-      pendingRecommendationsCount: recommendations?.count ?? 0,
-      openIncidentsCount: incidents?.count ?? 0,
-      totalCompensationDue: 0
-    }
-  };
-}
-async function exportCsv(env, actor, dataset) {
-  const allowed = {
-    INVENTORY: "inventory",
-    ACTIVE_LOANS: "loan",
-    OVERDUE_LOANS: "loan",
-    REQUESTS: "request",
-    PROJECTS: "project",
-    STOCK_MOVEMENTS: "inventory_event",
-    AUDITS: "inventory_audit",
-    STRIKES: "strike",
-    INCIDENTS: "incident",
-    COMPENSATIONS: "compensation",
-    AUDIT_LOG: "audit_event"
-  };
-  if (!allowed[dataset]) return fail(400, "VALIDATION", "Export dataset is invalid");
-  const records = dataset === "INVENTORY" ? (await env.DB.prepare("SELECT data FROM inventory").all()).results?.map(
-    (r) => decode(r.data)
-  ) ?? [] : await readMany(env, allowed[dataset]);
-  const rows = records.filter(
-    (record) => dataset !== "OVERDUE_LOANS" || record.status === "OVERDUE"
-  );
-  const columns = rows.length ? Object.keys(rows[0]) : ["id"];
-  const quote = (value) => `"${String(value ?? "").replaceAll('"', '""')}"`;
-  const csv = [
-    columns.map(quote).join(","),
-    ...rows.map(
-      (row) => columns.map(
-        (column) => quote(typeof row[column] === "object" ? JSON.stringify(row[column]) : row[column])
-      ).join(",")
-    )
-  ].join("\r\n");
-  const time = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-  await audit(env, actor, "EXPORT", "export", `EXPORT_${dataset}`, { rowCount: rows.length }).run();
-  return ok({
-    filename: `${dataset.toLowerCase()}-${time}.csv`,
-    csvContent: csv,
-    rowCount: rows.length
-  });
-}
-
-// src/worker/auth.ts
-import { betterAuth } from "better-auth";
-import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { magicLink } from "better-auth/plugins";
-
-// src/worker/email.ts
-async function sendEmail(env, to, subject, htmlContent) {
-  if (!env.BREVO_API_KEY || !env.BREVO_SENDER_EMAIL) {
-    console.warn("Email service not configured; skipping email to:", to);
-    return;
-  }
-  const response = await fetch("https://api.brevo.com/v3/smtp/email", {
-    method: "POST",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json",
-      "api-key": env.BREVO_API_KEY
-    },
-    body: JSON.stringify({
-      sender: {
-        email: env.BREVO_SENDER_EMAIL,
-        name: env.BREVO_SENDER_NAME ?? "IEEE RAS INSAT Logistics"
-      },
-      to: [{ email: to }],
-      subject,
-      htmlContent
-    })
-  });
-  if (!response.ok) throw new Error("Email delivery failed");
-}
-function escapeHtml(value) {
-  return value.replace(
-    /[&<>"']/g,
-    (character) => ({
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#39;"
-    })[character]
-  );
-}
+import { secureHeaders } from "hono/secure-headers";
+import { and, asc, desc, eq as eq2 } from "drizzle-orm";
+import { z } from "zod";
 
 // src/worker/database.ts
 import { createClient } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
 
 // src/worker/schema.ts
+var schema_exports = {};
+__export(schema_exports, {
+  assets: () => assets,
+  auditEvents: () => auditEvents,
+  authAccounts: () => authAccounts,
+  authRateLimits: () => authRateLimits,
+  authSchema: () => authSchema,
+  authSessions: () => authSessions,
+  authUsers: () => authUsers,
+  authVerifications: () => authVerifications,
+  chapters: () => chapters,
+  equipmentItems: () => equipmentItems,
+  idempotencyKeys: () => idempotencyKeys,
+  notifications: () => notifications,
+  rateLimitBuckets: () => rateLimitBuckets,
+  reservationAssets: () => reservationAssets,
+  reservationLines: () => reservationLines,
+  reservations: () => reservations,
+  schema: () => schema
+});
 import { sql } from "drizzle-orm";
-import { check, index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import {
+  check,
+  index,
+  integer,
+  primaryKey,
+  sqliteTable,
+  text,
+  uniqueIndex
+} from "drizzle-orm/sqlite-core";
 var authUsers = sqliteTable(
   "user",
   {
@@ -1711,10 +58,11 @@ var authUsers = sqliteTable(
     email: text("email").notNull(),
     emailVerified: integer("emailVerified", { mode: "boolean" }).notNull().default(false),
     image: text("image"),
+    role: text("role", { enum: ["USER", "BOARD", "SUPERADMIN"] }).notNull().default("USER"),
     createdAt: integer("createdAt", { mode: "timestamp_ms" }).notNull(),
     updatedAt: integer("updatedAt", { mode: "timestamp_ms" }).notNull()
   },
-  (table) => [uniqueIndex("user_email").on(table.email)]
+  (table) => [uniqueIndex("user_email").on(table.email), index("user_role").on(table.role)]
 );
 var authSessions = sqliteTable(
   "session",
@@ -1774,164 +122,176 @@ var authRateLimits = sqliteTable(
   },
   (table) => [uniqueIndex("rate_limit_key").on(table.key)]
 );
-var appUsers = sqliteTable(
-  "app_users",
+var chapters = sqliteTable(
+  "chapters",
   {
     id: text("id").primaryKey(),
-    email: text("email").notNull(),
     name: text("name").notNull(),
-    phone: text("phone"),
-    role: text("role", { enum: ["MEMBER", "OPERATOR", "SUPERADMIN"] }).notNull().default("MEMBER"),
-    clearance: text("clearance").notNull().default("I"),
-    clearanceSource: text("clearance_source"),
-    affiliation: text("affiliation").notNull().default("EXTERNAL"),
-    claimedAffiliation: text("claimed_affiliation"),
-    affiliationVerified: integer("affiliation_verified", { mode: "boolean" }).notNull().default(false),
-    status: text("status").notNull().default("ACTIVE"),
-    data: text("data", { mode: "json" }).notNull().default("{}"),
+    shortCode: text("short_code").notNull(),
+    active: integer("active", { mode: "boolean" }).notNull().default(true),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull()
   },
   (table) => [
-    uniqueIndex("app_users_email").on(table.email),
-    index("app_users_role_status").on(table.role, table.status)
+    uniqueIndex("chapters_name").on(table.name),
+    uniqueIndex("chapters_short_code").on(table.shortCode)
   ]
 );
-var inventory = sqliteTable(
-  "inventory",
+var equipmentItems = sqliteTable(
+  "equipment_items",
   {
     id: text("id").primaryKey(),
     name: text("name").notNull(),
+    description: text("description").notNull().default(""),
     category: text("category").notNull(),
-    equipmentClass: text("equipment_class").notNull(),
-    trackingMode: text("tracking_mode").notNull(),
-    totalQuantity: integer("total_quantity").notNull().default(0),
-    availableQuantity: integer("available_quantity").notNull().default(0),
-    allocatedQuantity: integer("allocated_quantity").notNull().default(0),
-    borrowedQuantity: integer("borrowed_quantity").notNull().default(0),
-    damagedQuantity: integer("damaged_quantity").notNull().default(0),
-    maintenanceQuantity: integer("maintenance_quantity").notNull().default(0),
-    lostQuantity: integer("lost_quantity").notNull().default(0),
-    borrowerVisible: integer("borrower_visible", { mode: "boolean" }).notNull().default(false),
-    data: text("data", { mode: "json" }).notNull(),
+    imageUrl: text("image_url"),
+    active: integer("active", { mode: "boolean" }).notNull().default(true),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull()
+  },
+  (table) => [index("equipment_active_name").on(table.active, table.name)]
+);
+var assets = sqliteTable(
+  "assets",
+  {
+    id: text("id").primaryKey(),
+    equipmentItemId: text("equipment_item_id").notNull().references(() => equipmentItems.id, { onDelete: "restrict" }),
+    assetCode: text("asset_code").notNull(),
+    qrToken: text("qr_token").notNull(),
+    serialNumber: text("serial_number"),
+    state: text("state", {
+      enum: ["AVAILABLE", "RESERVED", "BORROWED", "OUT_OF_SERVICE", "RETIRED"]
+    }).notNull().default("AVAILABLE"),
+    active: integer("active", { mode: "boolean" }).notNull().default(true),
+    lastScanAt: integer("last_scan_at"),
+    createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull()
   },
   (table) => [
-    index("inventory_class_visibility").on(table.equipmentClass, table.borrowerVisible),
-    check(
-      "inventory_stock_conservation",
-      sql`${table.totalQuantity} = ${table.availableQuantity} + ${table.allocatedQuantity} + ${table.borrowedQuantity} + ${table.damagedQuantity} + ${table.maintenanceQuantity} + ${table.lostQuantity}`
-    ),
-    check("inventory_timestamp_nonnegative", sql`${table.updatedAt} >= 0`)
+    uniqueIndex("assets_code").on(table.assetCode),
+    uniqueIndex("assets_qr_token").on(table.qrToken),
+    uniqueIndex("assets_serial_number").on(table.serialNumber),
+    index("assets_item_state").on(table.equipmentItemId, table.state, table.active)
   ]
 );
-var inventoryAssets = sqliteTable(
-  "inventory_assets",
+var reservations = sqliteTable(
+  "reservations",
   {
     id: text("id").primaryKey(),
-    itemId: text("item_id").notNull().references(() => inventory.id, { onDelete: "cascade" }),
-    serialNumber: text("serial_number").notNull(),
-    state: text("state").notNull(),
-    data: text("data", { mode: "json" }).notNull()
+    requestedByUserId: text("requested_by_user_id").notNull().references(() => authUsers.id, { onDelete: "restrict" }),
+    borrowerType: text("borrower_type", { enum: ["PERSON", "CHAPTER"] }).notNull(),
+    borrowerUserId: text("borrower_user_id").references(() => authUsers.id, {
+      onDelete: "restrict"
+    }),
+    chapterId: text("chapter_id").references(() => chapters.id, { onDelete: "restrict" }),
+    pickupAt: integer("pickup_at").notNull(),
+    returnAt: integer("return_at").notNull(),
+    note: text("note"),
+    status: text("status", {
+      enum: ["PENDING", "APPROVED", "DECLINED", "CANCELLED", "COMPLETED"]
+    }).notNull().default("PENDING"),
+    approvedByUserId: text("approved_by_user_id").references(() => authUsers.id, {
+      onDelete: "set null"
+    }),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull()
   },
   (table) => [
-    uniqueIndex("inventory_asset_serial").on(table.serialNumber),
-    index("asset_item_state").on(table.itemId, table.state),
+    index("reservations_pickup").on(table.pickupAt),
+    index("reservations_return").on(table.returnAt),
+    index("reservations_status").on(table.status),
+    index("reservations_requester_created").on(table.requestedByUserId, table.createdAt),
+    check("reservation_time_range", sql`${table.pickupAt} < ${table.returnAt}`),
     check(
-      "asset_state_valid",
-      sql`${table.state} IN ('AVAILABLE','ALLOCATED','BORROWED','DAMAGED','MAINTENANCE','LOST')`
+      "reservation_borrower_party",
+      sql`(${table.borrowerType} = 'PERSON' AND ${table.borrowerUserId} IS NOT NULL AND ${table.chapterId} IS NULL) OR (${table.borrowerType} = 'CHAPTER' AND ${table.borrowerUserId} IS NULL AND ${table.chapterId} IS NOT NULL)`
     )
   ]
 );
-var requests = sqliteTable(
-  "requests",
+var reservationLines = sqliteTable(
+  "reservation_lines",
   {
     id: text("id").primaryKey(),
-    userId: text("user_id").notNull().references(() => appUsers.id),
-    status: text("status").notNull(),
-    createdAt: integer("created_at").notNull(),
-    data: text("data", { mode: "json" }).notNull()
+    reservationId: text("reservation_id").notNull().references(() => reservations.id, { onDelete: "cascade" }),
+    equipmentItemId: text("equipment_item_id").notNull().references(() => equipmentItems.id, { onDelete: "restrict" }),
+    quantity: integer("quantity").notNull()
   },
   (table) => [
-    index("requests_owner_created").on(table.userId, table.createdAt),
-    index("requests_status").on(table.status),
-    check("request_no_invalid_sentinel", sql`${table.status} <> 'INVALID'`)
+    uniqueIndex("reservation_line_equipment").on(table.reservationId, table.equipmentItemId),
+    index("reservation_lines_equipment").on(table.equipmentItemId),
+    check("reservation_line_quantity", sql`${table.quantity} > 0`)
   ]
 );
-var requestLines = sqliteTable(
-  "request_lines",
+var reservationAssets = sqliteTable(
+  "reservation_assets",
   {
     id: text("id").primaryKey(),
-    requestId: text("request_id").notNull().references(() => requests.id, { onDelete: "cascade" }),
-    itemId: text("item_id").notNull().references(() => inventory.id),
-    equipmentClass: text("equipment_class").notNull(),
-    quantity: integer("quantity").notNull(),
-    data: text("data", { mode: "json" }).notNull()
-  },
-  (table) => [index("request_lines_item").on(table.itemId)]
-);
-var recordStore = sqliteTable(
-  "record_store",
-  {
-    kind: text("kind").notNull(),
-    id: text("id").notNull(),
-    ownerId: text("owner_id"),
-    status: text("status"),
-    expiresAt: integer("expires_at"),
-    data: text("data", { mode: "json" }).notNull(),
+    reservationId: text("reservation_id").notNull().references(() => reservations.id, { onDelete: "restrict" }),
+    reservationLineId: text("reservation_line_id").notNull().references(() => reservationLines.id, { onDelete: "restrict" }),
+    assetId: text("asset_id").notNull().references(() => assets.id, { onDelete: "restrict" }),
+    state: text("state", { enum: ["RESERVED", "BORROWED", "RETURNED", "RELEASED"] }).notNull().default("RESERVED"),
+    actualPickupAt: integer("actual_pickup_at"),
+    checkedOutByUserId: text("checked_out_by_user_id").references(() => authUsers.id, {
+      onDelete: "set null"
+    }),
+    actualReturnAt: integer("actual_return_at"),
+    checkedInByUserId: text("checked_in_by_user_id").references(() => authUsers.id, {
+      onDelete: "set null"
+    }),
+    createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull()
   },
   (table) => [
-    index("record_owner_kind").on(table.kind, table.ownerId),
-    index("record_status_kind").on(table.kind, table.status),
-    index("record_expiry").on(table.kind, table.expiresAt),
-    check("record_timestamp_nonnegative", sql`${table.updatedAt} >= 0`)
+    uniqueIndex("reservation_asset_once").on(table.reservationId, table.assetId),
+    index("reservation_assets_asset").on(table.assetId),
+    index("reservation_assets_reservation").on(table.reservationId),
+    index("reservation_assets_line").on(table.reservationLineId)
   ]
 );
-var staffChallenges = sqliteTable(
-  "staff_challenges",
+var notifications = sqliteTable(
+  "notifications",
   {
     id: text("id").primaryKey(),
-    userId: text("user_id").notNull().references(() => appUsers.id, { onDelete: "cascade" }),
-    codeHash: text("code_hash").notNull(),
-    expiresAt: integer("expires_at").notNull(),
-    attempts: integer("attempts").notNull().default(0),
-    consumedAt: integer("consumed_at"),
+    userId: text("user_id").notNull().references(() => authUsers.id, { onDelete: "cascade" }),
+    type: text("type").notNull(),
+    title: text("title").notNull(),
+    message: text("message").notNull(),
+    reservationId: text("reservation_id").references(() => reservations.id, {
+      onDelete: "set null"
+    }),
+    readAt: integer("read_at"),
     createdAt: integer("created_at").notNull()
   },
-  (table) => [index("staff_challenge_expiry").on(table.userId, table.expiresAt)]
-);
-var staffSessions = sqliteTable("staff_sessions", {
-  userId: text("user_id").primaryKey().references(() => appUsers.id, { onDelete: "cascade" }),
-  expiresAt: integer("expires_at").notNull(),
-  freshUntil: integer("fresh_until").notNull(),
-  revokedAt: integer("revoked_at")
-});
-var idempotencyKeys = sqliteTable(
-  "idempotency_keys",
-  {
-    key: text("key").primaryKey(),
-    actorId: text("actor_id").notNull(),
-    response: text("response", { mode: "json" }).notNull(),
-    createdAt: integer("created_at").notNull()
-  },
-  (table) => [index("idempotency_created").on(table.createdAt)]
+  (table) => [index("notifications_user_created").on(table.userId, table.createdAt)]
 );
 var auditEvents = sqliteTable(
   "audit_events",
   {
     id: text("id").primaryKey(),
-    actorUserId: text("actor_user_id").notNull(),
+    actorUserId: text("actor_user_id").notNull().references(() => authUsers.id, { onDelete: "restrict" }),
     entityType: text("entity_type").notNull(),
     entityId: text("entity_id").notNull(),
     action: text("action").notNull(),
-    reason: text("reason"),
     createdAt: integer("created_at").notNull(),
-    data: text("data", { mode: "json" }).notNull()
+    data: text("data", { mode: "json" }).notNull().default("{}")
   },
   (table) => [
-    index("audit_entity").on(table.entityType, table.entityId, table.createdAt),
-    index("audit_actor").on(table.actorUserId, table.createdAt)
+    index("audit_entity_time").on(table.entityType, table.entityId, table.createdAt),
+    index("audit_actor_time").on(table.actorUserId, table.createdAt)
+  ]
+);
+var idempotencyKeys = sqliteTable(
+  "idempotency_keys",
+  {
+    actorId: text("actor_id").notNull().references(() => authUsers.id, { onDelete: "cascade" }),
+    operation: text("operation").notNull(),
+    key: text("key").notNull(),
+    response: text("response", { mode: "json" }).notNull(),
+    createdAt: integer("created_at").notNull()
+  },
+  (table) => [
+    primaryKey({ columns: [table.actorId, table.operation, table.key] }),
+    index("idempotency_created").on(table.createdAt)
   ]
 );
 var rateLimitBuckets = sqliteTable("rate_limit_buckets", {
@@ -1939,16 +299,6 @@ var rateLimitBuckets = sqliteTable("rate_limit_buckets", {
   windowStart: integer("window_start").notNull(),
   count: integer("count").notNull()
 });
-var registrationIntents = sqliteTable("registration_intents", {
-  email: text("email").primaryKey(),
-  name: text("name").notNull(),
-  phone: text("phone").notNull(),
-  claimedAffiliation: text("claimed_affiliation").notNull(),
-  expiresAt: integer("expires_at").notNull(),
-  createdAt: integer("created_at").notNull()
-});
-
-// src/worker/database.ts
 var authSchema = {
   user: authUsers,
   session: authSessions,
@@ -1956,1136 +306,38 @@ var authSchema = {
   verification: authVerifications,
   rateLimit: authRateLimits
 };
-function createAuthDatabase(client) {
-  return drizzle(client, { schema: authSchema });
-}
-var LibSqlPreparedStatement = class {
-  constructor(client, sql2) {
-    this.client = client;
-    this.sql = sql2;
-  }
-  args = [];
-  bind(...values) {
-    if (values.some((value) => value === void 0))
-      throw new TypeError("SQL arguments cannot be undefined");
-    this.args = values;
-    return this;
-  }
-  async first() {
-    const result = await this.client.execute({ sql: this.sql, args: this.args });
-    return result.rows[0] ?? null;
-  }
-  async all() {
-    const result = await this.client.execute({ sql: this.sql, args: this.args });
-    return toD1Result(result);
-  }
-  async run() {
-    return toD1Result(
-      await this.client.execute({ sql: this.sql, args: this.args })
-    );
-  }
-  asLibSqlStatement() {
-    return { sql: this.sql, args: this.args };
-  }
+var schema = {
+  ...authSchema,
+  chapters,
+  equipmentItems,
+  assets,
+  reservations,
+  reservationLines,
+  reservationAssets,
+  notifications,
+  auditEvents,
+  idempotencyKeys,
+  rateLimitBuckets
 };
-function toD1Result(result) {
-  return {
-    success: true,
-    results: result.rows,
-    meta: { changes: result.rowsAffected, last_row_id: result.lastInsertRowid }
-  };
+
+// src/worker/database.ts
+function createDatabase(client) {
+  return drizzle({ client, schema });
 }
-var LibSqlD1Database = class {
-  constructor(client) {
-    this.client = client;
-  }
-  prepare(sql2) {
-    return new LibSqlPreparedStatement(this.client, sql2);
-  }
-  async batch(statements) {
-    if (statements.length === 0) return [];
-    const queries = statements.map((statement) => {
-      if (!(statement instanceof LibSqlPreparedStatement))
-        throw new TypeError("Batch statement belongs to another database");
-      return statement.asLibSqlStatement();
-    });
-    const results = await this.client.batch(queries, "write");
-    return results.map(toD1Result);
-  }
-};
 function createLibSqlClient(url, authToken) {
   return createClient({ url, authToken });
 }
 
 // src/worker/auth.ts
-function trustedAuthOrigin(env, requestUrl) {
-  const requestOrigin = new URL(requestUrl);
-  const allowedHosts = new Set([env.VERCEL_URL, env.VERCEL_PROJECT_PRODUCTION_URL].filter(Boolean));
-  const isLocal = ["localhost", "127.0.0.1"].includes(requestOrigin.hostname);
-  if (env.APP_ORIGIN && requestOrigin.origin !== new URL(env.APP_ORIGIN).origin && !isLocal)
-    throw new Error("Request host is not the configured application address");
-  if (!env.APP_ORIGIN && !isLocal && !allowedHosts.has(requestOrigin.host))
-    throw new Error("Request host is not a Vercel deployment address");
-  const origin = env.APP_ORIGIN && !isLocal ? new URL(env.APP_ORIGIN) : new URL(requestOrigin.origin);
-  if (origin.username || origin.password || origin.pathname !== "/" || origin.search || origin.hash)
-    throw new Error("APP_ORIGIN must be an origin without a path");
-  if (origin.protocol !== "https:" && origin.hostname !== "localhost" && origin.hostname !== "127.0.0.1")
-    throw new Error("APP_ORIGIN must use HTTPS");
-  return origin.origin;
-}
-function createAuth(env, origin = env.APP_ORIGIN ?? "http://localhost:8787") {
-  return betterAuth({
-    appName: "IEEE RAS INSAT Logistics",
-    baseURL: origin,
-    secret: env.BETTER_AUTH_SECRET,
-    database: drizzleAdapter(env.AUTH_DATABASE, { provider: "sqlite", schema: authSchema }),
-    trustedOrigins: [origin],
-    advanced: {
-      useSecureCookies: true,
-      defaultCookieAttributes: {
-        httpOnly: true,
-        secure: true,
-        sameSite: "lax",
-        path: "/"
-      }
-    },
-    session: {
-      expiresIn: 390 * 24 * 60 * 60,
-      updateAge: 24 * 60 * 60,
-      cookieCache: { enabled: false }
-    },
-    rateLimit: { enabled: true, window: 60, max: 10, storage: "database" },
-    emailAndPassword: { enabled: false },
-    plugins: [
-      magicLink({
-        expiresIn: 10 * 60,
-        storeToken: "hashed",
-        disableSignUp: true,
-        sendMagicLink: async ({ email, url }) => {
-          await sendEmail(
-            env,
-            email,
-            "Your IEEE RAS INSAT Logistics sign-in link",
-            `<p>Use this single-use link within 10 minutes to sign in:</p><p><a href="${escapeHtml(url)}">Sign in</a></p><p>If you did not request this email, you can ignore it.</p>`
-          );
-        }
-      })
-    ]
-  });
-}
+import { betterAuth } from "better-auth";
+import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { magicLink } from "better-auth/plugins";
 
-// src/worker/identity.ts
-async function resolveIdentity(c) {
-  try {
-    const auth = createAuth(c.env, trustedAuthOrigin(c.env, c.req.url));
-    const session = await auth.api.getSession({ headers: c.req.raw.headers });
-    if (session?.user?.id) {
-      const user = await c.env.DB.prepare("SELECT * FROM app_users WHERE id=?").bind(session.user.id).first();
-      if (user) return user;
-    }
-  } catch {
+// src/worker/email.ts
+async function sendEmail(env, to, subject, htmlContent) {
+  if (!env.BREVO_API_KEY || !env.BREVO_SENDER_EMAIL) {
+    throw new Error("Email delivery is not configured.");
   }
-  const cookie = c.req.header("Cookie") ?? "";
-  const tokenMatch = cookie.match(/(?:better-auth\.session_token|ras_staff_session)=([^;]+)/);
-  const token = tokenMatch?.[1]?.trim() || c.req.header("x-device-key");
-  if (token) {
-    const sessionRow = await c.env.DB.prepare(
-      "SELECT userId FROM session WHERE token=? AND expiresAt > ?"
-    ).bind(token, Date.now()).first();
-    if (sessionRow?.userId) {
-      const user = await c.env.DB.prepare("SELECT * FROM app_users WHERE id=?").bind(sessionRow.userId).first();
-      if (user) return user;
-    }
-  }
-  return null;
-}
-async function requireMember(c) {
-  const user = await resolveIdentity(c);
-  if (!user || user.status !== "ACTIVE" || user.role !== "MEMBER") return null;
-  return user;
-}
-async function requireBoard(c, fresh = false) {
-  const user = await resolveIdentity(c);
-  if (!user || user.status !== "ACTIVE" || !["OPERATOR", "SUPERADMIN"].includes(user.role))
-    return null;
-  const challenge = await c.env.DB.prepare(
-    "SELECT expires_at,fresh_until,revoked_at FROM staff_sessions WHERE user_id=?"
-  ).bind(user.id).first();
-  if (!challenge || challenge.revoked_at || challenge.expires_at <= Date.now()) return null;
-  if (fresh && challenge.fresh_until <= Date.now()) return null;
-  return user;
-}
-
-// src/worker/security.ts
-function jsonError(c, status, code, message) {
-  return c.json({ error: { code, message } }, status);
-}
-var sameOrigin = async (c, next) => {
-  if (["GET", "HEAD", "OPTIONS"].includes(c.req.method)) return next();
-  const origin = c.req.header("Origin");
-  if (!origin) return jsonError(c, 403, "ORIGIN_REJECTED", "Request origin is not allowed");
-  try {
-    const originUrl = new URL(origin);
-    const host = c.req.header("x-forwarded-host") || c.req.header("host") || new URL(c.req.url).host;
-    const hostWithoutPort = host.split(":")[0];
-    if (originUrl.hostname !== hostWithoutPort && origin !== new URL(c.req.url).origin) {
-      return jsonError(c, 403, "ORIGIN_REJECTED", "Request origin is not allowed");
-    }
-  } catch {
-    return jsonError(c, 403, "ORIGIN_REJECTED", "Request origin is not allowed");
-  }
-  return next();
-};
-async function verifyTurnstile(env, token, ip, origin) {
-  if (!env.TURNSTILE_SECRET_KEY) return true;
-  if (!token || token.length > 2048) return false;
-  const body = new URLSearchParams({ secret: env.TURNSTILE_SECRET_KEY, response: token });
-  if (ip) body.set("remoteip", ip);
-  const response = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
-    method: "POST",
-    body
-  });
-  if (!response.ok) return false;
-  const result = await response.json();
-  return result.success === true && result.hostname === new URL(origin).hostname;
-}
-async function digest(value) {
-  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-async function rateLimit(db, key, max, windowSeconds) {
-  const now2 = Math.floor(Date.now() / 1e3);
-  const keyHash = await digest(key);
-  const windowStart = Math.floor(now2 / windowSeconds) * windowSeconds;
-  const row = await db.prepare(
-    `INSERT INTO rate_limit_buckets(key_hash,window_start,count)
-    VALUES(?,?,1) ON CONFLICT(key_hash) DO UPDATE SET
-    count=CASE WHEN window_start=? THEN count+1 ELSE 1 END,
-    window_start=? WHERE window_start<>? OR count<? RETURNING count`
-  ).bind(keyHash, windowStart, windowStart, windowStart, windowStart, max).first();
-  return row !== null && row.count <= max;
-}
-
-// src/worker/index.ts
-var app = new Hono();
-var now = () => Date.now();
-var iso2 = (time = now()) => new Date(time).toISOString();
-var uuid = (prefix) => `${prefix}-${crypto.randomUUID()}`;
-var parseJson = (value) => JSON.parse(value);
-app.use("*", requestId());
-app.use(
-  "*",
-  secureHeaders({
-    contentSecurityPolicy: {
-      defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "https://challenges.cloudflare.com"],
-      frameSrc: ["https://challenges.cloudflare.com"],
-      connectSrc: ["'self'", "https://challenges.cloudflare.com"],
-      imgSrc: ["'self'", "data:", "https:"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      objectSrc: ["'none'"],
-      baseUri: ["'self'"],
-      formAction: ["'self'"],
-      frameAncestors: ["'none'"]
-    },
-    strictTransportSecurity: "max-age=31536000; includeSubDomains; preload",
-    referrerPolicy: "no-referrer",
-    xFrameOptions: "DENY",
-    permissionsPolicy: { camera: false, microphone: false, geolocation: false }
-  })
-);
-app.use("/api/*", sameOrigin);
-app.use("/api/*", async (c, next) => {
-  const key = c.req.header("CF-Connecting-IP") ?? "unknown";
-  const decision = await c.env.API_RATE_LIMITER.limit({ key });
-  if (!decision.success)
-    return jsonError(c, 429, "RATE_LIMITED", "Too many requests; slow down and try again");
-  c.header("Cache-Control", "no-store");
-  c.header("X-Request-Id", c.get("requestId"));
-  await next();
-});
-app.use(
-  "/api/*",
-  bodyLimit({
-    maxSize: 64 * 1024,
-    onError: (c) => jsonError(c, 413, "BODY_TOO_LARGE", "Request body is too large")
-  })
-);
-app.use("/api/v1/catalog*", async (c, next) => {
-  await expireAllocations(c.env);
-  await next();
-});
-app.use("/api/v1/board/inventory", async (c, next) => {
-  await expireAllocations(c.env);
-  await next();
-});
-app.onError((error, c) => {
-  const requestIdValue = c.get("requestId");
-  console.error("request_failed", { requestId: requestIdValue, type: error.name });
-  return jsonError(c, 500, "INTERNAL", "The request could not be completed");
-});
-app.get("/api/health", (c) => c.json({ status: "ok" }));
-app.get("/api/v1/config", (c) => c.json({ turnstileSiteKey: c.env.TURNSTILE_SITE_KEY }));
-app.get("/api/cron/maintenance", async (c) => {
-  const expected = c.env.CRON_SECRET;
-  const received = c.req.header("Authorization")?.replace(/^Bearer\s+/i, "") ?? "";
-  if (!expected)
-    return jsonError(c, 503, "MAINTENANCE_DISABLED", "Scheduled maintenance is not configured");
-  if (!timingSafeEqual(received, expected))
-    return jsonError(c, 401, "UNAUTHENTICATED", "Scheduled maintenance authorization failed");
-  await expireAllocations(c.env);
-  await cleanExpiredSecurityData(c.env);
-  return c.json({ ok: true });
-});
-app.all("/api/auth/*", async (c) => {
-  const pathname = new URL(c.req.url).pathname;
-  if (c.req.method === "POST" && pathname.endsWith("/sign-in/magic-link")) {
-    const workerLimit = await c.env.AUTH_RATE_LIMITER.limit({
-      key: c.req.header("CF-Connecting-IP") ?? "unknown"
-    });
-    if (!workerLimit.success)
-      return jsonError(c, 429, "RATE_LIMITED", "Too many sign-in attempts; try again later");
-    const body = await c.req.raw.clone().json().catch(() => ({}));
-    const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "invalid";
-    const ip = c.req.header("CF-Connecting-IP") ?? "unknown";
-    if (!await rateLimit(c.env.DB, `magic:${email}:${ip}`, 3, 3600))
-      return jsonError(
-        c,
-        429,
-        "RATE_LIMITED",
-        "Please wait before requesting another sign-in link"
-      );
-    if (!await verifyTurnstile(c.env, body.turnstileToken, ip, trustedAuthOrigin(c.env, c.req.url)))
-      return jsonError(c, 403, "CHALLENGE_FAILED", "Complete the security check and try again");
-    const callback = body.callbackURL;
-    if (callback) {
-      try {
-        if (new URL(callback).origin !== trustedAuthOrigin(c.env, c.req.url))
-          return jsonError(c, 400, "VALIDATION", "Invalid sign-in destination");
-      } catch {
-        return jsonError(c, 400, "VALIDATION", "Invalid sign-in destination");
-      }
-    }
-    const allowed = await c.env.DB.prepare(
-      `SELECT user.id FROM user INNER JOIN app_users ON app_users.id=user.id
-      WHERE user.email=? COLLATE NOCASE AND app_users.role IN ('OPERATOR','SUPERADMIN') AND app_users.status='ACTIVE'`
-    ).bind(email).first();
-    if (!allowed) return c.json({ status: true }, 200);
-  }
-  return createAuth(c.env, trustedAuthOrigin(c.env, c.req.url)).handler(c.req.raw);
-});
-app.post("/api/v1/auth/borrower", async (c) => {
-  const ip = c.req.header("CF-Connecting-IP") ?? "unknown";
-  const rateDecision = await c.env.AUTH_RATE_LIMITER.limit({ key: `borrower-auth:${ip}` });
-  if (!rateDecision.success)
-    return jsonError(c, 429, "RATE_LIMITED", "Too many authentication attempts; try again later");
-  const body = await c.req.json().catch(() => null);
-  if (!body || typeof body.email !== "string" || !/^\S+@\S+\.\S+$/.test(body.email.trim()) || typeof body.name !== "string" || body.name.trim().length < 3 || body.name.length > 120)
-    return jsonError(c, 400, "VALIDATION", "Valid member details are required");
-  const email = body.email.trim().toLowerCase();
-  const name = body.name.trim();
-  const phone = typeof body.phone === "string" ? body.phone.trim() : "";
-  const membership = ["IEEE", "AEROBOTIX", "EXTERNAL"].includes(body.membership ?? "") ? body.membership : "EXTERNAL";
-  const timestamp = now();
-  let user = await c.env.DB.prepare("SELECT * FROM app_users WHERE email=? COLLATE NOCASE").bind(email).first();
-  const existing = await c.env.DB.prepare("SELECT * FROM app_users WHERE email=? COLLATE NOCASE").bind(email).first();
-  if (!existing) {
-    const userId = `borrower-${await digest(email)}`;
-    await c.env.DB.batch([
-      c.env.DB.prepare(
-        "INSERT INTO user(id,name,email,emailVerified,createdAt,updatedAt) VALUES(?,?,?,1,?,?)"
-      ).bind(userId, name, email, timestamp, timestamp),
-      c.env.DB.prepare(
-        "INSERT INTO app_users(id,email,name,phone,role,clearance,affiliation,claimed_affiliation,affiliation_verified,status,data,created_at,updated_at) VALUES(?,?,?,?,'MEMBER','I','EXTERNAL',?,0,'ACTIVE','{}',?,?)"
-      ).bind(userId, email, name, phone, membership, timestamp, timestamp)
-    ]);
-  } else {
-    const authUser = await c.env.DB.prepare("SELECT id FROM user WHERE id=?").bind(existing.id).first();
-    const statements = [
-      c.env.DB.prepare(
-        "UPDATE app_users SET name=?,phone=?,claimed_affiliation=?,updated_at=? WHERE id=?"
-      ).bind(name, phone, membership, timestamp, existing.id)
-    ];
-    if (!authUser) {
-      statements.push(
-        c.env.DB.prepare(
-          "INSERT INTO user(id,name,email,emailVerified,createdAt,updatedAt) VALUES(?,?,?,1,?,?)"
-        ).bind(existing.id, name, email, timestamp, timestamp)
-      );
-    }
-    await c.env.DB.batch(statements);
-  }
-  const origin = trustedAuthOrigin(c.env, c.req.url);
-  try {
-    await createAuth(c.env, origin).api.signInMagicLink({
-      body: { email, name, callbackURL: `${origin}/app` },
-      headers: c.req.raw.headers
-    });
-  } catch {
-    return jsonError(c, 503, "AUTH_UNAVAILABLE", "The sign-in link could not be sent");
-  }
-  user = await c.env.DB.prepare("SELECT * FROM app_users WHERE email=? COLLATE NOCASE").bind(email).first();
-  if (!user) return jsonError(c, 500, "INTERNAL", "Member account could not be loaded");
-  return c.json(
-    {
-      ok: true,
-      magicLinkSent: true,
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        clearance: user.clearance,
-        affiliation: user.affiliation,
-        isProcessed: user.affiliation_verified === 1,
-        status: user.status,
-        strikesCount: 0
-      }
-    },
-    202
-  );
-});
-app.post("/api/v1/staff/challenge", async (c) => {
-  const actor = await resolveIdentity(c);
-  if (!actor || !["OPERATOR", "SUPERADMIN"].includes(actor.role) || actor.status !== "ACTIVE")
-    return jsonError(c, 403, "FORBIDDEN", "Board access is not enabled for this account");
-  const email = actor.email;
-  const ip = c.req.header("CF-Connecting-IP") ?? "unknown";
-  if (!await rateLimit(c.env.DB, `staff-code:${actor.id}:${ip}`, 3, 3600))
-    return jsonError(c, 429, "RATE_LIMITED", "Please wait before requesting another code");
-  const entropy = new Uint32Array(1);
-  let value;
-  do {
-    crypto.getRandomValues(entropy);
-    value = entropy[0];
-  } while (value >= Math.floor(4294967296 / 1e6) * 1e6);
-  const code = String(value % 1e6).padStart(6, "0");
-  const codeHash = await otpHash(c.env, actor.id, code);
-  const created = now();
-  await c.env.DB.prepare(
-    "INSERT INTO staff_challenges(id,user_id,code_hash,expires_at,attempts,created_at) VALUES(?,?,?,?,0,?)"
-  ).bind(crypto.randomUUID(), actor.id, codeHash, created + 10 * 6e4, created).run();
-  await sendStaffCode(c.env, email, code);
-  return c.json(
-    { ok: true, message: "A verification code has been sent to your staff email." },
-    202
-  );
-});
-app.get("/api/v1/board/session", async (c) => {
-  const actor = await resolveIdentity(c);
-  if (!actor || !["OPERATOR", "SUPERADMIN"].includes(actor.role) || actor.status !== "ACTIVE")
-    return jsonError(c, 403, "FORBIDDEN", "Board access is not enabled for this account");
-  const session = await c.env.DB.prepare(
-    "SELECT expires_at,fresh_until,revoked_at FROM staff_sessions WHERE user_id=?"
-  ).bind(actor.id).first();
-  return c.json({
-    active: Boolean(session && !session.revoked_at && session.expires_at > now()),
-    fresh: Boolean(session && !session.revoked_at && session.fresh_until > now()),
-    expiresAt: session?.expires_at ?? null,
-    freshUntil: session?.fresh_until ?? null
-  });
-});
-app.post("/api/v1/staff/verify", async (c) => {
-  const actor = await resolveIdentity(c);
-  if (!actor || !["OPERATOR", "SUPERADMIN"].includes(actor.role) || actor.status !== "ACTIVE")
-    return jsonError(c, 403, "FORBIDDEN", "Board access is not enabled for this account");
-  const body = await c.req.json().catch(() => null);
-  if (!body || !/^\d{6}$/.test(body.code ?? ""))
-    return jsonError(c, 400, "VALIDATION", "Enter the six-digit code");
-  const challenge = await c.env.DB.prepare(
-    `SELECT id,code_hash,expires_at,attempts FROM staff_challenges
-    WHERE user_id=? AND consumed_at IS NULL ORDER BY created_at DESC LIMIT 1`
-  ).bind(actor.id).first();
-  if (!challenge || challenge.expires_at <= now() || challenge.attempts >= 5)
-    return jsonError(c, 401, "CHALLENGE_EXPIRED", "Request a new verification code");
-  const hash = await otpHash(c.env, actor.id, body.code ?? "");
-  if (!timingSafeEqual(hash, challenge.code_hash)) {
-    await c.env.DB.prepare(
-      "UPDATE staff_challenges SET attempts=attempts+1 WHERE id=? AND attempts<5"
-    ).bind(challenge.id).run();
-    return jsonError(c, 401, "CHALLENGE_INVALID", "The code is incorrect or expired");
-  }
-  const timestamp = now();
-  const batch = await c.env.DB.batch([
-    c.env.DB.prepare(
-      "UPDATE staff_challenges SET consumed_at=? WHERE id=? AND consumed_at IS NULL AND attempts<5"
-    ).bind(timestamp, challenge.id),
-    c.env.DB.prepare(
-      `INSERT INTO staff_sessions(user_id,expires_at,fresh_until,revoked_at) VALUES(?,?,?,NULL)
-      ON CONFLICT(user_id) DO UPDATE SET expires_at=excluded.expires_at,fresh_until=excluded.fresh_until,revoked_at=NULL`
-    ).bind(actor.id, timestamp + 8 * 60 * 6e4, timestamp + 10 * 6e4)
-  ]);
-  if (!batch[0]?.success) return jsonError(c, 409, "CONFLICT", "The code was already used");
-  return c.json({ ok: true, expiresAt: timestamp + 8 * 60 * 6e4 });
-});
-app.post("/api/v1/staff/revoke", async (c) => {
-  const actor = await requireBoard(c, true);
-  if (!actor) return jsonError(c, 403, "FORBIDDEN", "Fresh board verification is required");
-  const body = await c.req.json().catch(() => ({}));
-  if (actor.role !== "SUPERADMIN" || !body.userId)
-    return jsonError(c, 403, "FORBIDDEN", "Superadmin access is required");
-  await c.env.DB.prepare("UPDATE staff_sessions SET revoked_at=? WHERE user_id=?").bind(now(), body.userId).run();
-  return c.json({ ok: true });
-});
-app.post("/api/v1/board/users/invite", async (c) => {
-  const actor = await requireBoard(c, true);
-  if (!actor || actor.role !== "SUPERADMIN")
-    return jsonError(c, 403, "FORBIDDEN", "Fresh superadmin verification is required");
-  const body = await c.req.json().catch(() => null);
-  if (!body || typeof body.email !== "string" || body.email.length > 254 || !/^\S+@\S+\.\S+$/.test(body.email) || typeof body.name !== "string" || body.name.trim().length < 3 || body.name.length > 120)
-    return jsonError(c, 400, "VALIDATION", "Enter the operator name and email");
-  const email = body.email.trim().toLowerCase();
-  const current = await c.env.DB.prepare(
-    "SELECT id,role FROM app_users WHERE email=? COLLATE NOCASE"
-  ).bind(email).first();
-  if (current) return jsonError(c, 409, "CONFLICT", "An account already exists for this email");
-  const id2 = crypto.randomUUID();
-  const timestamp = now();
-  try {
-    await c.env.DB.batch([
-      c.env.DB.prepare(
-        "INSERT INTO user(id,name,email,emailVerified,createdAt,updatedAt) VALUES(?,?,?,0,?,?)"
-      ).bind(id2, body.name.trim(), email, timestamp, timestamp),
-      c.env.DB.prepare(
-        `INSERT INTO app_users(id,email,name,role,clearance,clearance_source,affiliation,claimed_affiliation,affiliation_verified,status,data,created_at,updated_at)
-        VALUES(?,?,?,'OPERATOR','V','OPERATOR_ROLE','RAS_BOARD','RAS_BOARD',1,'ACTIVE','{}',?,?)`
-      ).bind(id2, email, body.name.trim(), timestamp, timestamp),
-      c.env.DB.prepare(
-        "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)"
-      ).bind(
-        uuid("audit"),
-        actor.id,
-        "USER",
-        id2,
-        "OPERATOR_INVITED",
-        timestamp,
-        JSON.stringify({ email })
-      )
-    ]);
-    const origin = trustedAuthOrigin(c.env, c.req.url);
-    await createAuth(c.env, origin).api.signInMagicLink({
-      body: { email, name: body.name.trim(), callbackURL: `${origin}/board` },
-      headers: c.req.raw.headers
-    });
-  } catch {
-    return jsonError(
-      c,
-      503,
-      "INVITE_UNAVAILABLE",
-      "The operator record was created but the sign-in email could not be sent; ask the operator to request a sign-in link"
-    );
-  }
-  return c.json({ ok: true }, 202);
-});
-app.get("/api/v1/me", async (c) => {
-  const user = await resolveIdentity(c);
-  if (!user) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue");
-  const strikes = await c.env.DB.prepare(
-    "SELECT COUNT(*) AS count FROM record_store WHERE kind='strike' AND owner_id=? AND status='ACTIVE'"
-  ).bind(user.id).first();
-  return c.json({
-    id: user.id,
-    name: user.name,
-    email: user.email,
-    phone: user.phone ?? void 0,
-    role: user.role,
-    clearance: user.clearance,
-    affiliation: user.affiliation,
-    claimedAffiliation: user.claimed_affiliation,
-    affiliationVerified: user.affiliation_verified === 1,
-    isProcessed: user.affiliation_verified === 1 || user.role !== "MEMBER",
-    status: user.status,
-    strikesCount: strikes?.count ?? 0
-  });
-});
-app.get("/api/v1/catalog", async (c) => {
-  const search = (c.req.query("search") ?? "").trim().slice(0, 100).toLowerCase();
-  const category = (c.req.query("category") ?? "").trim().slice(0, 80);
-  const rows = await c.env.DB.prepare(
-    `SELECT id,name,category,equipment_class,available_quantity,total_quantity,borrower_visible,data
-    FROM inventory WHERE borrower_visible=1 ORDER BY name LIMIT 500`
-  ).all();
-  const items = (rows.results ?? []).filter(
-    (row) => row.total_quantity > 0 && row.borrower_visible && (!category || row.category === category) && (!search || row.name.toLowerCase().includes(search) || row.category.toLowerCase().includes(search))
-  ).map((row) => ({
-    id: row.id,
-    name: row.name,
-    description: (parseJson(row.data).description ?? "").slice(0, 2e3),
-    category: row.category,
-    imageUrl: safeImage(parseJson(row.data).imageUrl),
-    availability: row.available_quantity > 3 ? "AVAILABLE" : row.available_quantity > 0 ? "LIMITED" : "UNAVAILABLE",
-    action: row.available_quantity > 0 ? "REQUEST" : "NONE"
-  }));
-  const availableOnly = c.req.query("availableOnly") === "true";
-  return c.json(
-    availableOnly ? items.filter((item) => item.availability !== "UNAVAILABLE") : items
-  );
-});
-app.get("/api/v1/catalog/:id", async (c) => {
-  const row = await c.env.DB.prepare(
-    `SELECT id,name,category,equipment_class,available_quantity,total_quantity,borrower_visible,data
-    FROM inventory WHERE id=?`
-  ).bind(c.req.param("id")).first();
-  if (!row || !row.borrower_visible || row.total_quantity < 1)
-    return jsonError(c, 404, "NOT_FOUND", "Catalogue item not found");
-  const data = parseJson(row.data);
-  return c.json({
-    id: row.id,
-    name: row.name,
-    description: String(data.description ?? "").slice(0, 2e3),
-    category: row.category,
-    imageUrl: safeImage(data.imageUrl),
-    ...data.datasheetUrl ? { datasheetUrl: safeImage(data.datasheetUrl) } : {},
-    availability: row.available_quantity > 3 ? "AVAILABLE" : row.available_quantity > 0 ? "LIMITED" : "UNAVAILABLE",
-    action: ["C", "E"].includes(row.equipment_class) ? row.available_quantity > 0 ? "REQUEST" : "NONE" : "ASK_OPERATOR"
-  });
-});
-app.get("/api/v1/profile", async (c) => {
-  const actor = await resolveIdentity(c);
-  if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue");
-  const [requestCount, activeLoans, strikeRows] = await Promise.all([
-    c.env.DB.prepare("SELECT COUNT(*) AS count FROM requests WHERE user_id=?").bind(actor.id).first(),
-    c.env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM record_store WHERE kind='loan' AND owner_id=? AND status IN ('ACTIVE','OVERDUE')"
-    ).bind(actor.id).first(),
-    c.env.DB.prepare(
-      "SELECT data FROM record_store WHERE kind='strike' AND owner_id=? ORDER BY updated_at DESC LIMIT 100"
-    ).bind(actor.id).all()
-  ]);
-  const strikes = (strikeRows.results ?? []).map((row) => parseJson(row.data));
-  return c.json({
-    id: actor.id,
-    name: actor.name,
-    email: actor.email,
-    phone: actor.phone ?? "",
-    role: actor.role,
-    clearance: actor.clearance,
-    affiliation: actor.affiliation,
-    claimedAffiliation: actor.claimed_affiliation ?? void 0,
-    verifiedAffiliation: actor.affiliation_verified ? actor.affiliation : void 0,
-    clearanceSource: actor.clearance_source ?? void 0,
-    isProcessed: actor.affiliation_verified === 1,
-    status: actor.status,
-    strikesCount: strikes.filter((s) => s.status === "ACTIVE").length,
-    strikes: strikes.map((s) => ({
-      id: s.id,
-      date: s.issuedAt,
-      reason: s.reason,
-      severity: s.level >= 4 ? "SUSPENSION" : s.level >= 2 ? "RESTRICTION" : "WARNING",
-      resolved: s.status !== "ACTIVE",
-      level: s.level
-    })),
-    joinedDate: iso2(actor.created_at ?? now()),
-    activeLoansCount: activeLoans?.count ?? 0,
-    totalRequestsCount: requestCount?.count ?? 0
-  });
-});
-app.patch("/api/v1/profile", async (c) => {
-  const actor = await resolveIdentity(c);
-  if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue");
-  const body = await c.req.json().catch(() => null);
-  if (!body || body.phone !== void 0 && (typeof body.phone !== "string" || body.phone.length < 8 || body.phone.length > 40))
-    return jsonError(c, 400, "VALIDATION", "Contact information is invalid");
-  if (body.phone !== void 0)
-    await c.env.DB.prepare("UPDATE app_users SET phone=?,updated_at=? WHERE id=?").bind(body.phone.trim(), now(), actor.id).run();
-  return c.json({ ...actor, phone: body.phone === void 0 ? actor.phone : body.phone.trim() });
-});
-app.get("/api/v1/loans", async (c) => {
-  const actor = await requireMember(c);
-  if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue");
-  const rows = await c.env.DB.prepare(
-    "SELECT data FROM record_store WHERE kind='loan' AND owner_id=? ORDER BY updated_at DESC LIMIT 200"
-  ).bind(actor.id).all();
-  return c.json((rows.results ?? []).map((row) => parseJson(row.data)));
-});
-app.get("/api/v1/loans/:id", async (c) => {
-  const actor = await requireMember(c);
-  if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue");
-  const row = await c.env.DB.prepare(
-    "SELECT data FROM record_store WHERE kind='loan' AND id=? AND owner_id=?"
-  ).bind(c.req.param("id"), actor.id).first();
-  return row ? c.json(parseJson(row.data)) : jsonError(c, 404, "NOT_FOUND", "Loan not found");
-});
-app.get("/api/v1/notifications", async (c) => {
-  const actor = await resolveIdentity(c);
-  if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue");
-  const rows = await c.env.DB.prepare(
-    "SELECT data FROM record_store WHERE kind='notification' AND owner_id=? ORDER BY updated_at DESC LIMIT 200"
-  ).bind(actor.id).all();
-  return c.json((rows.results ?? []).map((row) => parseJson(row.data)));
-});
-app.patch("/api/v1/notifications/:id", async (c) => {
-  const actor = await resolveIdentity(c);
-  if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue");
-  const row = await c.env.DB.prepare(
-    "SELECT data FROM record_store WHERE kind='notification' AND id=? AND owner_id=?"
-  ).bind(c.req.param("id"), actor.id).first();
-  if (!row) return jsonError(c, 404, "NOT_FOUND", "Notification not found");
-  const notification = parseJson(row.data);
-  notification.read = true;
-  await c.env.DB.prepare(
-    "UPDATE record_store SET status='READ',data=?,updated_at=? WHERE kind='notification' AND id=? AND owner_id=?"
-  ).bind(JSON.stringify(notification), now(), notification.id, actor.id).run();
-  return c.body(null, 204);
-});
-app.post("/api/v1/notifications/read-all", async (c) => {
-  const actor = await resolveIdentity(c);
-  if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue");
-  const rows = await c.env.DB.prepare(
-    "SELECT id,data FROM record_store WHERE kind='notification' AND owner_id=? AND status<>'READ' LIMIT 500"
-  ).bind(actor.id).all();
-  await c.env.DB.batch(
-    (rows.results ?? []).map((row) => {
-      const value = parseJson(row.data);
-      value.read = true;
-      return c.env.DB.prepare(
-        "UPDATE record_store SET status='READ',data=?,updated_at=? WHERE kind='notification' AND id=? AND owner_id=?"
-      ).bind(JSON.stringify(value), now(), row.id, actor.id);
-    })
-  );
-  return c.body(null, 204);
-});
-app.get("/api/v1/projects", async (c) => {
-  const actor = await requireMember(c);
-  if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue");
-  const rows = await c.env.DB.prepare(
-    "SELECT data FROM record_store WHERE kind='project' AND status='ACTIVE' ORDER BY updated_at DESC LIMIT 200"
-  ).all();
-  return c.json((rows.results ?? []).map((row) => parseJson(row.data)));
-});
-app.get("/api/v1/projects/mine", async (c) => {
-  const actor = await requireMember(c);
-  if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue");
-  const rows = await c.env.DB.prepare(
-    "SELECT data FROM record_store WHERE kind='project' AND status='ACTIVE' ORDER BY updated_at DESC LIMIT 200"
-  ).all();
-  return c.json(
-    (rows.results ?? []).map((row) => parseJson(row.data)).filter((project) => Array.isArray(project.memberIds) && project.memberIds.includes(actor.id))
-  );
-});
-app.get("/api/v1/requests", async (c) => {
-  const actor = await requireMember(c);
-  if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue");
-  const rows = await c.env.DB.prepare(
-    "SELECT data FROM requests WHERE user_id=? ORDER BY created_at DESC LIMIT 200"
-  ).bind(actor.id).all();
-  return c.json((rows.results ?? []).map((row) => parseJson(row.data)));
-});
-app.get("/api/v1/requests/:id", async (c) => {
-  const actor = await requireMember(c);
-  if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue");
-  const row = await c.env.DB.prepare("SELECT data FROM requests WHERE id=? AND user_id=?").bind(c.req.param("id"), actor.id).first();
-  if (!row) return jsonError(c, 404, "NOT_FOUND", "Request not found");
-  return c.json(parseJson(row.data));
-});
-app.post("/api/v1/requests", async (c) => {
-  const ip = c.req.header("CF-Connecting-IP") ?? "unknown";
-  const abuse = await c.env.AUTH_RATE_LIMITER.limit({ key: `borrow-request:${ip}` });
-  if (!abuse.success)
-    return jsonError(
-      c,
-      429,
-      "RATE_LIMITED",
-      "Too many requests from this connection; try again later"
-    );
-  const idempotencyKey = c.req.header("Idempotency-Key");
-  if (!idempotencyKey || idempotencyKey.length < 16 || idempotencyKey.length > 128)
-    return jsonError(c, 400, "VALIDATION", "A valid idempotency key is required");
-  const body = await c.req.json().catch(() => null);
-  if (!body || !Array.isArray(body.items) || body.items.length < 1 || body.items.length > 40 || new Set(body.items.map((item) => item?.itemId)).size !== body.items.length || body.items.some(
-    (item) => !item || typeof item.itemId !== "string" || item.itemId.length > 100 || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 99
-  ) || typeof body.contactEmail !== "string" || body.contactEmail.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.contactEmail.trim()) || typeof body.expectedReturnDate !== "string" || !Number.isFinite(Date.parse(body.expectedReturnDate)) || body.note !== void 0 && (typeof body.note !== "string" || body.note.length > 2e3))
-    return jsonError(c, 400, "VALIDATION", "The request details are invalid");
-  const email = body.contactEmail.trim().toLowerCase();
-  const emailLimit = await rateLimit(c.env.DB, `borrower-request:${email}`, 5, 3600);
-  if (!emailLimit)
-    return jsonError(
-      c,
-      429,
-      "RATE_LIMITED",
-      "Too many requests for this contact email; try again later"
-    );
-  const existing = await c.env.DB.prepare(
-    "SELECT id,name,clearance FROM app_users WHERE email=? COLLATE NOCASE"
-  ).bind(email).first();
-  const borrowerId = existing?.id ?? `borrower-${await digest(email)}`;
-  const borrowerName = body.borrowerName?.trim() || existing?.name || "Unverified borrower";
-  const key = await digest(`${borrowerId}:${idempotencyKey}`);
-  const replay = await c.env.DB.prepare(
-    "SELECT response FROM idempotency_keys WHERE key=? AND actor_id=?"
-  ).bind(key, borrowerId).first();
-  if (replay) return c.json(parseJson(replay.response));
-  const requestedItems = await Promise.all(
-    body.items.map(async (line) => {
-      const item = await c.env.DB.prepare(
-        "SELECT id,name,category,equipment_class,available_quantity,borrower_visible FROM inventory WHERE id=?"
-      ).bind(line.itemId).first();
-      if (!item || !item.borrower_visible || item.available_quantity < 1)
-        throw new Error("INELIGIBLE_ITEM");
-      const isRestricted = !["C", "E"].includes(item.equipment_class);
-      const flagReason = isRestricted ? `Class restriction: Class ${item.equipment_class} requires manual board approval` : void 0;
-      return {
-        itemId: item.id,
-        itemName: item.name,
-        category: item.category,
-        equipmentClass: item.equipment_class,
-        requestedQuantity: line.quantity,
-        approvedQuantity: 0,
-        handedOverQuantity: 0,
-        returnedQuantity: 0,
-        damagedQuantity: 0,
-        lostQuantity: 0,
-        status: "PENDING",
-        flagged: isRestricted,
-        ...flagReason ? { flagReason } : {}
-      };
-    })
-  ).catch(() => null);
-  if (!requestedItems)
-    return jsonError(
-      c,
-      400,
-      "INELIGIBLE_ITEM",
-      "One or more requested items are currently unavailable or not in catalogue"
-    );
-  const id2 = uuid("REQ");
-  const createdAt = iso2();
-  const request = {
-    id: id2,
-    userId: borrowerId,
-    userName: borrowerName,
-    userEmail: email,
-    contactEmailVerified: false,
-    userClearance: existing?.clearance ?? "I",
-    ...body.note?.trim() ? { note: body.note.trim() } : {},
-    expectedReturnDate: body.expectedReturnDate,
-    decisionStatus: "PENDING",
-    handoverStatus: "WAITING",
-    lifecycleStatus: "ACTIVE",
-    status: "PENDING",
-    flagged: requestedItems.some((line) => line.flagged),
-    ...requestedItems.some((line) => line.flagged) ? { flagReason: "One or more requested items require higher clearance" } : {},
-    items: requestedItems.map((line, index2) => ({ ...line, id: `${id2}-line-${index2 + 1}` })),
-    createdAt,
-    updatedAt: createdAt,
-    timeline: [
-      {
-        status: "PENDING",
-        timestamp: createdAt,
-        description: requestedItems.some((line) => line.flagged) ? "Request sent with Level restriction flag. Waiting for logistics review." : "Request sent. Waiting for logistics review. Contact email and borrower identity are unverified.",
-        actor: borrowerName
-      }
-    ]
-  };
-  const affiliation = ["IEEE", "AEROBOTIX", "EXTERNAL"].includes(body.borrowerAffiliation ?? "") ? body.borrowerAffiliation : "EXTERNAL";
-  const phone = body.borrowerPhone?.trim() || "";
-  const clearance = existing?.clearance ?? "I";
-  const statements = [
-    ...existing ? [
-      c.env.DB.prepare(
-        "UPDATE app_users SET name=COALESCE(NULLIF(?,''),name), phone=COALESCE(NULLIF(?,''),phone), claimed_affiliation=COALESCE(NULLIF(?,''),claimed_affiliation), updated_at=? WHERE id=?"
-      ).bind(
-        body.borrowerName?.trim() || "",
-        phone,
-        affiliation,
-        Date.parse(createdAt),
-        existing.id
-      )
-    ] : [
-      c.env.DB.prepare(
-        "INSERT OR IGNORE INTO app_users(id,email,name,phone,role,clearance,affiliation,claimed_affiliation,affiliation_verified,status,data,created_at,updated_at) VALUES(?,?,?,?,'MEMBER',?,?,?,0,'PENDING','{}',?,?)"
-      ).bind(
-        borrowerId,
-        email,
-        borrowerName,
-        phone,
-        clearance,
-        affiliation,
-        affiliation,
-        Date.parse(createdAt),
-        Date.parse(createdAt)
-      )
-    ],
-    c.env.DB.prepare(
-      "INSERT INTO requests(id,user_id,status,created_at,data) VALUES(?,?,?,?,?)"
-    ).bind(id2, borrowerId, request.status, Date.parse(createdAt), JSON.stringify(request)),
-    ...request.items.map(
-      (line) => c.env.DB.prepare(
-        "INSERT INTO request_lines(id,request_id,item_id,equipment_class,quantity,data) VALUES(?,?,?,?,?,?)"
-      ).bind(
-        line.id,
-        id2,
-        line.itemId,
-        line.equipmentClass,
-        line.requestedQuantity,
-        JSON.stringify(line)
-      )
-    ),
-    c.env.DB.prepare(
-      "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)"
-    ).bind(
-      uuid("audit"),
-      borrowerId,
-      "REQUEST",
-      id2,
-      "REQUEST_CREATED",
-      Date.parse(createdAt),
-      JSON.stringify({ id: id2, itemCount: request.items.length })
-    ),
-    c.env.DB.prepare(
-      "INSERT INTO idempotency_keys(key,actor_id,response,created_at) VALUES(?,?,?,?)"
-    ).bind(key, borrowerId, JSON.stringify(request), now())
-  ];
-  try {
-    await c.env.DB.batch(statements);
-  } catch {
-    const retry = await c.env.DB.prepare(
-      "SELECT response FROM idempotency_keys WHERE key=? AND actor_id=?"
-    ).bind(key, borrowerId).first();
-    if (retry) return c.json(parseJson(retry.response));
-    return jsonError(
-      c,
-      409,
-      "CONFLICT",
-      "Request could not be committed; verify your request and retry"
-    );
-  }
-  return c.json(request, 201);
-});
-app.delete("/api/v1/requests/:id", async (c) => {
-  const actor = await requireMember(c);
-  if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue");
-  const row = await c.env.DB.prepare("SELECT data FROM requests WHERE id=? AND user_id=?").bind(c.req.param("id"), actor.id).first();
-  if (!row) return jsonError(c, 404, "NOT_FOUND", "Request not found");
-  const request = parseJson(row.data);
-  if (request.decisionStatus !== "PENDING" || request.lifecycleStatus !== "ACTIVE")
-    return jsonError(c, 409, "CONFLICT", "Only pending requests can be cancelled");
-  request.lifecycleStatus = "CANCELLED";
-  request.status = "CANCELLED";
-  request.updatedAt = iso2();
-  request.timeline.push({
-    status: "CANCELLED",
-    timestamp: request.updatedAt,
-    description: "Request cancelled by member",
-    actor: actor.name
-  });
-  const batch = await c.env.DB.batch([
-    c.env.DB.prepare(
-      "UPDATE requests SET status='CANCELLED',data=? WHERE id=? AND user_id=? AND status='PENDING'"
-    ).bind(JSON.stringify(request), request.id, actor.id),
-    c.env.DB.prepare(
-      "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)"
-    ).bind(uuid("audit"), actor.id, "REQUEST", request.id, "REQUEST_CANCELLED", now(), "{}")
-  ]);
-  if (!batch[0]?.meta?.changes)
-    return jsonError(c, 409, "CONFLICT", "Request is no longer pending");
-  return c.json(request);
-});
-app.get("/api/v1/board/requests", async (c) => {
-  const actor = await requireBoard(c);
-  if (!actor) return jsonError(c, 403, "FORBIDDEN", "Verified board access is required");
-  const status = c.req.query("decisionStatus");
-  const rows = await c.env.DB.prepare(
-    `SELECT data FROM requests ${status && status !== "ALL" ? "WHERE status=?" : ""} ORDER BY created_at DESC LIMIT 500`
-  ).bind(...status && status !== "ALL" ? [status] : []).all();
-  return c.json((rows.results ?? []).map((row) => parseJson(row.data)));
-});
-app.get("/api/v1/board/requests/:id", async (c) => {
-  const actor = await requireBoard(c);
-  if (!actor) return jsonError(c, 403, "FORBIDDEN", "Verified board access is required");
-  const row = await c.env.DB.prepare("SELECT data FROM requests WHERE id=?").bind(c.req.param("id")).first();
-  return row ? c.json(parseJson(row.data)) : jsonError(c, 404, "NOT_FOUND", "Request not found");
-});
-app.post("/api/v1/board/inventory", async (c) => {
-  const actor = await requireBoard(c, true);
-  if (!actor) return jsonError(c, 403, "FORBIDDEN", "Fresh board verification is required");
-  const body = await c.req.json().catch(() => null);
-  if (!body || typeof body.name !== "string" || body.name.trim().length < 1 || body.name.length > 160 || typeof body.category !== "string" || body.category.length > 80 || !["A", "B", "C", "D", "E", "F", "G"].includes(String(body.equipmentClass)) || !Number.isInteger(body.totalQuantity) || Number(body.totalQuantity) < 0 || Number(body.totalQuantity) > 1e5 || !["QUANTITY", "INDIVIDUAL_ASSET"].includes(String(body.trackingMode ?? "QUANTITY")))
-    return jsonError(c, 400, "VALIDATION", "Inventory details are invalid");
-  const itemId = typeof body.id === "string" ? body.id.slice(0, 100) : uuid("item");
-  const timestamp = now();
-  const trackingMode = String(body.trackingMode ?? "QUANTITY");
-  const inputAssets = Array.isArray(body.assets) ? body.assets : [];
-  if (trackingMode === "INDIVIDUAL_ASSET" && inputAssets.length !== Number(body.totalQuantity) || trackingMode === "QUANTITY" && inputAssets.length > 0 || inputAssets.some(
-    (asset) => !asset || typeof asset.serialNumber !== "string" || !asset.serialNumber.trim() || asset.serialNumber.length > 120
-  ) || new Set(inputAssets.map((asset) => asset.serialNumber.trim())).size !== inputAssets.length)
-    return jsonError(
-      c,
-      400,
-      "VALIDATION",
-      "Enter a unique serial number for every individually tracked asset"
-    );
-  const item = {
-    ...body,
-    id: itemId,
-    name: body.name.trim(),
-    category: body.category.trim(),
-    equipmentClass: body.equipmentClass,
-    itemClass: body.equipmentClass,
-    trackingMode,
-    totalQuantity: Number(body.totalQuantity),
-    availableQuantity: Number(body.totalQuantity),
-    allocatedQuantity: 0,
-    borrowedQuantity: 0,
-    damagedQuantity: 0,
-    maintenanceQuantity: 0,
-    lostQuantity: 0,
-    borrowerVisible: typeof body.borrowerVisible === "boolean" ? body.borrowerVisible : ["C", "E"].includes(String(body.equipmentClass)),
-    assets: inputAssets.map((asset) => ({
-      id: uuid("asset"),
-      serialNumber: asset.serialNumber.trim(),
-      condition: asset.condition ?? "GOOD",
-      state: "AVAILABLE"
-    }))
-  };
-  const statements = [
-    c.env.DB.prepare(
-      `INSERT INTO inventory(id,name,category,equipment_class,tracking_mode,total_quantity,available_quantity,allocated_quantity,borrowed_quantity,damaged_quantity,maintenance_quantity,lost_quantity,borrower_visible,data,updated_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-    ).bind(
-      itemId,
-      item.name,
-      item.category,
-      item.equipmentClass,
-      item.trackingMode,
-      item.totalQuantity,
-      item.totalQuantity,
-      0,
-      0,
-      0,
-      0,
-      0,
-      item.borrowerVisible ? 1 : 0,
-      JSON.stringify(item),
-      timestamp
-    ),
-    c.env.DB.prepare(
-      "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)"
-    ).bind(
-      uuid("audit"),
-      actor.id,
-      "INVENTORY",
-      itemId,
-      "INVENTORY_CREATED",
-      timestamp,
-      JSON.stringify({ itemId })
-    ),
-    ...item.assets.map(
-      (asset) => c.env.DB.prepare(
-        "INSERT INTO inventory_assets(id,item_id,serial_number,state,data) VALUES(?,?,?,?,?)"
-      ).bind(asset.id, itemId, asset.serialNumber, asset.state, JSON.stringify(asset))
-    )
-  ];
-  try {
-    await c.env.DB.batch(statements);
-  } catch {
-    return jsonError(c, 409, "CONFLICT", "Inventory item or serial number already exists");
-  }
-  return c.json(item, 201);
-});
-app.get("/api/v1/board/inventory", async (c) => {
-  const actor = await requireBoard(c);
-  if (!actor) return jsonError(c, 403, "FORBIDDEN", "Verified board access is required");
-  const rows = await c.env.DB.prepare("SELECT data FROM inventory ORDER BY name LIMIT 1000").all();
-  return c.json((rows.results ?? []).map((row) => parseJson(row.data)));
-});
-app.patch("/api/v1/board/inventory/:id/visibility", async (c) => {
-  const actor = await requireBoard(c, true);
-  if (!actor) return jsonError(c, 403, "FORBIDDEN", "Fresh board verification is required");
-  const body = await c.req.json().catch(() => null);
-  if (!body || typeof body.visible !== "boolean")
-    return jsonError(c, 400, "VALIDATION", "Visibility must be true or false");
-  const row = await c.env.DB.prepare(
-    "SELECT equipment_class,data,updated_at FROM inventory WHERE id=?"
-  ).bind(c.req.param("id")).first();
-  if (!row) return jsonError(c, 404, "NOT_FOUND", "Inventory item not found");
-  const record = parseJson(row.data);
-  record.borrowerVisible = body.visible;
-  const stamp2 = now();
-  try {
-    await c.env.DB.batch([
-      c.env.DB.prepare(
-        "UPDATE inventory SET borrower_visible=?,data=?,updated_at=CASE WHEN updated_at=? THEN ? ELSE -1 END WHERE id=?"
-      ).bind(
-        body.visible ? 1 : 0,
-        JSON.stringify(record),
-        row.updated_at,
-        Math.max(stamp2, row.updated_at + 1),
-        c.req.param("id")
-      ),
-      c.env.DB.prepare(
-        "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)"
-      ).bind(
-        uuid("audit"),
-        actor.id,
-        "INVENTORY",
-        c.req.param("id"),
-        body.visible ? "VISIBILITY_ENABLED" : "VISIBILITY_DISABLED",
-        stamp2,
-        "{}"
-      )
-    ]);
-  } catch {
-    return jsonError(c, 409, "CONFLICT", "Inventory changed; reload and retry");
-  }
-  return c.json(record);
-});
-app.get("/api/v1/board/loans", async (c) => {
-  const actor = await requireBoard(c);
-  if (!actor) return jsonError(c, 403, "FORBIDDEN", "Verified board access is required");
-  const rows = await c.env.DB.prepare(
-    "SELECT data FROM record_store WHERE kind='loan' ORDER BY updated_at DESC LIMIT 500"
-  ).all();
-  return c.json((rows.results ?? []).map((row) => parseJson(row.data)));
-});
-app.post("/api/v1/board/rpc", async (c) => {
-  const actor = await requireBoard(c);
-  if (!actor) return jsonError(c, 403, "FORBIDDEN", "Verified board access is required");
-  const body = await c.req.json().catch(() => null);
-  const result = await dispatchBoardRpc(c.env, actor, body);
-  return c.json(result.body, result.status);
-});
-app.notFound(
-  (c) => c.req.path.startsWith("/api/") ? jsonError(c, 404, "NOT_FOUND", "API route not found") : c.text("Not found", 404)
-);
-async function otpHash(env, userId, code) {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(env.BETTER_AUTH_SECRET),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
-  const data = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${userId}:${code}`));
-  return [...new Uint8Array(data)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-function timingSafeEqual(left, right) {
-  if (left.length !== right.length) return false;
-  let value = 0;
-  for (let i = 0; i < left.length; i++) value |= left.charCodeAt(i) ^ right.charCodeAt(i);
-  return value === 0;
-}
-function safeImage(value) {
-  if (!value) return "";
-  const trimmed = value.trim();
-  if (trimmed.startsWith("/") && !trimmed.startsWith("//")) {
-    return trimmed;
-  }
-  if (trimmed.startsWith("data:image/")) {
-    return trimmed;
-  }
-  if (trimmed.startsWith("<svg") && trimmed.includes("</svg>")) {
-    return `data:image/svg+xml;utf8,${encodeURIComponent(trimmed)}`;
-  }
-  try {
-    const url = new URL(trimmed);
-    return ["https:", "http:"].includes(url.protocol) ? url.toString() : "";
-  } catch {
-    return "";
-  }
-}
-async function sendStaffCode(env, email, code) {
-  if (!env.BREVO_API_KEY) return;
   const response = await fetch("https://api.brevo.com/v3/smtp/email", {
     method: "POST",
     headers: {
@@ -3095,184 +347,1662 @@ async function sendStaffCode(env, email, code) {
     },
     body: JSON.stringify({
       sender: {
-        email: env.BREVO_SENDER_EMAIL ?? "noreply@ras-insat.org",
-        name: env.BREVO_SENDER_NAME ?? "IEEE RAS INSAT"
+        email: env.BREVO_SENDER_EMAIL,
+        name: env.BREVO_SENDER_NAME ?? "IEEE INSAT SB Equipment Reservations"
       },
-      to: [{ email }],
-      subject: "Your board sign-in code",
-      htmlContent: `<p>Your board sign-in code is:</p><p style="font-size:28px;font-weight:bold;letter-spacing:6px">${code}</p><p>It expires in 10 minutes. Never share this code.</p>`
+      to: [{ email: to }],
+      subject,
+      htmlContent
     })
   });
   if (!response.ok) throw new Error("Email delivery failed");
 }
-async function cleanExpiredSecurityData(env) {
-  const nowMs = now();
-  const seconds = Math.floor(nowMs / 1e3) - 24 * 60 * 60;
-  const milliseconds = nowMs - 24 * 60 * 6e4;
-  await env.DB.batch([
-    env.DB.prepare(
-      "DELETE FROM rate_limit_buckets WHERE key_hash IN (SELECT key_hash FROM rate_limit_buckets WHERE window_start<? LIMIT 500)"
-    ).bind(seconds),
-    env.DB.prepare(
-      "DELETE FROM registration_intents WHERE email IN (SELECT email FROM registration_intents WHERE expires_at<? LIMIT 500)"
-    ).bind(nowMs),
-    env.DB.prepare(
-      "DELETE FROM staff_challenges WHERE id IN (SELECT id FROM staff_challenges WHERE expires_at<? AND created_at<? LIMIT 500)"
-    ).bind(milliseconds, milliseconds),
-    env.DB.prepare(
-      "DELETE FROM idempotency_keys WHERE key IN (SELECT key FROM idempotency_keys WHERE created_at<? LIMIT 500)"
-    ).bind(nowMs - 90 * 24 * 60 * 6e4),
-    env.DB.prepare(
-      "DELETE FROM verification WHERE id IN (SELECT id FROM verification WHERE expiresAt<? LIMIT 500)"
-    ).bind(milliseconds)
-  ]);
+function escapeHtml(value) {
+  return value.replace(
+    /[&<>"']/g,
+    (character) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;"
+    })[character]
+  );
 }
-async function expireAllocations(env) {
-  const expired = await env.DB.prepare(
-    "SELECT id,data FROM record_store WHERE kind='allocation' AND status='ACTIVE' AND expires_at<=? LIMIT 100"
-  ).bind(now()).all();
-  for (const row of expired.results ?? []) {
-    const allocation = parseJson(row.data);
-    const inventoryRow = await env.DB.prepare("SELECT data,updated_at FROM inventory WHERE id=?").bind(allocation.itemId).first();
-    if (!inventoryRow) continue;
-    const item = parseJson(inventoryRow.data);
-    item.availableQuantity += allocation.quantity;
-    item.allocatedQuantity -= allocation.quantity;
-    allocation.status = "EXPIRED";
-    allocation.releasedAt = iso2();
-    const statements = [
-      env.DB.prepare(
-        "UPDATE inventory SET available_quantity=available_quantity+?,allocated_quantity=CASE WHEN allocated_quantity>=? THEN allocated_quantity-? ELSE -1 END,data=?,updated_at=CASE WHEN updated_at=? THEN ? ELSE -1 END WHERE id=?"
-      ).bind(
-        allocation.quantity,
-        allocation.quantity,
-        allocation.quantity,
-        JSON.stringify(item),
-        inventoryRow.updated_at,
-        Math.max(now(), inventoryRow.updated_at + 1),
-        allocation.itemId
-      ),
-      env.DB.prepare(
-        "UPDATE record_store SET status='EXPIRED',data=?,updated_at=CASE WHEN status='ACTIVE' THEN ? ELSE -1 END WHERE kind='allocation' AND id=?"
-      ).bind(JSON.stringify(allocation), now(), row.id),
-      env.DB.prepare(
-        "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)"
-      ).bind(uuid("audit"), "system", "ALLOCATION", row.id, "ALLOCATION_EXPIRED", now(), "{}")
-    ];
-    if (item.trackingMode === "INDIVIDUAL_ASSET")
-      for (const assetId of allocation.assetIds ?? []) {
-        const asset = item.assets?.find((entry) => entry.id === assetId);
-        if (!asset || asset.state !== "ALLOCATED")
-          throw new Error("Expired allocation asset state is inconsistent");
-        asset.state = "AVAILABLE";
-        statements.unshift(
-          env.DB.prepare(
-            "UPDATE inventory_assets SET state=CASE WHEN state='ALLOCATED' THEN 'AVAILABLE' ELSE 'INVALID' END,data=? WHERE id=? AND item_id=?"
-          ).bind(JSON.stringify(asset), asset.id, item.id)
-        );
-      }
-    const event = {
-      id: uuid("iev"),
-      itemId: item.id,
-      itemName: item.name,
-      type: "RELEASE_ALLOCATION",
-      quantity: allocation.quantity,
-      beforeState: {
-        allocated: item.allocatedQuantity + allocation.quantity,
-        available: item.availableQuantity - allocation.quantity
-      },
-      afterState: { allocated: item.allocatedQuantity, available: item.availableQuantity },
-      reason: "48-hour collection window expired",
-      actorUserId: "system",
-      actorName: "System",
-      timestamp: iso2(),
-      ...allocation.assetIds?.length ? { assetIds: allocation.assetIds } : {}
-    };
-    statements.push(
-      env.DB.prepare(
-        "INSERT INTO record_store(kind,id,owner_id,status,expires_at,data,updated_at) VALUES('inventory_event',?,?,'RELEASE_ALLOCATION',NULL,?,?)"
-      ).bind(event.id, item.id, JSON.stringify(event), now())
-    );
-    await env.DB.batch(statements);
-    const remaining = await env.DB.prepare(
-      "SELECT 1 FROM record_store WHERE kind='allocation' AND json_extract(data,'$.requestId')=? AND status='ACTIVE' LIMIT 1"
-    ).bind(allocation.requestId).first();
-    if (!remaining) {
-      const requestRow = await env.DB.prepare("SELECT data FROM requests WHERE id=?").bind(allocation.requestId).first();
-      if (requestRow) {
-        const request = parseJson(requestRow.data);
-        if (request.handoverStatus === "WAITING") {
-          request.lifecycleStatus = "EXPIRED";
-          request.status = "EXPIRED";
-          request.updatedAt = iso2();
-          request.timeline.push({
-            status: "EXPIRED",
-            timestamp: request.updatedAt,
-            description: "The 48-hour collection window expired and reservations were released.",
-            actor: "System"
-          });
-          await env.DB.batch([
-            env.DB.prepare(
-              "UPDATE requests SET status=CASE WHEN status IN ('APPROVED','PARTIALLY_APPROVED') THEN 'EXPIRED' ELSE 'INVALID' END,data=? WHERE id=?"
-            ).bind(JSON.stringify(request), request.id),
-            env.DB.prepare(
-              "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)"
-            ).bind(uuid("audit"), "system", "REQUEST", request.id, "PICKUP_EXPIRED", now(), "{}")
-          ]);
+
+// src/worker/auth.ts
+function trustedAuthOrigin(env, requestUrl) {
+  const requestOrigin = new URL(requestUrl);
+  const configuredHosts = new Set(
+    [env.VERCEL_URL, env.VERCEL_PROJECT_PRODUCTION_URL].filter((host) => Boolean(host)).map((host) => host.replace(/^https?:\/\//, ""))
+  );
+  const local = ["localhost", "127.0.0.1"].includes(requestOrigin.hostname);
+  if (env.APP_ORIGIN) {
+    const appOrigin = new URL(env.APP_ORIGIN);
+    if (appOrigin.pathname !== "/" || appOrigin.search || appOrigin.hash || appOrigin.username || appOrigin.password) {
+      throw new Error("APP_ORIGIN must be an origin without a path.");
+    }
+    if (appOrigin.protocol !== "https:" && !local) throw new Error("APP_ORIGIN must use HTTPS.");
+    if (!local && requestOrigin.origin !== appOrigin.origin)
+      throw new Error("Untrusted application origin.");
+    if (local && (env.ENVIRONMENT === "development" || env.ENVIRONMENT === "test") && ["localhost", "127.0.0.1"].includes(appOrigin.hostname)) {
+      return appOrigin.origin;
+    }
+    return local ? requestOrigin.origin : appOrigin.origin;
+  }
+  if (local) return requestOrigin.origin;
+  if (!configuredHosts.has(requestOrigin.host)) throw new Error("Untrusted deployment origin.");
+  return requestOrigin.origin;
+}
+function createAuth(env, origin) {
+  return betterAuth({
+    appName: "IEEE INSAT SB Equipment Reservations",
+    baseURL: origin,
+    secret: env.BETTER_AUTH_SECRET,
+    database: drizzleAdapter(env.DB, { provider: "sqlite", schema: schema_exports.authSchema }),
+    trustedOrigins: [origin],
+    user: {
+      additionalFields: {
+        role: {
+          type: "string",
+          required: false,
+          defaultValue: "USER",
+          input: false
         }
+      }
+    },
+    advanced: {
+      useSecureCookies: origin.startsWith("https://"),
+      defaultCookieAttributes: {
+        httpOnly: true,
+        secure: origin.startsWith("https://"),
+        sameSite: "lax",
+        path: "/"
+      }
+    },
+    session: {
+      expiresIn: 30 * 24 * 60 * 60,
+      updateAge: 24 * 60 * 60,
+      cookieCache: { enabled: false }
+    },
+    rateLimit: {
+      enabled: true,
+      window: 60,
+      max: env.AUTH_RATE_LIMIT_PER_MINUTE,
+      storage: "database"
+    },
+    emailAndPassword: { enabled: false },
+    plugins: [
+      magicLink({
+        expiresIn: 10 * 60,
+        storeToken: "hashed",
+        sendMagicLink: async ({ email, url }) => {
+          await sendEmail(
+            env,
+            email,
+            "Your IEEE INSAT SB sign-in link",
+            `<p>Use this single-use link within 10 minutes to sign in:</p><p><a href="${escapeHtml(url)}">Sign in</a></p><p>If you did not request this email, you can ignore it.</p>`
+          );
+        }
+      })
+    ]
+  });
+}
+
+// src/worker/identity.ts
+import { createMiddleware } from "hono/factory";
+import { eq } from "drizzle-orm";
+async function resolveIdentity(c) {
+  const origin = trustedAuthOrigin(c.env, c.req.url);
+  const session = await createAuth(c.env, origin).api.getSession({ headers: c.req.raw.headers });
+  const userId = session?.user?.id;
+  if (!userId) return null;
+  const [user] = await c.env.DB.select({
+    id: schema_exports.authUsers.id,
+    name: schema_exports.authUsers.name,
+    email: schema_exports.authUsers.email,
+    role: schema_exports.authUsers.role
+  }).from(schema_exports.authUsers).where(eq(schema_exports.authUsers.id, userId)).limit(1);
+  if (!user || !["USER", "BOARD", "SUPERADMIN"].includes(user.role)) return null;
+  return { ...user, role: user.role };
+}
+var requireUser = createMiddleware(async (c, next) => {
+  const actor = await resolveIdentity(c);
+  if (!actor)
+    return c.json({ error: { code: "UNAUTHENTICATED", message: "Sign in to continue." } }, 401);
+  if (actor.role !== "USER") {
+    return c.json({ error: { code: "FORBIDDEN", message: "A user account is required." } }, 403);
+  }
+  c.set("actor", actor);
+  await next();
+});
+var requireBoard = createMiddleware(async (c, next) => {
+  const actor = await resolveIdentity(c);
+  if (!actor)
+    return c.json({ error: { code: "UNAUTHENTICATED", message: "Sign in to continue." } }, 401);
+  if (actor.role !== "BOARD" && actor.role !== "SUPERADMIN") {
+    return c.json({ error: { code: "FORBIDDEN", message: "Board access is required." } }, 403);
+  }
+  c.set("actor", actor);
+  await next();
+});
+var requireSuperadmin = createMiddleware(async (c, next) => {
+  const actor = await resolveIdentity(c);
+  if (!actor)
+    return c.json({ error: { code: "UNAUTHENTICATED", message: "Sign in to continue." } }, 401);
+  if (actor.role !== "SUPERADMIN") {
+    return c.json({ error: { code: "FORBIDDEN", message: "Superadmin access is required." } }, 403);
+  }
+  c.set("actor", actor);
+  await next();
+});
+
+// src/worker/domain.ts
+import { DateTime } from "luxon";
+
+// src/worker/security.ts
+var DomainError = class extends Error {
+  constructor(status, code, message) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+};
+function jsonError(c, status, code, message) {
+  return c.json({ error: { code, message } }, status);
+}
+async function sameOrigin(c, next) {
+  if (["GET", "HEAD", "OPTIONS"].includes(c.req.method)) return next();
+  const origin = c.req.header("Origin");
+  if (!origin || origin !== trustedAuthOrigin(c.env, c.req.url)) {
+    return jsonError(c, 403, "FORBIDDEN", "Request origin is not allowed.");
+  }
+  await next();
+}
+async function isRateLimited(env, key, max, windowMs = 6e4) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
+  const keyHash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  const timestamp = Date.now();
+  const result = await env.CLIENT.execute({
+    sql: `INSERT INTO rate_limit_buckets(key_hash,window_start,count) VALUES(?,?,1)
+      ON CONFLICT(key_hash) DO UPDATE SET
+        window_start=CASE WHEN rate_limit_buckets.window_start + ? <= excluded.window_start THEN excluded.window_start ELSE rate_limit_buckets.window_start END,
+        count=CASE WHEN rate_limit_buckets.window_start + ? <= excluded.window_start THEN 1 ELSE rate_limit_buckets.count + 1 END
+      RETURNING count`,
+    args: [keyHash, timestamp, windowMs, windowMs]
+  });
+  return Number(result.rows[0]?.count ?? max + 1) > max;
+}
+function requestIp(c) {
+  const forwarded = c.req.header("x-forwarded-for")?.split(",", 1)[0]?.trim();
+  return forwarded || c.req.header("x-real-ip") || "unknown";
+}
+
+// src/worker/domain.ts
+var DISPLAY_TIME_ZONE = "Africa/Tunis";
+var DUPLICATE_SCAN_WINDOW_MS = 3e3;
+var id = (prefix) => `${prefix}_${crypto.randomUUID()}`;
+var opaqueToken = () => [...crypto.getRandomValues(new Uint8Array(32))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+async function rows(executor, sql2, args = []) {
+  const result = await executor.execute({ sql: sql2, args });
+  return result.rows;
+}
+async function one(executor, sql2, args = []) {
+  return (await rows(executor, sql2, args))[0] ?? null;
+}
+async function write(env, operation) {
+  const transaction = await env.CLIENT.transaction("write");
+  try {
+    const result = await operation(transaction);
+    await transaction.commit();
+    return result;
+  } catch (error) {
+    await transaction.rollback().catch(() => void 0);
+    throw error;
+  } finally {
+    transaction.close();
+  }
+}
+function audit(tx, actorId, entityType, entityId, action, data = {}) {
+  return tx.execute({
+    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+    args: [id("audit"), actorId, entityType, entityId, action, Date.now(), JSON.stringify(data)]
+  });
+}
+function notify(tx, userId, type, title, message, reservationId = null) {
+  return tx.execute({
+    sql: "INSERT INTO notifications(id,user_id,type,title,message,reservation_id,created_at) VALUES(?,?,?,?,?,?,?)",
+    args: [id("notification"), userId, type, title, message, reservationId, Date.now()]
+  });
+}
+async function notifyBoard(tx, type, title, message, reservationId) {
+  const boardUsers = await rows(
+    tx,
+    "SELECT id FROM user WHERE role IN ('BOARD','SUPERADMIN')"
+  );
+  for (const user of boardUsers) await notify(tx, user.id, type, title, message, reservationId);
+}
+async function findAvailableAssets(executor, equipmentItemId, pickupAt, returnAt) {
+  return rows(
+    executor,
+    `SELECT a.id,a.asset_code,a.serial_number,a.state
+       FROM assets a
+       INNER JOIN equipment_items e ON e.id=a.equipment_item_id
+      WHERE a.equipment_item_id=? AND e.active=1 AND a.active=1
+        AND a.state NOT IN ('BORROWED','OUT_OF_SERVICE','RETIRED')
+        AND NOT EXISTS (
+          SELECT 1
+            FROM reservation_assets ra
+            INNER JOIN reservations r ON r.id=ra.reservation_id
+           WHERE ra.asset_id=a.id
+             AND (ra.state='BORROWED' OR (ra.state='RESERVED' AND r.status='APPROVED'
+               AND r.pickup_at < ? AND ? < r.return_at))
+        )
+      ORDER BY a.asset_code ASC`,
+    [equipmentItemId, returnAt, pickupAt]
+  );
+}
+async function listCatalogue(env, pickupAt, returnAt) {
+  const items = await rows(
+    env.CLIENT,
+    "SELECT id,name,description,category,image_url AS imageUrl FROM equipment_items WHERE active=1 ORDER BY category,name"
+  );
+  return Promise.all(
+    items.map(async (item) => ({
+      ...item,
+      availableQuantity: (await findAvailableAssets(env.CLIENT, item.id, pickupAt, returnAt)).length
+    }))
+  );
+}
+async function getReservation(env, reservationId, includeAssets = false) {
+  const executor = env.CLIENT;
+  const reservation = await one(
+    executor,
+    `SELECT r.id,r.requested_by_user_id,u.name AS requester_name,u.email AS requester_email,
+            r.borrower_type,r.borrower_user_id,r.chapter_id,bu.name AS borrower_name,ch.name AS chapter_name,
+            r.pickup_at,r.return_at,r.note,r.status,r.created_at
+       FROM reservations r
+       INNER JOIN user u ON u.id=r.requested_by_user_id
+       LEFT JOIN user bu ON bu.id=r.borrower_user_id
+       LEFT JOIN chapters ch ON ch.id=r.chapter_id
+      WHERE r.id=?`,
+    [reservationId]
+  );
+  if (!reservation) return null;
+  const lineRows = await rows(
+    executor,
+    `SELECT l.id,l.equipment_item_id,e.name AS equipment_name,l.quantity,
+            ra.asset_id,a.asset_code,ra.state AS asset_state,a.state AS asset_state_now
+       FROM reservation_lines l
+       INNER JOIN equipment_items e ON e.id=l.equipment_item_id
+       LEFT JOIN reservation_assets ra ON ra.reservation_line_id=l.id
+       LEFT JOIN assets a ON a.id=ra.asset_id
+      WHERE l.reservation_id=?
+      ORDER BY e.name,a.asset_code`,
+    [reservationId]
+  );
+  const grouped = /* @__PURE__ */ new Map();
+  const assignmentStates = [];
+  for (const line of lineRows) {
+    let item = grouped.get(line.id);
+    if (!item) {
+      item = {
+        lineId: line.id,
+        equipmentItemId: line.equipment_item_id,
+        name: line.equipment_name,
+        quantity: Number(line.quantity),
+        ...includeAssets ? { assignedAssets: [] } : {}
+      };
+      grouped.set(line.id, item);
+    }
+    if (line.asset_state) {
+      assignmentStates.push(line.asset_state);
+      if (includeAssets && line.asset_id && line.asset_code) {
+        item.assignedAssets.push({
+          id: line.asset_id,
+          assetCode: line.asset_code,
+          state: line.asset_state
+        });
       }
     }
   }
+  const now = Date.now();
+  const borrowedCount = assignmentStates.filter((state) => state === "BORROWED").length;
+  const returnedCount = assignmentStates.filter((state) => state === "RETURNED").length;
+  const collectedCount = assignmentStates.filter(
+    (state) => state !== "RESERVED" && state !== "RELEASED"
+  ).length;
+  let derivedStatus = reservation.status === "COMPLETED" ? "RETURNED" : reservation.status;
+  if (borrowedCount > 0 && now > Number(reservation.return_at)) derivedStatus = "OVERDUE";
+  else if (borrowedCount > 0 && returnedCount > 0) derivedStatus = "PARTIALLY_RETURNED";
+  else if (borrowedCount > 0) derivedStatus = "BORROWED";
+  else if (reservation.status === "COMPLETED") derivedStatus = "RETURNED";
+  return {
+    id: reservation.id,
+    requestedBy: {
+      id: reservation.requested_by_user_id,
+      name: reservation.requester_name,
+      email: reservation.requester_email
+    },
+    borrower: {
+      type: reservation.borrower_type,
+      id: reservation.borrower_type === "PERSON" ? reservation.borrower_user_id : reservation.chapter_id,
+      name: reservation.borrower_type === "PERSON" ? reservation.borrower_name ?? reservation.requester_name : reservation.chapter_name ?? "Inactive chapter"
+    },
+    items: [...grouped.values()],
+    pickupAt: new Date(Number(reservation.pickup_at)).toISOString(),
+    returnAt: new Date(Number(reservation.return_at)).toISOString(),
+    note: reservation.note,
+    status: reservation.status,
+    derivedStatus,
+    collectedCount,
+    returnedCount,
+    totalQuantity: [...grouped.values()].reduce((sum, item) => sum + item.quantity, 0),
+    createdAt: new Date(Number(reservation.created_at)).toISOString()
+  };
 }
+async function listReservations(env, ownerId) {
+  const ids = await rows(
+    env.CLIENT,
+    "SELECT id FROM reservations WHERE requested_by_user_id=? ORDER BY pickup_at DESC LIMIT 200",
+    [ownerId]
+  );
+  return Promise.all(ids.map(({ id: reservationId }) => getReservation(env, reservationId)));
+}
+async function listBoardReservations(env) {
+  const ids = await rows(
+    env.CLIENT,
+    "SELECT id FROM reservations ORDER BY CASE status WHEN 'PENDING' THEN 0 WHEN 'APPROVED' THEN 1 ELSE 2 END,pickup_at ASC LIMIT 500"
+  );
+  return Promise.all(ids.map(({ id: reservationId }) => getReservation(env, reservationId, true)));
+}
+function validateWindow(pickupAt, returnAt, allowStarted = false) {
+  if (!Number.isFinite(pickupAt) || !Number.isFinite(returnAt) || pickupAt >= returnAt) {
+    throw new DomainError(
+      400,
+      "INVALID_TIME_RANGE",
+      "Choose a pickup time before the return time."
+    );
+  }
+  if (!allowStarted && pickupAt < Date.now()) {
+    throw new DomainError(400, "INVALID_TIME_RANGE", "Pickup cannot be in the past.");
+  }
+}
+async function createReservation(env, actor, input) {
+  validateWindow(input.pickupAt, input.returnAt);
+  if (!input.items.length || input.items.some((item) => !Number.isInteger(item.quantity) || item.quantity < 1)) {
+    throw new DomainError(400, "VALIDATION", "Add at least one item with a positive quantity.");
+  }
+  if (input.borrowerType === "CHAPTER" && !input.chapterId) {
+    throw new DomainError(400, "VALIDATION", "Choose a chapter to borrow this equipment.");
+  }
+  if (input.borrowerType === "PERSON" && input.chapterId) {
+    throw new DomainError(400, "VALIDATION", "A personal reservation cannot name a chapter.");
+  }
+  const duplicateItems = new Set(input.items.map((item) => item.equipmentItemId));
+  if (duplicateItems.size !== input.items.length) {
+    throw new DomainError(
+      400,
+      "VALIDATION",
+      "Combine duplicate equipment lines into one quantity."
+    );
+  }
+  const reservationId = id("reservation");
+  await write(env, async (tx) => {
+    if (input.borrowerType === "CHAPTER") {
+      const chapter = await one(
+        tx,
+        "SELECT id FROM chapters WHERE id=? AND active=1",
+        [input.chapterId]
+      );
+      if (!chapter)
+        throw new DomainError(
+          400,
+          "VALIDATION",
+          "That chapter is unavailable for new reservations."
+        );
+    }
+    for (const line of input.items) {
+      const equipment = await one(
+        tx,
+        "SELECT id FROM equipment_items WHERE id=? AND active=1",
+        [line.equipmentItemId]
+      );
+      if (!equipment)
+        throw new DomainError(
+          400,
+          "VALIDATION",
+          "One of the selected equipment items is unavailable."
+        );
+      const candidates = await findAvailableAssets(
+        tx,
+        line.equipmentItemId,
+        input.pickupAt,
+        input.returnAt
+      );
+      if (candidates.length < line.quantity) {
+        throw new DomainError(
+          409,
+          "NOT_AVAILABLE",
+          "There is not enough equipment available for that time range."
+        );
+      }
+    }
+    const createdAt = Date.now();
+    await tx.execute({
+      sql: `INSERT INTO reservations(id,requested_by_user_id,borrower_type,borrower_user_id,chapter_id,pickup_at,return_at,note,status,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?, 'PENDING',?,?)`,
+      args: [
+        reservationId,
+        actor.id,
+        input.borrowerType,
+        input.borrowerType === "PERSON" ? actor.id : null,
+        input.borrowerType === "CHAPTER" ? input.chapterId : null,
+        input.pickupAt,
+        input.returnAt,
+        input.note?.trim() || null,
+        createdAt,
+        createdAt
+      ]
+    });
+    for (const line of input.items) {
+      await tx.execute({
+        sql: "INSERT INTO reservation_lines(id,reservation_id,equipment_item_id,quantity) VALUES(?,?,?,?)",
+        args: [id("line"), reservationId, line.equipmentItemId, line.quantity]
+      });
+    }
+    await audit(tx, actor.id, "RESERVATION", reservationId, "RESERVATION_CREATED", {
+      itemCount: input.items.length
+    });
+    await notifyBoard(
+      tx,
+      "NEW_RESERVATION",
+      "New reservation",
+      `${actor.name} submitted a reservation.`,
+      reservationId
+    );
+  });
+  return getReservation(env, reservationId);
+}
+async function approveReservation(env, actor, reservationId, assignments) {
+  await write(env, async (tx) => {
+    const reservation = await one(
+      tx,
+      "SELECT status,pickup_at,return_at FROM reservations WHERE id=?",
+      [reservationId]
+    );
+    if (!reservation) throw new DomainError(404, "NOT_FOUND", "Reservation not found.");
+    if (reservation.status !== "PENDING")
+      throw new DomainError(
+        409,
+        "RESERVATION_CONFLICT",
+        "Only a pending reservation can be approved."
+      );
+    const lines = await rows(
+      tx,
+      "SELECT id,equipment_item_id,quantity FROM reservation_lines WHERE reservation_id=? ORDER BY equipment_item_id",
+      [reservationId]
+    );
+    const selections = [];
+    for (const line of lines) {
+      const available = await findAvailableAssets(
+        tx,
+        line.equipment_item_id,
+        Number(reservation.pickup_at),
+        Number(reservation.return_at)
+      );
+      const requestedIds = assignments?.[line.id];
+      const chosen = requestedIds ? requestedIds.map((assetId) => available.find((candidate) => candidate.id === assetId)).filter((asset) => Boolean(asset)) : available.slice(0, Number(line.quantity));
+      if (requestedIds && (requestedIds.length !== Number(line.quantity) || chosen.length !== requestedIds.length || new Set(requestedIds).size !== requestedIds.length)) {
+        throw new DomainError(
+          409,
+          "RESERVATION_CONFLICT",
+          "The selected assets are no longer available for this reservation."
+        );
+      }
+      if (chosen.length !== Number(line.quantity)) {
+        throw new DomainError(
+          409,
+          "RESERVATION_CONFLICT",
+          "Approval failed \u2014 equipment is no longer available."
+        );
+      }
+      selections.push(...chosen.map((asset) => ({ lineId: line.id, asset })));
+    }
+    const timestamp = Date.now();
+    for (const selection of selections) {
+      const restored = await tx.execute({
+        sql: "UPDATE reservation_assets SET reservation_line_id=?,state='RESERVED',actual_pickup_at=NULL,checked_out_by_user_id=NULL,actual_return_at=NULL,checked_in_by_user_id=NULL,updated_at=? WHERE reservation_id=? AND asset_id=? AND state='RELEASED'",
+        args: [selection.lineId, timestamp, reservationId, selection.asset.id]
+      });
+      if (Number(restored.rowsAffected) === 0) {
+        await tx.execute({
+          sql: "INSERT INTO reservation_assets(id,reservation_id,reservation_line_id,asset_id,state,created_at,updated_at) VALUES(?,?,?,?, 'RESERVED',?,?)",
+          args: [
+            id("reservation_asset"),
+            reservationId,
+            selection.lineId,
+            selection.asset.id,
+            timestamp,
+            timestamp
+          ]
+        });
+      }
+      const assetUpdate = await tx.execute({
+        sql: "UPDATE assets SET state='RESERVED',updated_at=? WHERE id=? AND state IN ('AVAILABLE','RESERVED') AND active=1",
+        args: [timestamp, selection.asset.id]
+      });
+      if (Number(assetUpdate.rowsAffected) !== 1)
+        throw new DomainError(
+          409,
+          "RESERVATION_CONFLICT",
+          "An asset changed while this reservation was being approved."
+        );
+    }
+    await tx.execute({
+      sql: "UPDATE reservations SET status='APPROVED',approved_by_user_id=?,updated_at=? WHERE id=? AND status='PENDING'",
+      args: [actor.id, timestamp, reservationId]
+    });
+    await audit(tx, actor.id, "RESERVATION", reservationId, "RESERVATION_APPROVED", {
+      assignedAssetIds: selections.map(({ asset }) => asset.id)
+    });
+    const requester = await one(
+      tx,
+      "SELECT requested_by_user_id FROM reservations WHERE id=?",
+      [reservationId]
+    );
+    if (requester)
+      await notify(
+        tx,
+        requester.requested_by_user_id,
+        "RESERVATION_APPROVED",
+        "Reservation approved",
+        "Your equipment reservation has been approved.",
+        reservationId
+      );
+  });
+  return getReservation(env, reservationId, true);
+}
+async function declineReservation(env, actor, reservationId) {
+  await write(env, async (tx) => {
+    const reservation = await one(
+      tx,
+      "SELECT status,requested_by_user_id FROM reservations WHERE id=?",
+      [reservationId]
+    );
+    if (!reservation) throw new DomainError(404, "NOT_FOUND", "Reservation not found.");
+    if (reservation.status !== "PENDING")
+      throw new DomainError(
+        409,
+        "RESERVATION_CONFLICT",
+        "Only a pending reservation can be declined."
+      );
+    await tx.execute({
+      sql: "UPDATE reservations SET status='DECLINED',updated_at=? WHERE id=?",
+      args: [Date.now(), reservationId]
+    });
+    await audit(tx, actor.id, "RESERVATION", reservationId, "RESERVATION_DECLINED");
+    await notify(
+      tx,
+      reservation.requested_by_user_id,
+      "RESERVATION_DECLINED",
+      "Reservation declined",
+      "The Board declined your equipment reservation.",
+      reservationId
+    );
+  });
+  return getReservation(env, reservationId, true);
+}
+async function cancelReservation(env, actor, reservationId, isBoard = false) {
+  await write(env, async (tx) => {
+    const reservation = await one(tx, "SELECT status,pickup_at,requested_by_user_id FROM reservations WHERE id=?", [
+      reservationId
+    ]);
+    if (!reservation) throw new DomainError(404, "NOT_FOUND", "Reservation not found.");
+    if (!isBoard && reservation.requested_by_user_id !== actor.id)
+      throw new DomainError(404, "NOT_FOUND", "Reservation not found.");
+    if (!["PENDING", "APPROVED"].includes(reservation.status) || Number(reservation.pickup_at) <= Date.now()) {
+      throw new DomainError(
+        409,
+        "RESERVATION_CONFLICT",
+        "This reservation can no longer be cancelled."
+      );
+    }
+    const borrowed = await one(
+      tx,
+      "SELECT COUNT(*) AS count FROM reservation_assets WHERE reservation_id=? AND state='BORROWED'",
+      [reservationId]
+    );
+    if (Number(borrowed?.count ?? 0) > 0)
+      throw new DomainError(
+        409,
+        "RESERVATION_CONFLICT",
+        "A reservation with checked-out equipment cannot be cancelled."
+      );
+    await tx.execute({
+      sql: "UPDATE reservation_assets SET state='RELEASED',updated_at=? WHERE reservation_id=? AND state='RESERVED'",
+      args: [Date.now(), reservationId]
+    });
+    await tx.execute({
+      sql: "UPDATE assets SET state='AVAILABLE',updated_at=? WHERE id IN (SELECT asset_id FROM reservation_assets WHERE reservation_id=? AND state='RELEASED') AND state='RESERVED'",
+      args: [Date.now(), reservationId]
+    });
+    await tx.execute({
+      sql: "UPDATE reservations SET status='CANCELLED',updated_at=? WHERE id=?",
+      args: [Date.now(), reservationId]
+    });
+    await audit(tx, actor.id, "RESERVATION", reservationId, "RESERVATION_CANCELLED");
+    await notify(
+      tx,
+      reservation.requested_by_user_id,
+      "RESERVATION_CANCELLED",
+      "Reservation cancelled",
+      "Your equipment reservation was cancelled.",
+      reservationId
+    );
+  });
+  return getReservation(env, reservationId, isBoard);
+}
+async function assignApprovedReservation(tx, actor, reservationId, pickupAt, returnAt, assignments) {
+  const lines = await rows(
+    tx,
+    "SELECT id,equipment_item_id,quantity FROM reservation_lines WHERE reservation_id=? ORDER BY equipment_item_id",
+    [reservationId]
+  );
+  const selections = [];
+  for (const line of lines) {
+    const available = await findAvailableAssets(tx, line.equipment_item_id, pickupAt, returnAt);
+    const requestedIds = assignments?.[line.id];
+    const chosen = requestedIds ? requestedIds.map((assetId) => available.find((candidate) => candidate.id === assetId)).filter((asset) => Boolean(asset)) : available.slice(0, Number(line.quantity));
+    if (requestedIds && (requestedIds.length !== Number(line.quantity) || chosen.length !== requestedIds.length || new Set(requestedIds).size !== requestedIds.length)) {
+      throw new DomainError(
+        409,
+        "RESERVATION_CONFLICT",
+        "The selected assets are no longer available for this reservation."
+      );
+    }
+    if (chosen.length !== Number(line.quantity))
+      throw new DomainError(
+        409,
+        "RESERVATION_CONFLICT",
+        "Approval failed \u2014 equipment is no longer available."
+      );
+    selections.push(...chosen.map((asset) => ({ lineId: line.id, asset })));
+  }
+  const timestamp = Date.now();
+  for (const selection of selections) {
+    const restored = await tx.execute({
+      sql: "UPDATE reservation_assets SET reservation_line_id=?,state='RESERVED',actual_pickup_at=NULL,checked_out_by_user_id=NULL,actual_return_at=NULL,checked_in_by_user_id=NULL,updated_at=? WHERE reservation_id=? AND asset_id=? AND state='RELEASED'",
+      args: [selection.lineId, timestamp, reservationId, selection.asset.id]
+    });
+    if (Number(restored.rowsAffected) === 0) {
+      await tx.execute({
+        sql: "INSERT INTO reservation_assets(id,reservation_id,reservation_line_id,asset_id,state,created_at,updated_at) VALUES(?,?,?,?, 'RESERVED',?,?)",
+        args: [
+          id("reservation_asset"),
+          reservationId,
+          selection.lineId,
+          selection.asset.id,
+          timestamp,
+          timestamp
+        ]
+      });
+    }
+    const assetUpdate = await tx.execute({
+      sql: "UPDATE assets SET state='RESERVED',updated_at=? WHERE id=? AND state IN ('AVAILABLE','RESERVED') AND active=1",
+      args: [timestamp, selection.asset.id]
+    });
+    if (Number(assetUpdate.rowsAffected) !== 1)
+      throw new DomainError(
+        409,
+        "RESERVATION_CONFLICT",
+        "An asset changed while this reservation was being rescheduled."
+      );
+  }
+  await audit(tx, actor.id, "RESERVATION", reservationId, "RESERVATION_RESCHEDULED", {
+    pickupAt,
+    returnAt,
+    assetIds: selections.map(({ asset }) => asset.id)
+  });
+}
+async function rescheduleReservation(env, actor, reservationId, pickupAt, returnAt, assignments) {
+  validateWindow(pickupAt, returnAt);
+  await write(env, async (tx) => {
+    const reservation = await one(
+      tx,
+      "SELECT status FROM reservations WHERE id=?",
+      [reservationId]
+    );
+    if (!reservation) throw new DomainError(404, "NOT_FOUND", "Reservation not found.");
+    if (reservation.status !== "APPROVED")
+      throw new DomainError(
+        409,
+        "RESERVATION_CONFLICT",
+        "Only an approved reservation can be rescheduled."
+      );
+    const borrowed = await one(
+      tx,
+      "SELECT COUNT(*) AS count FROM reservation_assets WHERE reservation_id=? AND state='BORROWED'",
+      [reservationId]
+    );
+    if (Number(borrowed?.count ?? 0) > 0)
+      throw new DomainError(
+        409,
+        "RESERVATION_CONFLICT",
+        "Return checked-out equipment before changing the reservation time."
+      );
+    await tx.execute({
+      sql: "UPDATE reservation_assets SET state='RELEASED',updated_at=? WHERE reservation_id=? AND state='RESERVED'",
+      args: [Date.now(), reservationId]
+    });
+    await tx.execute({
+      sql: "UPDATE assets SET state='AVAILABLE',updated_at=? WHERE id IN (SELECT asset_id FROM reservation_assets WHERE reservation_id=? AND state='RELEASED') AND state='RESERVED'",
+      args: [Date.now(), reservationId]
+    });
+    await tx.execute({
+      sql: "UPDATE reservations SET pickup_at=?,return_at=?,updated_at=? WHERE id=?",
+      args: [pickupAt, returnAt, Date.now(), reservationId]
+    });
+    await assignApprovedReservation(tx, actor, reservationId, pickupAt, returnAt, assignments);
+    const requester = await one(
+      tx,
+      "SELECT requested_by_user_id FROM reservations WHERE id=?",
+      [reservationId]
+    );
+    if (requester)
+      await notify(
+        tx,
+        requester.requested_by_user_id,
+        "RESERVATION_UPDATED",
+        "Reservation time updated",
+        "The Board updated your reservation window.",
+        reservationId
+      );
+  });
+  return getReservation(env, reservationId, true);
+}
+async function scanAsset(env, actor, qrToken, idempotencyKey) {
+  if (!/^[a-f0-9]{64}$/i.test(qrToken))
+    throw new DomainError(400, "INVALID_ASSET", "This QR code is not valid.");
+  if (!/^[a-zA-Z0-9_-]{12,120}$/.test(idempotencyKey))
+    throw new DomainError(400, "VALIDATION", "A valid scan operation key is required.");
+  return write(env, async (tx) => {
+    const replay = await one(
+      tx,
+      "SELECT response FROM idempotency_keys WHERE actor_id=? AND operation='ASSET_SCAN' AND key=?",
+      [actor.id, idempotencyKey]
+    );
+    if (replay) return JSON.parse(replay.response);
+    const asset = await one(
+      tx,
+      "SELECT a.id,a.asset_code,a.state,a.active,a.last_scan_at,e.name AS equipment_name FROM assets a INNER JOIN equipment_items e ON e.id=a.equipment_item_id WHERE a.qr_token=?",
+      [qrToken]
+    );
+    if (!asset) throw new DomainError(404, "INVALID_ASSET", "No equipment matches this QR code.");
+    if (!asset.active || asset.state === "RETIRED")
+      throw new DomainError(409, "INVALID_ASSET", "This asset has been retired.");
+    if (asset.state === "OUT_OF_SERVICE")
+      throw new DomainError(409, "OUT_OF_SERVICE", "This asset is out of service.");
+    const timestamp = Date.now();
+    if (asset.last_scan_at !== null && timestamp - Number(asset.last_scan_at) < DUPLICATE_SCAN_WINDOW_MS) {
+      throw new DomainError(
+        409,
+        "DUPLICATE_SCAN",
+        "This QR was just processed. Wait a moment before scanning it again."
+      );
+    }
+    let result;
+    if (asset.state === "BORROWED") {
+      const assignment = await one(
+        tx,
+        `SELECT ra.id,ra.reservation_id,r.return_at,r.requested_by_user_id,
+                CASE WHEN r.borrower_type='PERSON' THEN bu.name ELSE ch.name END AS borrower_name
+           FROM reservation_assets ra
+           INNER JOIN reservations r ON r.id=ra.reservation_id
+           LEFT JOIN user bu ON bu.id=r.borrower_user_id
+           LEFT JOIN chapters ch ON ch.id=r.chapter_id
+          WHERE ra.asset_id=? AND ra.state='BORROWED' ORDER BY ra.updated_at DESC LIMIT 1`,
+        [asset.id]
+      );
+      if (!assignment)
+        throw new DomainError(409, "ALREADY_RETURNED", "This asset has no active checkout.");
+      await tx.execute({
+        sql: "UPDATE reservation_assets SET state='RETURNED',actual_return_at=?,checked_in_by_user_id=?,updated_at=? WHERE id=? AND state='BORROWED'",
+        args: [timestamp, actor.id, timestamp, assignment.id]
+      });
+      const nextReservation = await one(
+        tx,
+        `SELECT r.id FROM reservation_assets ra INNER JOIN reservations r ON r.id=ra.reservation_id
+          WHERE ra.asset_id=? AND ra.state='RESERVED' AND r.status='APPROVED' AND r.pickup_at<=? AND ?<r.return_at LIMIT 1`,
+        [asset.id, timestamp, timestamp]
+      );
+      await tx.execute({
+        sql: "UPDATE assets SET state=?,last_scan_at=?,updated_at=? WHERE id=?",
+        args: [nextReservation ? "RESERVED" : "AVAILABLE", timestamp, timestamp, asset.id]
+      });
+      const unfinished = await one(
+        tx,
+        "SELECT COUNT(*) AS count FROM reservation_assets WHERE reservation_id=? AND state IN ('RESERVED','BORROWED')",
+        [assignment.reservation_id]
+      );
+      if (Number(unfinished?.count ?? 0) === 0) {
+        await tx.execute({
+          sql: "UPDATE reservations SET status='COMPLETED',updated_at=? WHERE id=? AND status IN ('APPROVED','CANCELLED')",
+          args: [timestamp, assignment.reservation_id]
+        });
+      }
+      await audit(tx, actor.id, "ASSET", asset.id, "ASSET_RETURNED", {
+        reservationId: assignment.reservation_id
+      });
+      await notify(
+        tx,
+        assignment.requested_by_user_id,
+        "ASSET_RETURNED",
+        "Equipment returned",
+        `${asset.equipment_name} ${asset.asset_code} was returned.`,
+        assignment.reservation_id
+      );
+      result = {
+        operation: "RETURNED",
+        assetName: asset.equipment_name,
+        assetCode: asset.asset_code
+      };
+    } else {
+      const activeAssignment = await one(
+        tx,
+        `SELECT ra.id,ra.reservation_id,r.pickup_at,r.return_at,r.requested_by_user_id,
+                CASE WHEN r.borrower_type='PERSON' THEN bu.name ELSE ch.name END AS borrower_name
+           FROM reservation_assets ra
+           INNER JOIN reservations r ON r.id=ra.reservation_id
+           LEFT JOIN user bu ON bu.id=r.borrower_user_id
+           LEFT JOIN chapters ch ON ch.id=r.chapter_id
+          WHERE ra.asset_id=? AND ra.state='RESERVED' AND r.status='APPROVED'
+          ORDER BY r.pickup_at ASC LIMIT 1`,
+        [asset.id]
+      );
+      if (!activeAssignment)
+        throw new DomainError(409, "NOT_FOUND", "No approved reservation found for this asset.");
+      if (timestamp < Number(activeAssignment.pickup_at)) {
+        throw new DomainError(
+          409,
+          "TOO_EARLY",
+          `Reservation starts at ${formatTunis(Number(activeAssignment.pickup_at))}. Checkout is not active yet.`
+        );
+      }
+      if (timestamp >= Number(activeAssignment.return_at)) {
+        throw new DomainError(
+          409,
+          "RESERVATION_EXPIRED",
+          "Reservation window has expired. Update or recreate the reservation."
+        );
+      }
+      await tx.execute({
+        sql: "UPDATE reservation_assets SET state='BORROWED',actual_pickup_at=?,checked_out_by_user_id=?,updated_at=? WHERE id=? AND state='RESERVED'",
+        args: [timestamp, actor.id, timestamp, activeAssignment.id]
+      });
+      await tx.execute({
+        sql: "UPDATE assets SET state='BORROWED',last_scan_at=?,updated_at=? WHERE id=?",
+        args: [timestamp, timestamp, asset.id]
+      });
+      await audit(tx, actor.id, "ASSET", asset.id, "ASSET_CHECKED_OUT", {
+        reservationId: activeAssignment.reservation_id
+      });
+      await notify(
+        tx,
+        activeAssignment.requested_by_user_id,
+        "ASSET_CHECKED_OUT",
+        "Equipment checked out",
+        `${asset.equipment_name} ${asset.asset_code} was checked out.`,
+        activeAssignment.reservation_id
+      );
+      result = {
+        operation: "CHECKED_OUT",
+        assetName: asset.equipment_name,
+        assetCode: asset.asset_code,
+        borrowerName: activeAssignment.borrower_name,
+        returnAt: new Date(Number(activeAssignment.return_at)).toISOString()
+      };
+    }
+    await tx.execute({
+      sql: "INSERT INTO idempotency_keys(actor_id,operation,key,response,created_at) VALUES(?,'ASSET_SCAN',?,?,?)",
+      args: [actor.id, idempotencyKey, JSON.stringify(result), timestamp]
+    });
+    return result;
+  });
+}
+function formatTunis(timestamp) {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: DISPLAY_TIME_ZONE,
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(timestamp);
+}
+function tunisDayRange(timestamp = Date.now()) {
+  const localStart = DateTime.fromMillis(timestamp, { zone: DISPLAY_TIME_ZONE }).startOf("day");
+  return {
+    start: localStart.toUTC().toMillis(),
+    end: localStart.plus({ days: 1 }).toUTC().toMillis()
+  };
+}
+async function boardDashboard(env) {
+  const now = Date.now();
+  const { start, end } = tunisDayRange(now);
+  const [pickups, returns, borrowed, overdue, nextPickups, nextReturns] = await Promise.all([
+    one(
+      env.CLIENT,
+      "SELECT COUNT(DISTINCT r.id) AS count FROM reservations r WHERE r.status='APPROVED' AND r.pickup_at>=? AND r.pickup_at<?",
+      [start, end]
+    ),
+    one(
+      env.CLIENT,
+      "SELECT COUNT(DISTINCT r.id) AS count FROM reservations r JOIN reservation_assets ra ON ra.reservation_id=r.id WHERE ra.state='BORROWED' AND r.return_at>=? AND r.return_at<?",
+      [start, end]
+    ),
+    one(
+      env.CLIENT,
+      "SELECT COUNT(*) AS count FROM assets WHERE state='BORROWED' AND active=1"
+    ),
+    one(
+      env.CLIENT,
+      "SELECT COUNT(DISTINCT ra.asset_id) AS count FROM reservation_assets ra JOIN reservations r ON r.id=ra.reservation_id WHERE ra.state='BORROWED' AND r.return_at<?",
+      [now]
+    ),
+    rows(
+      env.CLIENT,
+      "SELECT id FROM reservations WHERE status='APPROVED' AND pickup_at>=? ORDER BY pickup_at LIMIT 5",
+      [now]
+    ),
+    rows(
+      env.CLIENT,
+      "SELECT DISTINCT r.id FROM reservations r JOIN reservation_assets ra ON ra.reservation_id=r.id WHERE ra.state='BORROWED' AND r.return_at>=? ORDER BY r.return_at LIMIT 5",
+      [now]
+    )
+  ]);
+  return {
+    pickupsToday: Number(pickups?.count ?? 0),
+    returnsToday: Number(returns?.count ?? 0),
+    currentlyBorrowed: Number(borrowed?.count ?? 0),
+    overdue: Number(overdue?.count ?? 0),
+    nextPickups: await Promise.all(
+      nextPickups.map(({ id: reservationId }) => getReservation(env, reservationId, true))
+    ),
+    nextReturns: await Promise.all(
+      nextReturns.map(({ id: reservationId }) => getReservation(env, reservationId, true))
+    )
+  };
+}
+async function calendarEvents(env, start, end, filters = {}) {
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end || end - start > 93 * 864e5) {
+    throw new DomainError(400, "INVALID_TIME_RANGE", "Choose a calendar range under 93 days.");
+  }
+  const ids = await rows(
+    env.CLIENT,
+    `SELECT DISTINCT r.id FROM reservations r
+       INNER JOIN reservation_assets ra ON ra.reservation_id=r.id
+      WHERE ((r.status='APPROVED' AND r.pickup_at < ? AND ? < r.return_at) OR ra.state='BORROWED')
+      ORDER BY r.pickup_at`,
+    [end, start]
+  );
+  const reservations2 = await Promise.all(
+    ids.map(({ id: reservationId }) => getReservation(env, reservationId, true))
+  );
+  return reservations2.filter((reservation) => Boolean(reservation)).flatMap(
+    (reservation) => reservation.items.flatMap(
+      (item) => (item.assignedAssets ?? []).filter((asset) => asset.state === "RESERVED" || asset.state === "BORROWED").filter(
+        () => !filters.equipmentItemId || item.equipmentItemId === filters.equipmentItemId
+      ).filter(() => !filters.borrower || reservation.borrower.id === filters.borrower).filter(
+        () => !filters.status || reservation.derivedStatus === filters.status || reservation.status === filters.status
+      ).map((asset) => ({
+        id: `${reservation.id}:${asset.id}`,
+        reservationId: reservation.id,
+        assetId: asset.id,
+        title: `${item.name} ${asset.assetCode} \xB7 ${reservation.borrower.name}`,
+        equipmentName: item.name,
+        assetCode: asset.assetCode,
+        borrowerName: reservation.borrower.name,
+        requesterName: reservation.requestedBy.name,
+        start: reservation.pickupAt,
+        end: reservation.returnAt,
+        status: reservation.derivedStatus
+      }))
+    )
+  );
+}
+async function listBoardAudit(env) {
+  return rows(
+    env.CLIENT,
+    `SELECT a.id,a.entity_type AS entityType,a.entity_id AS entityId,a.action,a.created_at AS createdAt,
+            a.data,u.name AS actorName
+       FROM audit_events a INNER JOIN user u ON u.id=a.actor_user_id
+      ORDER BY a.created_at DESC LIMIT 100`
+  );
+}
+function createQrToken() {
+  return opaqueToken();
+}
+function randomId(prefix) {
+  return id(prefix);
+}
+
+// src/worker/index.ts
+var app = new Hono();
+var millisIso = z.string().refine(
+  (value) => /(?:Z|[+-]\d{2}:\d{2})$/.test(value) && Number.isFinite(Date.parse(value)),
+  "Use an ISO timestamp with an explicit timezone."
+);
+app.use("*", requestId());
+app.use(
+  "*",
+  secureHeaders({
+    contentSecurityPolicy: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      connectSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "https:"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"],
+      frameAncestors: ["'none'"]
+    },
+    strictTransportSecurity: "max-age=31536000; includeSubDomains; preload",
+    referrerPolicy: "no-referrer",
+    xFrameOptions: "DENY"
+  })
+);
+app.use("*", async (c, next) => {
+  c.header("Permissions-Policy", "camera=(self)");
+  await next();
+});
+app.use("/api/*", sameOrigin);
+app.use(
+  "/api/*",
+  bodyLimit({
+    maxSize: 64 * 1024,
+    onError: (c) => jsonError(c, 413, "BODY_TOO_LARGE", "Request body is too large.")
+  })
+);
+app.use("/api/*", async (c, next) => {
+  const limited = await isRateLimited(
+    c.env,
+    `api:${requestIp(c)}`,
+    c.env.API_RATE_LIMIT_PER_MINUTE
+  );
+  if (limited) return jsonError(c, 429, "RATE_LIMITED", "Too many requests. Try again shortly.");
+  c.header("Cache-Control", "no-store");
+  c.header("X-Request-Id", c.get("requestId"));
+  await next();
+});
+app.onError((error, c) => {
+  const requestIdValue = c.get("requestId");
+  if (error instanceof DomainError) return jsonError(c, error.status, error.code, error.message);
+  console.error("request_failed", { requestId: requestIdValue, type: error.name });
+  return jsonError(c, 500, "INTERNAL", "The request could not be completed.");
+});
+app.get("/api/health", async (c) => {
+  await c.env.CLIENT.execute("SELECT 1");
+  return c.json({ status: "ok" });
+});
+app.all("/api/auth/*", async (c) => {
+  if (await isRateLimited(c.env, `auth:${requestIp(c)}`, c.env.AUTH_RATE_LIMIT_PER_MINUTE)) {
+    return jsonError(c, 429, "RATE_LIMITED", "Too many sign-in attempts. Try again shortly.");
+  }
+  return createAuth(c.env, trustedAuthOrigin(c.env, c.req.url)).handler(c.req.raw);
+});
+app.get("/api/v1/me", async (c) => {
+  const user = await resolveIdentity(c);
+  return c.json({ user });
+});
+function intervalFromQuery(params) {
+  const pickup = params.get("pickupAt");
+  const returns = params.get("returnAt");
+  if (!pickup && !returns) return { pickupAt: Date.now(), returnAt: Date.now() + 60 * 6e4 };
+  if (!pickup || !returns || !/(?:Z|[+-]\d{2}:\d{2})$/.test(pickup) || !/(?:Z|[+-]\d{2}:\d{2})$/.test(returns)) {
+    throw new DomainError(400, "INVALID_TIME_RANGE", "Choose a valid pickup and return time.");
+  }
+  const pickupAt = Date.parse(pickup);
+  const returnAt = Date.parse(returns);
+  if (!Number.isFinite(pickupAt) || !Number.isFinite(returnAt) || pickupAt >= returnAt) {
+    throw new DomainError(
+      400,
+      "INVALID_TIME_RANGE",
+      "Choose a pickup time before the return time."
+    );
+  }
+  return { pickupAt, returnAt };
+}
+app.get("/api/v1/catalogue", async (c) => {
+  const { pickupAt, returnAt } = intervalFromQuery(new URL(c.req.url).searchParams);
+  return c.json(await listCatalogue(c.env, pickupAt, returnAt));
+});
+app.get("/api/v1/chapters", async (c) => {
+  const chapters2 = await c.env.DB.select({
+    id: schema_exports.chapters.id,
+    name: schema_exports.chapters.name,
+    shortCode: schema_exports.chapters.shortCode
+  }).from(schema_exports.chapters).where(eq2(schema_exports.chapters.active, true)).orderBy(asc(schema_exports.chapters.name));
+  return c.json(chapters2);
+});
+app.get("/api/v1/equipment/:id/availability", async (c) => {
+  const { pickupAt, returnAt } = intervalFromQuery(new URL(c.req.url).searchParams);
+  const item = await c.env.DB.select({ id: schema_exports.equipmentItems.id }).from(schema_exports.equipmentItems).where(
+    and(eq2(schema_exports.equipmentItems.id, c.req.param("id")), eq2(schema_exports.equipmentItems.active, true))
+  ).limit(1);
+  if (!item.length) return jsonError(c, 404, "NOT_FOUND", "Equipment not found.");
+  const availableAssets = await findAvailableAssets(
+    c.env.CLIENT,
+    item[0].id,
+    pickupAt,
+    returnAt
+  );
+  return c.json({ availableQuantity: availableAssets.length });
+});
+app.use("/api/v1/reservations", requireUser);
+app.use("/api/v1/reservations/*", requireUser);
+var createReservationSchema = z.object({
+  borrowerType: z.enum(["PERSON", "CHAPTER"]),
+  chapterId: z.string().min(1).optional(),
+  pickupAt: millisIso,
+  returnAt: millisIso,
+  note: z.string().max(500).optional(),
+  items: z.array(
+    z.object({
+      equipmentItemId: z.string().min(1),
+      quantity: z.number().int().positive().max(100)
+    })
+  ).min(1).max(40)
+}).strict();
+app.get(
+  "/api/v1/reservations",
+  async (c) => c.json(await listReservations(c.env, c.get("actor").id))
+);
+app.post("/api/v1/reservations", async (c) => {
+  const parsed = createReservationSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success)
+    return jsonError(
+      c,
+      400,
+      "VALIDATION",
+      parsed.error.issues[0]?.message ?? "Check the reservation details."
+    );
+  const reservation = await createReservation(c.env, c.get("actor"), {
+    ...parsed.data,
+    pickupAt: Date.parse(parsed.data.pickupAt),
+    returnAt: Date.parse(parsed.data.returnAt)
+  });
+  return c.json(reservation, 201);
+});
+app.get("/api/v1/reservations/:id", async (c) => {
+  const reservation = await getReservation(c.env, c.req.param("id"));
+  if (!reservation || reservation.requestedBy.id !== c.get("actor").id)
+    return jsonError(c, 404, "NOT_FOUND", "Reservation not found.");
+  return c.json(reservation);
+});
+app.delete("/api/v1/reservations/:id", async (c) => {
+  return c.json(await cancelReservation(c.env, c.get("actor"), c.req.param("id")));
+});
+app.get("/api/v1/notifications", async (c) => {
+  const actor = await resolveIdentity(c);
+  if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue.");
+  const notifications2 = await c.env.DB.select({
+    id: schema_exports.notifications.id,
+    type: schema_exports.notifications.type,
+    title: schema_exports.notifications.title,
+    message: schema_exports.notifications.message,
+    reservationId: schema_exports.notifications.reservationId,
+    readAt: schema_exports.notifications.readAt,
+    createdAt: schema_exports.notifications.createdAt
+  }).from(schema_exports.notifications).where(eq2(schema_exports.notifications.userId, actor.id)).orderBy(desc(schema_exports.notifications.createdAt)).limit(100);
+  return c.json(notifications2);
+});
+app.patch("/api/v1/notifications/:id/read", async (c) => {
+  const actor = await resolveIdentity(c);
+  if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue.");
+  const result = await c.env.DB.update(schema_exports.notifications).set({ readAt: Date.now() }).where(
+    and(eq2(schema_exports.notifications.id, c.req.param("id")), eq2(schema_exports.notifications.userId, actor.id))
+  );
+  return c.json({ ok: true, changes: result.rowsAffected });
+});
+app.use("/api/v1/board", requireBoard);
+app.use("/api/v1/board/*", requireBoard);
+app.get("/api/v1/board/dashboard", async (c) => c.json(await boardDashboard(c.env)));
+app.get("/api/v1/board/reservations", async (c) => c.json(await listBoardReservations(c.env)));
+app.get("/api/v1/board/reservations/:id", async (c) => {
+  const reservation = await getReservation(c.env, c.req.param("id"), true);
+  if (!reservation) return jsonError(c, 404, "NOT_FOUND", "Reservation not found.");
+  const candidates = await Promise.all(
+    reservation.items.map(async (item) => ({
+      lineId: item.lineId,
+      assets: reservation.status === "PENDING" ? (await findAvailableAssets(
+        c.env.CLIENT,
+        item.equipmentItemId,
+        Date.parse(reservation.pickupAt),
+        Date.parse(reservation.returnAt)
+      )).map((asset) => ({
+        id: asset.id,
+        assetCode: asset.asset_code,
+        serialNumber: asset.serial_number,
+        state: asset.state
+      })) : []
+    }))
+  );
+  return c.json({ ...reservation, allocationCandidates: candidates });
+});
+var assignmentsSchema = z.record(z.string(), z.array(z.string()));
+app.post("/api/v1/board/reservations/:id/approve", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = z.object({ assignments: assignmentsSchema.optional() }).safeParse(body);
+  if (!parsed.success) return jsonError(c, 400, "VALIDATION", "Asset assignments are invalid.");
+  return c.json(
+    await approveReservation(c.env, c.get("actor"), c.req.param("id"), parsed.data.assignments)
+  );
+});
+app.post("/api/v1/board/reservations/:id/decline", async (c) => {
+  return c.json(await declineReservation(c.env, c.get("actor"), c.req.param("id")));
+});
+app.delete("/api/v1/board/reservations/:id", async (c) => {
+  return c.json(await cancelReservation(c.env, c.get("actor"), c.req.param("id"), true));
+});
+app.patch("/api/v1/board/reservations/:id/window", async (c) => {
+  const parsed = z.object({ pickupAt: millisIso, returnAt: millisIso, assignments: assignmentsSchema.optional() }).safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success)
+    return jsonError(
+      c,
+      400,
+      "VALIDATION",
+      parsed.error.issues[0]?.message ?? "Choose a valid reservation window."
+    );
+  return c.json(
+    await rescheduleReservation(
+      c.env,
+      c.get("actor"),
+      c.req.param("id"),
+      Date.parse(parsed.data.pickupAt),
+      Date.parse(parsed.data.returnAt),
+      parsed.data.assignments
+    )
+  );
+});
+app.get("/api/v1/board/calendar", async (c) => {
+  const start = c.req.query("start");
+  const end = c.req.query("end");
+  if (!start || !end)
+    return jsonError(c, 400, "INVALID_TIME_RANGE", "Choose a calendar date range.");
+  return c.json(
+    await calendarEvents(c.env, Date.parse(start), Date.parse(end), {
+      equipmentItemId: c.req.query("equipmentItemId"),
+      borrower: c.req.query("borrower"),
+      status: c.req.query("status")
+    })
+  );
+});
+app.post("/api/v1/board/scan", async (c) => {
+  const actor = c.get("actor");
+  if (await isRateLimited(c.env, `scan:${actor.id}`, 180))
+    return jsonError(c, 429, "RATE_LIMITED", "Scanner is busy. Wait a moment and try again.");
+  const parsed = z.object({ qrToken: z.string().min(1).max(256) }).safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return jsonError(c, 400, "INVALID_ASSET", "This QR code is not valid.");
+  const idempotencyKey = c.req.header("Idempotency-Key") ?? "";
+  return c.json(await scanAsset(c.env, actor, parsed.data.qrToken, idempotencyKey));
+});
+app.get("/api/v1/board/inventory", async (c) => {
+  const origin = trustedAuthOrigin(c.env, c.req.url);
+  const equipment = await c.env.DB.select({
+    id: schema_exports.equipmentItems.id,
+    name: schema_exports.equipmentItems.name,
+    description: schema_exports.equipmentItems.description,
+    category: schema_exports.equipmentItems.category,
+    imageUrl: schema_exports.equipmentItems.imageUrl,
+    active: schema_exports.equipmentItems.active
+  }).from(schema_exports.equipmentItems).orderBy(asc(schema_exports.equipmentItems.category), asc(schema_exports.equipmentItems.name));
+  const assets2 = await c.env.CLIENT.execute({
+    sql: `SELECT a.id,a.equipment_item_id AS equipmentItemId,a.asset_code AS assetCode,a.qr_token AS qrToken,
+                 a.serial_number AS serialNumber,a.state,a.active,a.last_scan_at AS lastScanAt,e.name AS equipmentName
+            FROM assets a INNER JOIN equipment_items e ON e.id=a.equipment_item_id ORDER BY e.name,a.asset_code`
+  });
+  const grouped = new Map(
+    equipment.map((item) => [item.id, { ...item, assets: [] }])
+  );
+  for (const raw of assets2.rows) {
+    const item = grouped.get(String(raw.equipmentItemId));
+    if (!item) continue;
+    const assignment = await c.env.CLIENT.execute({
+      sql: `SELECT r.pickup_at AS pickupAt,r.return_at AS returnAt,
+                   CASE WHEN r.borrower_type='PERSON' THEN u.name ELSE ch.name END AS borrowerName
+              FROM reservation_assets ra INNER JOIN reservations r ON r.id=ra.reservation_id
+              LEFT JOIN user u ON u.id=r.borrower_user_id LEFT JOIN chapters ch ON ch.id=r.chapter_id
+             WHERE ra.asset_id=? AND ra.state IN ('RESERVED','BORROWED') AND r.status IN ('APPROVED','CANCELLED')
+             ORDER BY r.pickup_at LIMIT 1`,
+      args: [String(raw.id)]
+    });
+    const nextReservation = assignment.rows[0];
+    item.assets.push({
+      id: raw.id,
+      assetCode: raw.assetCode,
+      qrUrl: new URL(`/scan/${String(raw.qrToken)}`, origin).toString(),
+      serialNumber: raw.serialNumber,
+      state: raw.state,
+      active: Boolean(raw.active),
+      nextReservation: nextReservation ? {
+        pickupAt: new Date(Number(nextReservation.pickupAt)).toISOString(),
+        returnAt: new Date(Number(nextReservation.returnAt)).toISOString(),
+        borrowerName: nextReservation.borrowerName
+      } : null
+    });
+  }
+  return c.json([...grouped.values()]);
+});
+var equipmentSchema = z.object({
+  name: z.string().trim().min(1).max(160),
+  description: z.string().max(1e3).default(""),
+  category: z.string().trim().min(1).max(80),
+  imageUrl: z.string().url().max(1e3).nullable().optional()
+}).strict();
+app.post("/api/v1/board/equipment", async (c) => {
+  const parsed = equipmentSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success)
+    return jsonError(
+      c,
+      400,
+      "VALIDATION",
+      parsed.error.issues[0]?.message ?? "Equipment details are invalid."
+    );
+  const timestamp = Date.now();
+  const itemId = randomId("equipment");
+  await c.env.CLIENT.execute({
+    sql: "INSERT INTO equipment_items(id,name,description,category,image_url,active,created_at,updated_at) VALUES(?,?,?,?,?,1,?,?)",
+    args: [
+      itemId,
+      parsed.data.name,
+      parsed.data.description,
+      parsed.data.category,
+      parsed.data.imageUrl ?? null,
+      timestamp,
+      timestamp
+    ]
+  });
+  await c.env.CLIENT.execute({
+    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+    args: [
+      randomId("audit"),
+      c.get("actor").id,
+      "EQUIPMENT",
+      itemId,
+      "EQUIPMENT_CREATED",
+      timestamp,
+      "{}"
+    ]
+  });
+  return c.json({ id: itemId, ...parsed.data, active: true, assets: [] }, 201);
+});
+app.patch("/api/v1/board/equipment/:id", async (c) => {
+  const parsed = z.object({ active: z.boolean() }).strict().safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success)
+    return jsonError(c, 400, "VALIDATION", "Choose whether this equipment is active.");
+  const result = await c.env.DB.update(schema_exports.equipmentItems).set({ active: parsed.data.active, updatedAt: Date.now() }).where(eq2(schema_exports.equipmentItems.id, c.req.param("id")));
+  if (!result.rowsAffected) return jsonError(c, 404, "NOT_FOUND", "Equipment not found.");
+  await c.env.CLIENT.execute({
+    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+    args: [
+      randomId("audit"),
+      c.get("actor").id,
+      "EQUIPMENT",
+      c.req.param("id"),
+      parsed.data.active ? "EQUIPMENT_ACTIVATED" : "EQUIPMENT_DISABLED",
+      Date.now(),
+      JSON.stringify({ active: parsed.data.active })
+    ]
+  });
+  return c.json({ ok: true });
+});
+app.post("/api/v1/board/equipment/:id/assets", async (c) => {
+  const parsed = z.object({
+    assetCode: z.string().trim().min(1).max(80),
+    serialNumber: z.string().trim().max(120).nullable().optional()
+  }).strict().safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return jsonError(c, 400, "VALIDATION", "Enter a valid asset code.");
+  const equipment = await c.env.DB.select({
+    id: schema_exports.equipmentItems.id,
+    active: schema_exports.equipmentItems.active,
+    name: schema_exports.equipmentItems.name
+  }).from(schema_exports.equipmentItems).where(eq2(schema_exports.equipmentItems.id, c.req.param("id"))).limit(1);
+  if (!equipment[0] || !equipment[0].active)
+    return jsonError(c, 404, "NOT_FOUND", "Active equipment was not found.");
+  const assetId = randomId("asset");
+  const qrToken = createQrToken();
+  const timestamp = Date.now();
+  await c.env.CLIENT.execute({
+    sql: "INSERT INTO assets(id,equipment_item_id,asset_code,qr_token,serial_number,state,active,created_at,updated_at) VALUES(?,?,?,?,?,'AVAILABLE',1,?,?)",
+    args: [
+      assetId,
+      c.req.param("id"),
+      parsed.data.assetCode,
+      qrToken,
+      parsed.data.serialNumber ?? null,
+      timestamp,
+      timestamp
+    ]
+  });
+  await c.env.CLIENT.execute({
+    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+    args: [
+      randomId("audit"),
+      c.get("actor").id,
+      "ASSET",
+      assetId,
+      "ASSET_CREATED",
+      timestamp,
+      JSON.stringify({ assetCode: parsed.data.assetCode })
+    ]
+  });
+  const origin = trustedAuthOrigin(c.env, c.req.url);
+  return c.json(
+    {
+      id: assetId,
+      assetCode: parsed.data.assetCode,
+      qrUrl: new URL(`/scan/${qrToken}`, origin).toString(),
+      state: "AVAILABLE",
+      active: true
+    },
+    201
+  );
+});
+app.patch("/api/v1/board/assets/:id", async (c) => {
+  const parsed = z.object({ state: z.enum(["AVAILABLE", "OUT_OF_SERVICE", "RETIRED"]) }).strict().safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return jsonError(c, 400, "VALIDATION", "Choose a valid asset state.");
+  const asset = await c.env.DB.select({ state: schema_exports.assets.state, active: schema_exports.assets.active }).from(schema_exports.assets).where(eq2(schema_exports.assets.id, c.req.param("id"))).limit(1);
+  if (!asset[0]) return jsonError(c, 404, "NOT_FOUND", "Asset not found.");
+  if (asset[0].state === "BORROWED" || asset[0].state === "RESERVED")
+    return jsonError(
+      c,
+      409,
+      "RESERVATION_CONFLICT",
+      "Return or release the asset before changing its state."
+    );
+  if (asset[0].state === "RETIRED" && parsed.data.state !== "RETIRED")
+    return jsonError(c, 409, "INVALID_ASSET", "Retired assets cannot be restored.");
+  await c.env.DB.update(schema_exports.assets).set({
+    state: parsed.data.state,
+    active: parsed.data.state !== "RETIRED",
+    updatedAt: Date.now()
+  }).where(eq2(schema_exports.assets.id, c.req.param("id")));
+  await c.env.CLIENT.execute({
+    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+    args: [
+      randomId("audit"),
+      c.get("actor").id,
+      "ASSET",
+      c.req.param("id"),
+      parsed.data.state === "RETIRED" ? "ASSET_DISABLED" : "ASSET_STATE_CHANGED",
+      Date.now(),
+      JSON.stringify({ state: parsed.data.state })
+    ]
+  });
+  return c.json({ ok: true });
+});
+app.get("/api/v1/board/chapters", async (c) => {
+  const chapters2 = await c.env.DB.select().from(schema_exports.chapters).orderBy(asc(schema_exports.chapters.name));
+  return c.json(chapters2);
+});
+app.post("/api/v1/board/chapters", async (c) => {
+  const parsed = z.object({
+    name: z.string().trim().min(1).max(120),
+    shortCode: z.string().trim().min(2).max(24).regex(/^[A-Za-z0-9-]+$/)
+  }).strict().safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success)
+    return jsonError(c, 400, "VALIDATION", "Enter a chapter name and short code.");
+  const timestamp = Date.now();
+  const chapterId = randomId("chapter");
+  await c.env.CLIENT.execute({
+    sql: "INSERT INTO chapters(id,name,short_code,active,created_at,updated_at) VALUES(?,?,?,1,?,?)",
+    args: [chapterId, parsed.data.name, parsed.data.shortCode.toUpperCase(), timestamp, timestamp]
+  });
+  return c.json(
+    { id: chapterId, ...parsed.data, shortCode: parsed.data.shortCode.toUpperCase(), active: true },
+    201
+  );
+});
+app.patch("/api/v1/board/chapters/:id", async (c) => {
+  const parsed = z.object({ active: z.boolean() }).strict().safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success)
+    return jsonError(c, 400, "VALIDATION", "Choose whether this chapter is active.");
+  const result = await c.env.DB.update(schema_exports.chapters).set({ active: parsed.data.active, updatedAt: Date.now() }).where(eq2(schema_exports.chapters.id, c.req.param("id")));
+  if (!result.rowsAffected) return jsonError(c, 404, "NOT_FOUND", "Chapter not found.");
+  return c.json({ ok: true });
+});
+app.get("/api/v1/board/users", requireSuperadmin, async (c) => {
+  const users = await c.env.DB.select({
+    id: schema_exports.authUsers.id,
+    name: schema_exports.authUsers.name,
+    email: schema_exports.authUsers.email,
+    role: schema_exports.authUsers.role,
+    emailVerified: schema_exports.authUsers.emailVerified,
+    createdAt: schema_exports.authUsers.createdAt
+  }).from(schema_exports.authUsers).orderBy(asc(schema_exports.authUsers.name)).limit(500);
+  return c.json(users);
+});
+app.post("/api/v1/board/users", requireSuperadmin, async (c) => {
+  const parsed = z.object({
+    name: z.string().trim().min(1).max(120),
+    email: z.string().trim().email().max(320),
+    role: z.enum(["BOARD", "SUPERADMIN"]).default("BOARD")
+  }).strict().safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success)
+    return jsonError(c, 400, "VALIDATION", "Enter a name, email, and valid Board role.");
+  const userId = randomId("user");
+  const timestamp = Date.now();
+  await c.env.CLIENT.execute({
+    sql: "INSERT INTO user(id,name,email,emailVerified,role,createdAt,updatedAt) VALUES(?,?,?,0,?,?,?)",
+    args: [
+      userId,
+      parsed.data.name,
+      parsed.data.email.toLowerCase(),
+      parsed.data.role,
+      timestamp,
+      timestamp
+    ]
+  });
+  await c.env.CLIENT.execute({
+    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+    args: [
+      randomId("audit"),
+      c.get("actor").id,
+      "USER",
+      userId,
+      "ROLE_CHANGED",
+      timestamp,
+      JSON.stringify({ role: parsed.data.role, email: parsed.data.email.toLowerCase() })
+    ]
+  });
+  return c.json(
+    {
+      id: userId,
+      name: parsed.data.name,
+      email: parsed.data.email.toLowerCase(),
+      role: parsed.data.role,
+      emailVerified: false
+    },
+    201
+  );
+});
+app.patch("/api/v1/board/users/:id/role", requireSuperadmin, async (c) => {
+  const parsed = z.object({ role: z.enum(["USER", "BOARD", "SUPERADMIN"]) }).strict().safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return jsonError(c, 400, "VALIDATION", "Choose a valid account role.");
+  const targetId = c.req.param("id");
+  if (targetId === c.get("actor").id && parsed.data.role !== "SUPERADMIN")
+    return jsonError(
+      c,
+      409,
+      "RESERVATION_CONFLICT",
+      "You cannot remove your own superadmin access."
+    );
+  const previous = await c.env.DB.select({ role: schema_exports.authUsers.role }).from(schema_exports.authUsers).where(eq2(schema_exports.authUsers.id, targetId)).limit(1);
+  if (!previous[0]) return jsonError(c, 404, "NOT_FOUND", "Account not found.");
+  await c.env.DB.update(schema_exports.authUsers).set({ role: parsed.data.role, updatedAt: /* @__PURE__ */ new Date() }).where(eq2(schema_exports.authUsers.id, targetId));
+  await c.env.CLIENT.execute({
+    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+    args: [
+      randomId("audit"),
+      c.get("actor").id,
+      "USER",
+      targetId,
+      "ROLE_CHANGED",
+      Date.now(),
+      JSON.stringify({ before: previous[0].role, after: parsed.data.role })
+    ]
+  });
+  return c.json({ ok: true, role: parsed.data.role });
+});
+app.get("/api/v1/board/audit", async (c) => c.json(await listBoardAudit(c.env)));
+app.notFound((c) => jsonError(c, 404, "NOT_FOUND", "API endpoint not found."));
 
 // src/worker/runtime-env.ts
 var cachedUrl;
+var cachedToken;
 var cachedClient;
 var cachedDatabase;
-var cachedAuthDatabase;
 function database(url, authToken) {
-  if (!cachedClient || cachedUrl !== url) {
+  if (!cachedClient || cachedUrl !== url || cachedToken !== authToken) {
     cachedClient?.close();
     cachedUrl = url;
+    cachedToken = authToken;
     cachedClient = createLibSqlClient(url, authToken);
-    cachedDatabase = new LibSqlD1Database(cachedClient);
-    cachedAuthDatabase = createAuthDatabase(cachedClient);
+    cachedDatabase = createDatabase(cachedClient);
   }
-  return { DB: cachedDatabase, AUTH_DATABASE: cachedAuthDatabase };
+  return { CLIENT: cachedClient, DB: cachedDatabase };
 }
-function databaseRateLimit(db, prefix, max, windowSeconds) {
-  return {
-    limit: async ({ key }) => ({
-      success: await rateLimit(db, `${prefix}:${key}`, max, windowSeconds)
-    })
-  };
-}
-function createRuntimeEnv(source = process.env) {
+async function createRuntimeEnv(source = process.env) {
   const url = source.TURSO_DATABASE_URL;
   const authToken = source.TURSO_AUTH_TOKEN;
   const secret = source.BETTER_AUTH_SECRET;
   const remoteDatabase = Boolean(url && !url.startsWith("file:"));
-  const required = [url, secret];
-  if (required.some((value) => !value) || remoteDatabase && !authToken || (secret?.length ?? 0) < 32) {
-    throw new Error("Required server configuration is missing");
+  if (!url || !secret || secret.length < 32 || remoteDatabase && !authToken) {
+    throw new Error(
+      "Set TURSO_DATABASE_URL, BETTER_AUTH_SECRET (32+ characters), and a remote TURSO_AUTH_TOKEN."
+    );
   }
-  const { DB, AUTH_DATABASE } = database(url, authToken);
+  if (/ieee[-_]?ras[-_]?insat/i.test(url))
+    throw new Error("The reservation app refuses to connect to the RAS database.");
+  const vercelEnvironment = source.VERCEL_ENV;
+  const environment = source.NODE_ENV === "test" ? "test" : vercelEnvironment === "production" ? "production" : vercelEnvironment === "preview" ? "preview" : "development";
+  if (environment === "production" && !source.APP_ORIGIN) {
+    throw new Error("APP_ORIGIN must be set to the separate IEEE INSAT SB application origin.");
+  }
+  const { CLIENT, DB } = database(url, authToken);
+  await CLIENT.execute("PRAGMA foreign_keys = ON");
   return {
+    CLIENT,
     DB,
-    AUTH_DATABASE,
-    API_RATE_LIMITER: databaseRateLimit(DB, "api", 600, 60),
-    AUTH_RATE_LIMITER: databaseRateLimit(DB, "auth", 20, 60),
     APP_ORIGIN: source.APP_ORIGIN,
-    ENVIRONMENT: source.VERCEL_ENV === "preview" ? "staging" : "production",
+    ENVIRONMENT: environment,
     BETTER_AUTH_SECRET: secret,
     BREVO_API_KEY: source.BREVO_API_KEY,
     BREVO_SENDER_EMAIL: source.BREVO_SENDER_EMAIL,
     BREVO_SENDER_NAME: source.BREVO_SENDER_NAME,
-    TURNSTILE_SECRET_KEY: source.TURNSTILE_SECRET_KEY,
-    TURNSTILE_SITE_KEY: source.TURNSTILE_SITE_KEY,
-    CRON_SECRET: source.CRON_SECRET,
     VERCEL_URL: source.VERCEL_URL,
-    VERCEL_PROJECT_PRODUCTION_URL: source.VERCEL_PROJECT_PRODUCTION_URL
+    VERCEL_PROJECT_PRODUCTION_URL: source.VERCEL_PROJECT_PRODUCTION_URL,
+    API_RATE_LIMIT_PER_MINUTE: 1200,
+    AUTH_RATE_LIMIT_PER_MINUTE: 10
   };
 }
 
@@ -3295,7 +2025,7 @@ var handler = getRequestListener((incomingRequest) => {
   if (incomingRequest.method !== "GET" && incomingRequest.method !== "HEAD" && incomingRequest.body) {
     Object.assign(init, { body: incomingRequest.body, duplex: "half" });
   }
-  return app.fetch(new Request(requestUrl, init), createRuntimeEnv());
+  return createRuntimeEnv().then((env) => app.fetch(new Request(requestUrl, init), env));
 });
 var serverless_default = handler;
 export {

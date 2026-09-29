@@ -29,7 +29,7 @@ const handler = getRequestListener((incomingRequest) => {
   ) {
     Object.assign(init, { body: incomingRequest.body, duplex: "half" });
   }
-  return app.fetch(new Request(requestUrl, init), createRuntimeEnv());
+  return createRuntimeEnv().then((env) => app.fetch(new Request(requestUrl, init), env));
 });
 
 export default handler;
