@@ -12,7 +12,6 @@ import {
   useProcessUser,
   useUpdateUserClearance,
   useUpdateUserRole,
-  useResetUserPassword,
 } from "../hooks/useBoardUsers";
 import { useBoardStrikes } from "@/features/discipline/board/hooks/useBoardDiscipline";
 import { ArrowLeft, User, Shield, ShieldAlert, ShieldCheck, Lock, Award, Key, Copy, Check, RefreshCw } from "lucide-react";
@@ -45,31 +44,11 @@ export const BoardUserDetailPage: React.FC = () => {
   const [roleReason, setRoleReason] = useState("");
 
   // Staff password reset state
-  const [resetGeneratedPassword, setResetGeneratedPassword] = useState<string | null>(null);
-  const [copiedResetPassword, setCopiedResetPassword] = useState(false);
-  const resetPasswordMutation = useResetUserPassword();
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   const isSuperadmin = currentPersona.role === "SUPERADMIN";
-
-  const handleResetPassword = async () => {
-    if (!user) return;
-    setErrorMessage(null);
-    setSuccessMessage(null);
-    try {
-      const res = await resetPasswordMutation.mutateAsync({
-        userId: user.id,
-        actorUserId: currentPersona.id,
-        actorRole: currentPersona.role,
-      });
-      setResetGeneratedPassword(res.newPassword);
-      setSuccessMessage(`Password reset successfully for ${user.name}. Active sessions revoked.`);
-    } catch (err: any) {
-      setErrorMessage(err.message || "Failed to reset password.");
-    }
-  };
 
   if (isLoading || !user) {
     return (
@@ -407,9 +386,7 @@ export const BoardUserDetailPage: React.FC = () => {
             </div>
 
             <p className="text-xs text-muted-foreground">
-              These administrative actions are restricted to Superadmin (Clearance VI). Board
-              members cannot assign Level IV manual clearance or elevate user roles.
-            </p>
+              Clearance and role changes are recorded by the authorized human operator and kept in the audit trail.</p>
 
             {/* Manual Level IV Clearance */}
             <div className="p-3 rounded-lg border border-purple-200 bg-card space-y-2 text-xs">
@@ -485,85 +462,6 @@ export const BoardUserDetailPage: React.FC = () => {
               </div>
             </form>
           </div>
-
-          {/* Staff Credentials & Password Management */}
-          {(user.role === "OPERATOR" || user.role === "SUPERADMIN" || isSuperadmin) && (
-            <div className="p-4 rounded-xl border border-border bg-card space-y-3 shadow-sm">
-              <div className="flex items-center justify-between border-b border-border pb-2">
-                <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
-                  <Key className="w-4 h-4 text-primary" />
-                  <span>Staff Authentication & Password</span>
-                </h3>
-                <span className="text-[10px] uppercase font-bold text-muted-foreground px-2 py-0.5 rounded bg-muted">
-                  {user.role}
-                </span>
-              </div>
-
-              <p className="text-xs text-muted-foreground">
-                Staff and administrators log in with assigned credentials. If credentials are lost
-                or compromised, generate a new secure password below. All previous active sessions
-                will be terminated.
-              </p>
-
-              {resetGeneratedPassword && (
-                <div className="p-3.5 rounded-lg border border-primary/30 bg-primary/5 space-y-2">
-                  <span className="text-xs font-semibold text-primary block">
-                    Newly Generated Secure Password:
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <code className="px-3 py-1.5 rounded-md bg-background border border-border font-mono text-sm font-bold text-foreground flex-1 select-all">
-                      {resetGeneratedPassword}
-                    </code>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => {
-                        navigator.clipboard.writeText(
-                          `Email: ${user.email}\nPassword: ${resetGeneratedPassword}`
-                        );
-                        setCopiedResetPassword(true);
-                        setTimeout(() => setCopiedResetPassword(false), 2500);
-                      }}
-                      className="shrink-0 gap-1.5 h-8 text-xs"
-                    >
-                      {copiedResetPassword ? (
-                        <>
-                          <Check className="h-3.5 w-3.5 text-emerald-600" />
-                          <span>Copied</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="h-3.5 w-3.5" />
-                          <span>Copy Credentials</span>
-                        </>
-                      )}
-                    </Button>
-                  </div>
-                </div>
-              )}
-
-              <div className="flex justify-end pt-1">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={!isSuperadmin || resetPasswordMutation.isPending}
-                  onClick={handleResetPassword}
-                  className="text-xs gap-1.5"
-                >
-                  <RefreshCw
-                    className={`h-3.5 w-3.5 ${resetPasswordMutation.isPending ? "animate-spin" : ""}`}
-                  />
-                  <span>
-                    {resetPasswordMutation.isPending
-                      ? "Resetting..."
-                      : "Reset / Generate New Password"}
-                  </span>
-                </Button>
-              </div>
-            </div>
-          )}
 
           {/* Disciplinary Strikes History */}
           <div className="p-4 rounded-xl border border-border bg-card space-y-3 shadow-sm">
