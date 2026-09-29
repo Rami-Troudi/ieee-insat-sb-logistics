@@ -160,8 +160,6 @@ export const remoteAuthService = {
     });
 
     const persona = response.user;
-    cachedPersona = persona;
-    listeners.forEach((listener) => listener(persona));
 
     return {
       persona,
