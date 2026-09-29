@@ -29,7 +29,6 @@ export interface UpdateClearanceParams {
   payload: UpdateUserClearancePayload;
   actorUserId: string;
   actorRole: string;
-  actorClearance: string;
 }
 
 export interface UpdateRoleParams {
@@ -90,8 +89,8 @@ export function useUpdateUserClearance() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ payload, actorUserId, actorRole, actorClearance }: UpdateClearanceParams) =>
-      boardUserService.updateClearance(payload, actorUserId, actorRole, actorClearance),
+    mutationFn: ({ payload, actorUserId, actorRole }: UpdateClearanceParams) =>
+      boardUserService.updateClearance(payload, actorUserId, actorRole),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.boardUsers.all });
       queryClient.invalidateQueries({
