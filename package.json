@@ -18,7 +18,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test --ui"
+    "test:e2e:ui": "playwright test --ui",
+    "seed:inventory": "node scripts/seed-inventory.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",
