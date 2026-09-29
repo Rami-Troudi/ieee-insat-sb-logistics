@@ -1718,7 +1718,14 @@ async function updateUser(
       affiliation,
       claimed_affiliation: row.claimed_affiliation,
       affiliation_verified: 1,
-      clearance: affiliation === "IEEE" ? "III" : affiliation === "AEROBOTIX" ? "II" : "I",
+      clearance:
+        affiliation === "EUROBOT" || affiliation === "RAS_BOARD"
+          ? "V"
+          : affiliation === "IEEE"
+            ? "III"
+            : affiliation === "AEROBOTIX"
+              ? "II"
+              : "I",
     };
   }
   if (method === "updateClearance") {
