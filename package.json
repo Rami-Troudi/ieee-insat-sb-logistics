@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build && esbuild src/worker/serverless.ts --bundle --platform=node --target=node20 --format=esm --packages=external --outfile=api/'[...path].js'",
+    "build": "tsc -b && vite build",
     "dev:vercel": "vercel dev",
     "deploy:preview": "vercel deploy",
     "deploy:production": "vercel deploy --prod",
