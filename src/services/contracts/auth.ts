@@ -20,7 +20,6 @@ export interface IAuthService {
   registerMember(input: RegisterMemberInput): Promise<RegisterResult>;
   getCurrentUser(): UserPersona;
   getCurrentSession(): Promise<UserPersona | null>;
-  setSession(persona: UserPersona): void;
   clearSession(): void;
   subscribeSession(callback: (persona: UserPersona) => void): () => void;
 }
