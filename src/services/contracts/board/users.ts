@@ -62,6 +62,11 @@ export interface IBoardUserService {
     actorUserId: string,
     actorRole: string
   ): Promise<{ success: boolean }>;
+  resetPassword(
+    userId: string,
+    actorUserId: string,
+    actorRole: string
+  ): Promise<{ success: boolean; newPassword: string }>;
   processUser(
     payload: ProcessUserPayload,
     actorUserId: string,

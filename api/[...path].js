@@ -87,10 +87,11 @@ var isFresh = (method) => [
   "updateStatus",
   "createUser",
   "removeUser",
+  "resetPassword",
   "exportCsv",
   "logEvent"
 ].includes(method);
-var superadminOnly = (service, method, args) => service === "user" && ["updateRole", "updateStatus"].includes(method) || service === "export" && ["USERS", "AUDITS", "STRIKES", "INCIDENTS", "COMPENSATIONS", "AUDIT_LOG"].includes(args[0]);
+var superadminOnly = (service, method, args) => service === "user" && ["updateRole", "updateStatus", "resetPassword"].includes(method) || service === "export" && ["USERS", "AUDITS", "STRIKES", "INCIDENTS", "COMPENSATIONS", "AUDIT_LOG"].includes(args[0]);
 async function dispatchBoardRpc(env, actor, input) {
   if (!input || typeof input !== "object") return fail(400, "VALIDATION", "Invalid operation");
   const { service, method, args } = input;
@@ -548,7 +549,6 @@ async function reviewRequest(env, actor, payload) {
   const member = await env.DB.prepare("SELECT status,clearance FROM app_users WHERE id=?").bind(request.userId).first();
   if (!member || member.status !== "ACTIVE")
     return fail(409, "CONFLICT", "Member is not eligible to borrow");
-  const clearanceRank = { I: 1, II: 2, III: 3, IV: 4, V: 5, VI: 6 };
   const strikes = await env.DB.prepare(
     "SELECT COUNT(*) AS count FROM record_store WHERE kind='strike' AND owner_id=? AND status='ACTIVE'"
   ).bind(request.userId).first();
@@ -561,8 +561,6 @@ async function reviewRequest(env, actor, payload) {
     const line = request.items.find((l) => l.id === choice.lineId);
     if (!line || !Number.isInteger(choice.approvedQuantity) || choice.approvedQuantity < 0 || choice.approvedQuantity > line.requestedQuantity || !["C", "E"].includes(line.equipmentClass))
       return fail(400, "VALIDATION", "Invalid line quantity or request class");
-    if (choice.approvedQuantity > 0 && clearanceRank[member.clearance] < (line.equipmentClass === "E" ? 3 : 2))
-      return fail(409, "CONFLICT", "Member clearance no longer covers this equipment class");
     line.approvedQuantity = choice.approvedQuantity;
     line.status = choice.approvedQuantity ? "APPROVED" : "REJECTED";
     if (!choice.approvedQuantity) {
@@ -711,7 +709,24 @@ async function rejectRequest(env, actor, requestId2, reason) {
       env.DB.prepare(
         "UPDATE requests SET status=CASE WHEN status='PENDING' THEN 'REJECTED' ELSE 'INVALID' END,data=? WHERE id=?"
       ).bind(JSON.stringify(request), request.id),
-      audit(env, actor, "REQUEST", request.id, "REQUEST_REJECTED")
+      ...request.items.map(
+        (line) => env.DB.prepare("UPDATE request_lines SET data=? WHERE id=? AND request_id=?").bind(
+          JSON.stringify(line),
+          line.id,
+          request.id
+        )
+      ),
+      notify(
+        env,
+        request.userId,
+        "Request declined",
+        `Your request ${request.id} was declined: ${request.rejectionReason}`,
+        "REQUEST_REJECTED",
+        { requestId: request.id }
+      ),
+      audit(env, actor, "REQUEST", request.id, "REQUEST_REJECTED", {
+        reason: request.rejectionReason
+      })
     ]);
   } catch {
     return fail(409, "CONFLICT", "Request has already been reviewed");
@@ -1350,6 +1365,8 @@ async function genericRecords(env, actor, service, method, args) {
     return createUser(env, actor, args[0]);
   if (service === "user" && method === "removeUser")
     return removeUser(env, actor, args[0]);
+  if (service === "user" && method === "resetPassword")
+    return resetUserPassword(env, actor, args[0]);
   if (service === "user" && ["processUser", "updateClearance", "updateRole", "updateStatus"].includes(method))
     return updateUser(env, actor, method, args[0]);
   if (service === "allocation" && method === "checkAndExpireAllocations")
@@ -1483,13 +1500,72 @@ async function removeUser(env, actor, input) {
   if (!row) return fail(404, "NOT_FOUND", "User not found");
   if (row.role === "SUPERADMIN" && actor.role !== "SUPERADMIN")
     return fail(403, "FORBIDDEN", "Only Superadmins can remove another Superadmin");
+  const activeLoans = await env.DB.prepare(
+    "SELECT COUNT(*) AS count FROM record_store WHERE kind='loan' AND owner_id=? AND status IN ('ACTIVE', 'OVERDUE')"
+  ).bind(targetId).first();
+  if (activeLoans && activeLoans.count > 0) {
+    return fail(
+      409,
+      "CONFLICT",
+      `Cannot remove ${row.name}: user currently possesses ${activeLoans.count} active borrowed equipment item(s). Return all items first.`
+    );
+  }
+  const activeRequests = await env.DB.prepare(
+    "SELECT COUNT(*) AS count FROM requests WHERE user_id=? AND status IN ('PENDING', 'APPROVED', 'PARTIALLY_APPROVED')"
+  ).bind(targetId).first();
+  if (activeRequests && activeRequests.count > 0) {
+    return fail(
+      409,
+      "CONFLICT",
+      `Cannot remove ${row.name}: user has active or pending borrow requests. Review, reject, or complete them first.`
+    );
+  }
   await env.DB.batch([
     env.DB.prepare("DELETE FROM app_users WHERE id=?").bind(targetId),
     env.DB.prepare("DELETE FROM user WHERE id=?").bind(targetId),
     env.DB.prepare("DELETE FROM session WHERE userId=?").bind(targetId),
-    audit(env, actor, "USER", targetId, "USER_REMOVED", { email: row.email, name: row.name })
+    env.DB.prepare("DELETE FROM staff_sessions WHERE user_id=?").bind(targetId),
+    env.DB.prepare("DELETE FROM record_store WHERE kind='notification' AND owner_id=?").bind(targetId),
+    audit(env, actor, "USER", targetId, "USER_REMOVED", { email: row.email, name: row.name, role: row.role })
   ]);
   return ok({ success: true });
+}
+function generateStaffPassword() {
+  const chars = "abcdefghjkmnpqrstuvwxyz23456789";
+  const arr = new Uint8Array(12);
+  crypto.getRandomValues(arr);
+  const part1 = Array.from(arr.slice(0, 4), (b) => chars[b % chars.length]).join("");
+  const part2 = Array.from(arr.slice(4, 8), (b) => chars[b % chars.length]).join("");
+  const part3 = Array.from(arr.slice(8, 12), (b) => chars[b % chars.length]).join("");
+  return `ras-${part1}-${part2}-${part3}`;
+}
+async function resetUserPassword(env, actor, input) {
+  const targetId = typeof input === "string" ? input : String(input?.userId ?? "");
+  if (!targetId) return fail(400, "VALIDATION", "User ID is required");
+  if (actor.role !== "SUPERADMIN" && actor.id !== targetId)
+    return fail(403, "FORBIDDEN", "Only Superadmins can reset passwords for other accounts");
+  const row = await env.DB.prepare("SELECT * FROM app_users WHERE id=?").bind(targetId).first();
+  if (!row) return fail(404, "NOT_FOUND", "User not found");
+  const newPassword = generateStaffPassword();
+  const currentData = decode(row.data) ?? {};
+  currentData.password = newPassword;
+  await env.DB.batch([
+    env.DB.prepare("UPDATE app_users SET data=?, updated_at=? WHERE id=?").bind(
+      JSON.stringify(currentData),
+      stamp(),
+      targetId
+    ),
+    env.DB.prepare("UPDATE staff_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL").bind(
+      stamp(),
+      targetId
+    ),
+    audit(env, actor, "USER", targetId, "USER_PASSWORD_RESET", {
+      email: row.email,
+      name: row.name,
+      role: row.role
+    })
+  ]);
+  return ok({ success: true, newPassword });
 }
 function publicProfile(row) {
   return {

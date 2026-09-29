@@ -347,6 +347,18 @@ class MockBoardUserService implements IBoardUserService {
       throw new Error("You cannot remove your own account");
     }
 
+    const snap = mockDb.getSnapshot();
+    const target = snap.userProfiles[userId];
+    if (target && target.activeLoansCount > 0) {
+      throw new Error(`Cannot remove ${target.name}: user has active borrowed equipment.`);
+    }
+    const hasActiveLoans = snap.loans.some(
+      (l) => l.userId === userId && (l.status === "ACTIVE" || l.status === "OVERDUE")
+    );
+    if (hasActiveLoans) {
+      throw new Error("Cannot remove user with active borrowed equipment.");
+    }
+
     mockDb.mutate((draft) => {
       delete draft.userProfiles[userId];
     });
@@ -362,6 +374,26 @@ class MockBoardUserService implements IBoardUserService {
     });
 
     return { success: true };
+  }
+
+  async resetPassword(
+    userId: string,
+    actorUserId: string,
+    _actorRole: string
+  ): Promise<{ success: boolean; newPassword: string }> {
+    await this.simulateLatency();
+    const actor = requireOperator(actorUserId);
+    const newPassword = `ras-test-${Math.random().toString(36).slice(2, 6)}-${Math.random().toString(36).slice(2, 6)}`;
+    await mockBoardAuditLogService.logEvent({
+      actorUserId,
+      actorName: "Board Custodian",
+      actorRole: actor.role,
+      action: "USER_PASSWORD_RESET",
+      entityType: "USER",
+      entityId: userId,
+      reason: "Password reset via Board People portal",
+    });
+    return { success: true, newPassword };
   }
 }
 

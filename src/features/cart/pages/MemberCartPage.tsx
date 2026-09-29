@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Link } from "react-router-dom";
-import { Minus, Plus, Send, Trash2 } from "lucide-react";
+import { Minus, Plus, Send, Trash2, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useBorrowCart } from "@/features/cart";
 import { useSession } from "@/hooks/useSession";
@@ -52,6 +52,8 @@ export const MemberCartPage: React.FC = () => {
     );
   }
 
+  const hasFlaggedItems = state.items.some((i) => i.item.flagged);
+
   return (
     <div className="max-w-xl mx-auto p-4 sm:p-6 space-y-5">
       <h1 className="text-2xl font-bold">Cart</h1>
@@ -64,6 +66,18 @@ export const MemberCartPage: React.FC = () => {
         </div>
       ) : (
         <form onSubmit={submit} className="space-y-5">
+          {hasFlaggedItems && (
+            <div className="flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-900 dark:text-amber-200">
+              <AlertCircle className="h-5 w-5 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+              <div className="space-y-1">
+                <p className="font-semibold">Notice: Board Clearance Required</p>
+                <p className="text-xs text-muted-foreground">
+                  One or more items in your cart require manual board clearance. You can still submit
+                  your request, but it will be flagged for logistics review before equipment can be issued.
+                </p>
+              </div>
+            </div>
+          )}
           <div className="space-y-3">
             {state.items.map(({ item, quantity }) => (
               <div key={item.id} className="flex items-center gap-3 rounded-xl border bg-card p-3">
@@ -75,9 +89,15 @@ export const MemberCartPage: React.FC = () => {
                     event.currentTarget.src = DEFAULT_EQUIPMENT_IMAGE;
                   }}
                 />
-                <div className="min-w-0 flex-1">
+                <div className="min-w-0 flex-1 space-y-1">
                   <p className="truncate text-sm font-semibold">{item.name}</p>
                   <p className="text-xs text-muted-foreground">{item.category}</p>
+                  {item.flagged && (
+                    <span className="inline-flex items-center gap-1 rounded bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                      <AlertCircle className="h-3 w-3" />
+                      {item.flagReason || "Flagged for Review"}
+                    </span>
+                  )}
                 </div>
                 <div className="flex items-center">
                   <button

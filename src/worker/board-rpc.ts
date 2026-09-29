@@ -119,11 +119,12 @@ const isFresh = (method: string) =>
     "updateStatus",
     "createUser",
     "removeUser",
+    "resetPassword",
     "exportCsv",
     "logEvent",
   ].includes(method);
 const superadminOnly = (service: string, method: string, args: any[]) =>
-  (service === "user" && ["updateRole", "updateStatus"].includes(method)) ||
+  (service === "user" && ["updateRole", "updateStatus", "resetPassword"].includes(method)) ||
   (service === "export" &&
     ["USERS", "AUDITS", "STRIKES", "INCIDENTS", "COMPENSATIONS", "AUDIT_LOG"].includes(args[0]));
 
@@ -725,7 +726,6 @@ async function reviewRequest(env: Env, actor: AppUser, payload: any): Promise<Rp
     .first<{ status: string; clearance: string }>();
   if (!member || member.status !== "ACTIVE")
     return fail(409, "CONFLICT", "Member is not eligible to borrow");
-  const clearanceRank: Record<string, number> = { I: 1, II: 2, III: 3, IV: 4, V: 5, VI: 6 };
   const strikes = await env.DB.prepare(
     "SELECT COUNT(*) AS count FROM record_store WHERE kind='strike' AND owner_id=? AND status='ACTIVE'"
   )
@@ -746,11 +746,6 @@ async function reviewRequest(env: Env, actor: AppUser, payload: any): Promise<Rp
       !["C", "E"].includes(line.equipmentClass)
     )
       return fail(400, "VALIDATION", "Invalid line quantity or request class");
-    if (
-      choice.approvedQuantity > 0 &&
-      clearanceRank[member.clearance] < (line.equipmentClass === "E" ? 3 : 2)
-    )
-      return fail(409, "CONFLICT", "Member clearance no longer covers this equipment class");
     line.approvedQuantity = choice.approvedQuantity;
     line.status = choice.approvedQuantity ? "APPROVED" : "REJECTED";
     if (!choice.approvedQuantity) {
@@ -923,7 +918,24 @@ async function rejectRequest(
       env.DB.prepare(
         "UPDATE requests SET status=CASE WHEN status='PENDING' THEN 'REJECTED' ELSE 'INVALID' END,data=? WHERE id=?"
       ).bind(JSON.stringify(request), request.id),
-      audit(env, actor, "REQUEST", request.id, "REQUEST_REJECTED"),
+      ...request.items.map((line: any) =>
+        env.DB.prepare("UPDATE request_lines SET data=? WHERE id=? AND request_id=?").bind(
+          JSON.stringify(line),
+          line.id,
+          request.id
+        )
+      ),
+      notify(
+        env,
+        request.userId,
+        "Request declined",
+        `Your request ${request.id} was declined: ${request.rejectionReason}`,
+        "REQUEST_REJECTED",
+        { requestId: request.id }
+      ),
+      audit(env, actor, "REQUEST", request.id, "REQUEST_REJECTED", {
+        reason: request.rejectionReason,
+      }),
     ]);
   } catch {
     return fail(409, "CONFLICT", "Request has already been reviewed");
@@ -1660,6 +1672,8 @@ async function genericRecords(
     return createUser(env, actor, args[0]);
   if (service === "user" && method === "removeUser")
     return removeUser(env, actor, args[0]);
+  if (service === "user" && method === "resetPassword")
+    return resetUserPassword(env, actor, args[0]);
   if (
     service === "user" &&
     ["processUser", "updateClearance", "updateRole", "updateStatus"].includes(method)
@@ -1846,14 +1860,91 @@ async function removeUser(
   if (row.role === "SUPERADMIN" && actor.role !== "SUPERADMIN")
     return fail(403, "FORBIDDEN", "Only Superadmins can remove another Superadmin");
 
+  // Safeguard: Refuse deletion if user holds active/overdue loans
+  const activeLoans = await env.DB.prepare(
+    "SELECT COUNT(*) AS count FROM record_store WHERE kind='loan' AND owner_id=? AND status IN ('ACTIVE', 'OVERDUE')"
+  )
+    .bind(targetId)
+    .first<{ count: number }>();
+  if (activeLoans && activeLoans.count > 0) {
+    return fail(
+      409,
+      "CONFLICT",
+      `Cannot remove ${row.name}: user currently possesses ${activeLoans.count} active borrowed equipment item(s). Return all items first.`
+    );
+  }
+
+  // Safeguard: Refuse deletion if user has pending borrow requests
+  const activeRequests = await env.DB.prepare(
+    "SELECT COUNT(*) AS count FROM requests WHERE user_id=? AND status IN ('PENDING', 'APPROVED', 'PARTIALLY_APPROVED')"
+  )
+    .bind(targetId)
+    .first<{ count: number }>();
+  if (activeRequests && activeRequests.count > 0) {
+    return fail(
+      409,
+      "CONFLICT",
+      `Cannot remove ${row.name}: user has active or pending borrow requests. Review, reject, or complete them first.`
+    );
+  }
+
   await env.DB.batch([
     env.DB.prepare("DELETE FROM app_users WHERE id=?").bind(targetId),
     env.DB.prepare("DELETE FROM user WHERE id=?").bind(targetId),
     env.DB.prepare("DELETE FROM session WHERE userId=?").bind(targetId),
-    audit(env, actor, "USER", targetId, "USER_REMOVED", { email: row.email, name: row.name }),
+    env.DB.prepare("DELETE FROM staff_sessions WHERE user_id=?").bind(targetId),
+    env.DB.prepare("DELETE FROM record_store WHERE kind='notification' AND owner_id=?").bind(targetId),
+    audit(env, actor, "USER", targetId, "USER_REMOVED", { email: row.email, name: row.name, role: row.role }),
   ]);
 
   return ok({ success: true });
+}
+
+function generateStaffPassword(): string {
+  const chars = "abcdefghjkmnpqrstuvwxyz23456789";
+  const arr = new Uint8Array(12);
+  crypto.getRandomValues(arr);
+  const part1 = Array.from(arr.slice(0, 4), (b) => chars[b % chars.length]).join("");
+  const part2 = Array.from(arr.slice(4, 8), (b) => chars[b % chars.length]).join("");
+  const part3 = Array.from(arr.slice(8, 12), (b) => chars[b % chars.length]).join("");
+  return `ras-${part1}-${part2}-${part3}`;
+}
+
+async function resetUserPassword(
+  env: Env,
+  actor: AppUser,
+  input: any
+): Promise<RpcResult> {
+  const targetId = typeof input === "string" ? input : String(input?.userId ?? "");
+  if (!targetId) return fail(400, "VALIDATION", "User ID is required");
+  if (actor.role !== "SUPERADMIN" && actor.id !== targetId)
+    return fail(403, "FORBIDDEN", "Only Superadmins can reset passwords for other accounts");
+
+  const row = await env.DB.prepare("SELECT * FROM app_users WHERE id=?").bind(targetId).first<any>();
+  if (!row) return fail(404, "NOT_FOUND", "User not found");
+
+  const newPassword = generateStaffPassword();
+  const currentData = decode<any>(row.data) ?? {};
+  currentData.password = newPassword;
+
+  await env.DB.batch([
+    env.DB.prepare("UPDATE app_users SET data=?, updated_at=? WHERE id=?").bind(
+      JSON.stringify(currentData),
+      stamp(),
+      targetId
+    ),
+    env.DB.prepare("UPDATE staff_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL").bind(
+      stamp(),
+      targetId
+    ),
+    audit(env, actor, "USER", targetId, "USER_PASSWORD_RESET", {
+      email: row.email,
+      name: row.name,
+      role: row.role,
+    }),
+  ]);
+
+  return ok({ success: true, newPassword });
 }
 function publicProfile(row: any) {
   return {

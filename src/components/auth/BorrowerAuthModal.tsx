@@ -4,6 +4,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
@@ -11,7 +12,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
-import { Sparkles, ShieldCheck } from "lucide-react";
+import { Sparkles, ShieldCheck, KeyRound, AlertCircle, UserCheck } from "lucide-react";
 import { authService } from "@/services";
 import { useSession } from "@/hooks/useSession";
 import { useUserProfile } from "@/features/profile/hooks/useProfile";
@@ -30,18 +31,28 @@ export interface BorrowerAuthModalProps {
   isOpen?: boolean;
   onClose?: () => void;
   onSuccess?: () => void;
+  initialMode?: "BORROWER" | "STAFF";
 }
 
 export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
   isOpen: controlledIsOpen,
   onClose,
   onSuccess,
+  initialMode = "BORROWER",
 }) => {
   const { currentPersona, isAuthModalOpen, closeBorrowerAuthModal } = useSession();
   const { data: profile } = useUserProfile(currentPersona.id);
 
+  const [authMode, setAuthMode] = useState<"BORROWER" | "STAFF">(initialMode);
   const [internalOpen, setInternalOpen] = useState(false);
   const isOpen = controlledIsOpen !== undefined ? controlledIsOpen : (isAuthModalOpen ?? internalOpen);
+
+  // Staff login state
+  const [staffEmail, setStaffEmail] = useState("");
+  const [staffPassword, setStaffPassword] = useState("");
+  const [rememberDevice, setRememberDevice] = useState(true);
+  const [staffError, setStaffError] = useState("");
+  const [staffSubmitting, setStaffSubmitting] = useState(false);
 
   const handleClose = () => {
     if (onClose) {
@@ -119,7 +130,7 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
 
   const selectedMembership = watch("membership");
 
-  const onSubmit = async (data: BorrowerFormData) => {
+  const onSubmitBorrower = async (data: BorrowerFormData) => {
     const fullName = `${data.firstName.trim()} ${data.lastName.trim()}`.trim();
     try {
       await authService.registerMember({
@@ -140,6 +151,52 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
     }
   };
 
+  const onSubmitStaff = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setStaffError("");
+    setStaffSubmitting(true);
+
+    const normalizedEmail = staffEmail.trim().toLowerCase();
+    const storedDeviceKey = localStorage.getItem("ras_board_device_key") ?? undefined;
+
+    try {
+      const response = await fetch("/api/v1/auth/board-login", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: normalizedEmail,
+          password: staffPassword.trim(),
+          deviceKey: storedDeviceKey,
+        }),
+      });
+
+      if (response.status === 429)
+        throw new Error("Too many attempts. Wait a minute and try again.");
+      if (response.status === 401)
+        throw new Error("Invalid staff password. Check your assigned board credentials.");
+      if (response.status === 403)
+        throw new Error("This account is not authorized for board operations or is inactive.");
+
+      const data = (await response.json()) as {
+        ok: boolean;
+        user: Parameters<typeof authService.setSession>[0];
+        deviceKey?: string;
+      };
+
+      if (rememberDevice && data.deviceKey) {
+        localStorage.setItem("ras_board_device_key", data.deviceKey);
+      }
+      authService.setSession(data.user);
+      handleClose();
+      window.location.href = "/board";
+    } catch (cause) {
+      setStaffError(cause instanceof Error ? cause.message : "Unable to sign in right now.");
+    } finally {
+      setStaffSubmitting(false);
+    }
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -153,146 +210,253 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
         showCloseButton={true}
         className="sm:max-w-md p-6 rounded-2xl border-border bg-card shadow-2xl"
       >
-        <DialogHeader className="text-center sm:text-center space-y-2">
-          <div className="w-12 h-12 bg-primary/10 text-primary rounded-full flex items-center justify-center mx-auto mb-1">
-            <Sparkles className="w-6 h-6 text-primary" />
-          </div>
-          <DialogTitle className="text-xl font-bold text-foreground">
-            Welcome to RAS Logistics!
-          </DialogTitle>
-          <DialogDescription className="text-xs text-muted-foreground">
-            Please enter your student details to link your borrow requests. You&apos;ll stay logged
-            in on this device.
-          </DialogDescription>
-        </DialogHeader>
-
-        <form onSubmit={handleSubmit(onSubmit)} className="space-y-3.5 pt-2">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block">
-                Name *
-              </label>
-              <input
-                type="text"
-                {...register("firstName")}
-                placeholder="e.g. Ahmed"
-                className="w-full rounded-xl border border-input bg-background px-3 py-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary min-h-[40px] text-foreground"
-              />
-              {errors.firstName && (
-                <span className="text-[11px] text-destructive block">
-                  {errors.firstName.message}
-                </span>
-              )}
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block">
-                Surname *
-              </label>
-              <input
-                type="text"
-                {...register("lastName")}
-                placeholder="e.g. Ben Mansour"
-                className="w-full rounded-xl border border-input bg-background px-3 py-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary min-h-[40px] text-foreground"
-              />
-              {errors.lastName && (
-                <span className="text-[11px] text-destructive block">
-                  {errors.lastName.message}
-                </span>
-              )}
-            </div>
-          </div>
-
-          <div className="space-y-1">
-            <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block">
-              Institutional Email *
-            </label>
-            <input
-              type="email"
-              {...register("email")}
-              placeholder="e.g. ahmed.bm@insat.u-carthage.tn"
-              className="w-full rounded-xl border border-input bg-background px-3 py-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary min-h-[40px] text-foreground"
-            />
-            {errors.email && (
-              <span className="text-[11px] text-destructive block">{errors.email.message}</span>
-            )}
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block">
-              Affiliation *
-            </label>
-            <div className="grid grid-cols-3 gap-2">
-              {(
-                [
-                  { id: "IEEE", label: "IEEE" },
-                  { id: "AEROBOTIX", label: "Aerobotix" },
-                  { id: "EXTERNAL", label: "External" },
-                ] as const
-              ).map((m) => {
-                const isSelected = selectedMembership === m.id;
-                return (
-                  <button
-                    key={m.id}
-                    type="button"
-                    onClick={() => setValue("membership", m.id, { shouldValidate: true })}
-                    className={`h-10 rounded-xl text-xs font-semibold border transition-all flex items-center justify-center ${
-                      isSelected
-                        ? "bg-primary text-primary-foreground border-primary shadow-xs"
-                        : "bg-background border-input text-foreground hover:bg-muted/50"
-                    }`}
-                  >
-                    {m.label}
-                  </button>
-                );
-              })}
-            </div>
-            {errors.membership && (
-              <span className="text-[11px] text-destructive block">
-                {errors.membership.message}
-              </span>
-            )}
-          </div>
-
-          <div className="space-y-1">
-            <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block">
-              Phone Number *
-            </label>
-            <input
-              type="tel"
-              {...register("phone")}
-              placeholder="+216 98 765 432"
-              className="w-full rounded-xl border border-input bg-background px-3 py-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary min-h-[40px] text-foreground"
-            />
-            {errors.phone && (
-              <span className="text-[11px] text-destructive block">{errors.phone.message}</span>
-            )}
-          </div>
-
-          <Button
-            type="submit"
-            disabled={isSubmitting}
-            className="w-full h-11 text-xs font-bold gap-2 rounded-xl mt-3 shadow-xs"
+        {/* Toggle Mode Tabs */}
+        <div className="grid grid-cols-2 p-1 rounded-xl bg-muted/60 text-xs font-semibold mb-2">
+          <button
+            type="button"
+            onClick={() => setAuthMode("BORROWER")}
+            className={`py-1.5 rounded-lg flex items-center justify-center gap-1.5 transition-all ${
+              authMode === "BORROWER"
+                ? "bg-background text-foreground shadow-xs"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
           >
-            <Sparkles className="w-4 h-4" />
-            <span>{isSubmitting ? "Saving Profile..." : "Get Started & Save Info"}</span>
-          </Button>
+            <UserCheck className="w-3.5 h-3.5" />
+            <span>Borrower Sign Up</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setAuthMode("STAFF")}
+            className={`py-1.5 rounded-lg flex items-center justify-center gap-1.5 transition-all ${
+              authMode === "STAFF"
+                ? "bg-background text-foreground shadow-xs"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <ShieldCheck className="w-3.5 h-3.5" />
+            <span>Board Staff Sign In</span>
+          </button>
+        </div>
 
-          <p className="text-[10px] text-muted-foreground text-center pt-1">
-            Your details will be remembered for all future QR scans and equipment requests.
-          </p>
+        {authMode === "BORROWER" ? (
+          <div>
+            <DialogHeader className="text-center sm:text-center space-y-1.5">
+              <div className="w-10 h-10 bg-primary/10 text-primary rounded-full flex items-center justify-center mx-auto mb-1">
+                <Sparkles className="w-5 h-5 text-primary" />
+              </div>
+              <DialogTitle className="text-xl font-bold text-foreground">
+                Welcome to RAS Logistics!
+              </DialogTitle>
+              <DialogDescription className="text-xs text-muted-foreground">
+                Please enter your student details to link your borrow requests and get notified when
+                equipment is ready for pickup.
+              </DialogDescription>
+            </DialogHeader>
 
-          <div className="pt-2 border-t border-border text-center">
-            <Link
-              to="/auth/board-login"
-              onClick={handleClose}
-              className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground underline transition-colors"
-            >
-              <ShieldCheck className="w-3.5 h-3.5 text-secondary" />
-              <span>Board staff access (Password & Key)</span>
-            </Link>
+            <form onSubmit={handleSubmit(onSubmitBorrower)} className="space-y-3 pt-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block">
+                    Name *
+                  </label>
+                  <input
+                    type="text"
+                    {...register("firstName")}
+                    placeholder="e.g. Ahmed"
+                    className="w-full rounded-xl border border-input bg-background px-3 py-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary min-h-[38px] text-foreground"
+                  />
+                  {errors.firstName && (
+                    <span className="text-[11px] text-destructive block">
+                      {errors.firstName.message}
+                    </span>
+                  )}
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block">
+                    Surname *
+                  </label>
+                  <input
+                    type="text"
+                    {...register("lastName")}
+                    placeholder="e.g. Ben Mansour"
+                    className="w-full rounded-xl border border-input bg-background px-3 py-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary min-h-[38px] text-foreground"
+                  />
+                  {errors.lastName && (
+                    <span className="text-[11px] text-destructive block">
+                      {errors.lastName.message}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block">
+                  Institutional Email *
+                </label>
+                <input
+                  type="email"
+                  {...register("email")}
+                  placeholder="e.g. ahmed.bm@insat.u-carthage.tn"
+                  className="w-full rounded-xl border border-input bg-background px-3 py-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary min-h-[38px] text-foreground"
+                />
+                {errors.email && (
+                  <span className="text-[11px] text-destructive block">{errors.email.message}</span>
+                )}
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block">
+                  Affiliation *
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {(
+                    [
+                      { id: "IEEE", label: "IEEE" },
+                      { id: "AEROBOTIX", label: "Aerobotix" },
+                      { id: "EXTERNAL", label: "External" },
+                    ] as const
+                  ).map((m) => {
+                    const isSelected = selectedMembership === m.id;
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={() => setValue("membership", m.id, { shouldValidate: true })}
+                        className={`h-9 rounded-xl text-xs font-semibold border transition-all flex items-center justify-center ${
+                          isSelected
+                            ? "bg-primary text-primary-foreground border-primary shadow-xs"
+                            : "bg-background border-input text-foreground hover:bg-muted/50"
+                        }`}
+                      >
+                        {m.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                {errors.membership && (
+                  <span className="text-[11px] text-destructive block">
+                    {errors.membership.message}
+                  </span>
+                )}
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block">
+                  Phone Number *
+                </label>
+                <input
+                  type="tel"
+                  {...register("phone")}
+                  placeholder="+216 98 765 432"
+                  className="w-full rounded-xl border border-input bg-background px-3 py-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary min-h-[38px] text-foreground"
+                />
+                {errors.phone && (
+                  <span className="text-[11px] text-destructive block">{errors.phone.message}</span>
+                )}
+              </div>
+
+              <Button
+                type="submit"
+                disabled={isSubmitting}
+                className="w-full h-10 text-xs font-bold gap-2 rounded-xl mt-3 shadow-xs"
+              >
+                <Sparkles className="w-4 h-4" />
+                <span>{isSubmitting ? "Saving Profile..." : "Get Started & Save Info"}</span>
+              </Button>
+
+              <div className="pt-2 text-center">
+                <Link
+                  to="/auth/board-login"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setAuthMode("STAFF");
+                  }}
+                  className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1.5 underline-offset-4 hover:underline"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  <span>Board staff access (Password & Key)</span>
+                </Link>
+              </div>
+            </form>
           </div>
-        </form>
+        ) : (
+          <div>
+            <DialogHeader className="text-center sm:text-center space-y-1.5">
+              <div className="w-10 h-10 bg-secondary/15 text-secondary rounded-full flex items-center justify-center mx-auto mb-1">
+                <KeyRound className="w-5 h-5 text-secondary" />
+              </div>
+              <DialogTitle className="text-lg font-bold text-foreground">
+                Board Staff Sign In
+              </DialogTitle>
+              <DialogDescription className="text-xs text-muted-foreground">
+                Sign in with your assigned staff email and password.
+              </DialogDescription>
+            </DialogHeader>
+
+            {staffError && (
+              <div className="mt-3 p-3 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-xs flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                <span>{staffError}</span>
+              </div>
+            )}
+
+            <form onSubmit={onSubmitStaff} className="space-y-3 pt-3">
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block">
+                  Staff Email *
+                </label>
+                <Input
+                  type="email"
+                  required
+                  placeholder="e.g. staff@insat.u-carthage.tn"
+                  value={staffEmail}
+                  onChange={(e) => setStaffEmail(e.target.value)}
+                  className="h-9 text-xs"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block">
+                  Password *
+                </label>
+                <Input
+                  type="password"
+                  required
+                  placeholder="Enter staff password"
+                  value={staffPassword}
+                  onChange={(e) => setStaffPassword(e.target.value)}
+                  className="h-9 text-xs"
+                />
+              </div>
+
+              <div className="flex items-center gap-2 pt-1">
+                <input
+                  id="remember-device-modal"
+                  type="checkbox"
+                  checked={rememberDevice}
+                  onChange={(e) => setRememberDevice(e.target.checked)}
+                  className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
+                />
+                <label
+                  htmlFor="remember-device-modal"
+                  className="text-xs text-muted-foreground cursor-pointer select-none"
+                >
+                  Remember this device for staff operations
+                </label>
+              </div>
+
+              <Button
+                type="submit"
+                disabled={staffSubmitting}
+                className="w-full h-10 text-xs font-bold gap-2 rounded-xl mt-3 shadow-xs"
+              >
+                <KeyRound className="w-4 h-4" />
+                <span>{staffSubmitting ? "Authenticating..." : "Sign In to Board"}</span>
+              </Button>
+            </form>
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   );

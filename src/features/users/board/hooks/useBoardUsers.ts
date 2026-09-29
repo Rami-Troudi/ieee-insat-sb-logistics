@@ -154,3 +154,24 @@ export function useRemoveUser() {
     },
   });
 }
+
+export interface ResetPasswordParams {
+  userId: string;
+  actorUserId: string;
+  actorRole: string;
+}
+
+export function useResetUserPassword() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ userId, actorUserId, actorRole }: ResetPasswordParams) =>
+      boardUserService.resetPassword(userId, actorUserId, actorRole),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.boardUsers.all });
+      queryClient.invalidateQueries({
+        queryKey: QUERY_KEYS.boardUsers.detail(variables.userId),
+      });
+    },
+  });
+}
