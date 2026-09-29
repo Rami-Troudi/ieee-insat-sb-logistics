@@ -186,7 +186,9 @@ app.post("/api/v1/auth/borrower", async (c) => {
       ).bind(userId, email, name, phone, membership, timestamp, timestamp),
     ]);
   } else {
-    const authUser = await c.env.DB.prepare("SELECT id FROM user WHERE id=?").bind(existing.id).first();
+    const authUser = await c.env.DB.prepare("SELECT id FROM user WHERE id=?")
+      .bind(existing.id)
+      .first();
     const statements = [
       c.env.DB.prepare(
         "UPDATE app_users SET name=?,phone=?,claimed_affiliation=?,updated_at=? WHERE id=?"
@@ -217,21 +219,24 @@ app.post("/api/v1/auth/borrower", async (c) => {
     .first<AppUser>();
   if (!user) return jsonError(c, 500, "INTERNAL", "Member account could not be loaded");
 
-  return c.json({
-    ok: true,
-    magicLinkSent: true,
-    user: {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      clearance: user.clearance,
-      affiliation: user.affiliation,
-      isProcessed: user.affiliation_verified === 1,
-      status: user.status,
-      strikesCount: 0,
+  return c.json(
+    {
+      ok: true,
+      magicLinkSent: true,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        clearance: user.clearance,
+        affiliation: user.affiliation,
+        isProcessed: user.affiliation_verified === 1,
+        status: user.status,
+        strikesCount: 0,
+      },
     },
-  }, 202);
+    202
+  );
 });
 
 app.post("/api/v1/staff/challenge", async (c) => {
@@ -760,11 +765,7 @@ app.post("/api/v1/requests", async (c) => {
           available_quantity: number;
           borrower_visible: number;
         }>();
-      if (
-        !item ||
-        !item.borrower_visible ||
-        item.available_quantity < 1
-      )
+      if (!item || !item.borrower_visible || item.available_quantity < 1)
         throw new Error("INELIGIBLE_ITEM");
       const isRestricted = !["C", "E"].includes(item.equipment_class);
       const flagReason = isRestricted

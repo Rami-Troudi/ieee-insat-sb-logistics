@@ -4,7 +4,6 @@ import { queryClient } from "@/app/query-client";
 import { SessionProvider } from "@/hooks/SessionProvider";
 import { BorrowCartProvider } from "@/features/cart/BorrowCartProvider";
 
-
 interface ProvidersProps {
   children: React.ReactNode;
 }

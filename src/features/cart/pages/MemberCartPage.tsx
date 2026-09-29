@@ -72,8 +72,9 @@ export const MemberCartPage: React.FC = () => {
               <div className="space-y-1">
                 <p className="font-semibold">Notice: Board Clearance Required</p>
                 <p className="text-xs text-muted-foreground">
-                  One or more items in your cart require manual board clearance. You can still submit
-                  your request, but it will be flagged for logistics review before equipment can be issued.
+                  One or more items in your cart require manual board clearance. You can still
+                  submit your request, but it will be flagged for logistics review before equipment
+                  can be issued.
                 </p>
               </div>
             </div>

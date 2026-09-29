@@ -17,13 +17,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Role, ClearanceLevel, Affiliation, UserProfile } from "@/types";
-import {
-  UserPlus,
-  Trash2,
-  Shield,
-  ShieldAlert,
-  AlertCircle,
-} from "lucide-react";
+import { UserPlus, Trash2, Shield, ShieldAlert, AlertCircle } from "lucide-react";
 
 export const BoardPeoplePage: React.FC = () => {
   const { currentPersona } = useSession();
@@ -153,11 +147,9 @@ export const BoardPeoplePage: React.FC = () => {
         actorRole: currentPersona.role,
       });
 
-      if (true) {
-        setIsAddModalOpen(false);
-        setSuccessBanner(`User "${addForm.name}" created successfully.`);
-        resetAddForm();
-      }
+      setIsAddModalOpen(false);
+      setSuccessBanner(`User "${addForm.name}" created successfully.`);
+      resetAddForm();
     } catch (err: any) {
       setFormError(err.message || "Failed to create user. Please try again.");
     }
@@ -378,20 +370,42 @@ export const BoardPeoplePage: React.FC = () => {
             <div className="space-y-3 text-xs">
               <div>
                 <label className="font-medium text-foreground block mb-1">Full Name *</label>
-                <Input required value={addForm.name} onChange={(e) => setAddForm((p) => ({ ...p, name: e.target.value }))} className="h-9" />
+                <Input
+                  required
+                  value={addForm.name}
+                  onChange={(e) => setAddForm((p) => ({ ...p, name: e.target.value }))}
+                  className="h-9"
+                />
               </div>
               <div>
                 <label className="font-medium text-foreground block mb-1">Email Address *</label>
-                <Input type="email" required value={addForm.email} onChange={(e) => setAddForm((p) => ({ ...p, email: e.target.value }))} className="h-9" />
+                <Input
+                  type="email"
+                  required
+                  value={addForm.email}
+                  onChange={(e) => setAddForm((p) => ({ ...p, email: e.target.value }))}
+                  className="h-9"
+                />
               </div>
               <div>
-                <label className="font-medium text-foreground block mb-1">Phone Number (Optional)</label>
-                <Input type="tel" value={addForm.phone} onChange={(e) => setAddForm((p) => ({ ...p, phone: e.target.value }))} className="h-9" />
+                <label className="font-medium text-foreground block mb-1">
+                  Phone Number (Optional)
+                </label>
+                <Input
+                  type="tel"
+                  value={addForm.phone}
+                  onChange={(e) => setAddForm((p) => ({ ...p, phone: e.target.value }))}
+                  className="h-9"
+                />
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="font-medium text-foreground block mb-1">Role</label>
-                  <select value={addForm.role} onChange={(e) => handleRoleChange(e.target.value as Role)} className="w-full h-9 px-2.5 rounded-md border border-input bg-background text-foreground text-xs">
+                  <select
+                    value={addForm.role}
+                    onChange={(e) => handleRoleChange(e.target.value as Role)}
+                    className="w-full h-9 px-2.5 rounded-md border border-input bg-background text-foreground text-xs"
+                  >
                     <option value="MEMBER">Borrower Member</option>
                     <option value="OPERATOR">Board Staff / Operator</option>
                     {isSuperadmin && <option value="SUPERADMIN">Superadmin</option>}
@@ -399,7 +413,11 @@ export const BoardPeoplePage: React.FC = () => {
                 </div>
                 <div>
                   <label className="font-medium text-foreground block mb-1">Affiliation</label>
-                  <select value={addForm.affiliation} onChange={(e) => handleAffiliationChange(e.target.value as Affiliation)} className="w-full h-9 px-2.5 rounded-md border border-input bg-background text-foreground text-xs">
+                  <select
+                    value={addForm.affiliation}
+                    onChange={(e) => handleAffiliationChange(e.target.value as Affiliation)}
+                    className="w-full h-9 px-2.5 rounded-md border border-input bg-background text-foreground text-xs"
+                  >
                     <option value="IEEE">IEEE RAS Member</option>
                     <option value="AEROBOTIX">Aerobotix Member</option>
                     <option value="EXTERNAL">External / INSAT Student</option>
@@ -410,7 +428,13 @@ export const BoardPeoplePage: React.FC = () => {
               </div>
               <div>
                 <label className="font-medium text-foreground block mb-1">Clearance Level</label>
-                <select value={addForm.clearance} onChange={(e) => setAddForm((p) => ({ ...p, clearance: e.target.value as ClearanceLevel }))} className="w-full h-9 px-2.5 rounded-md border border-input bg-background text-foreground text-xs">
+                <select
+                  value={addForm.clearance}
+                  onChange={(e) =>
+                    setAddForm((p) => ({ ...p, clearance: e.target.value as ClearanceLevel }))
+                  }
+                  className="w-full h-9 px-2.5 rounded-md border border-input bg-background text-foreground text-xs"
+                >
                   <option value="I">Level I</option>
                   <option value="II">Level II</option>
                   <option value="III">Level III</option>
@@ -422,7 +446,12 @@ export const BoardPeoplePage: React.FC = () => {
             </div>
 
             <DialogFooter className="pt-2">
-              <Button type="button" variant="outline" onClick={() => setIsAddModalOpen(false)} disabled={createUserMutation.isPending}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setIsAddModalOpen(false)}
+                disabled={createUserMutation.isPending}
+              >
                 Cancel
               </Button>
               <Button type="submit" disabled={createUserMutation.isPending} className="gap-1.5">

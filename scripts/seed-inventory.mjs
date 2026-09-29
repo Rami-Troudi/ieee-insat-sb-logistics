@@ -22,12 +22,11 @@ try {
       item.maintenanceQuantity +
       item.lostQuantity;
     if (sum !== item.totalQuantity) {
-      throw new Error(`Inventory conservation failed for ${item.id}: ${item.totalQuantity} != ${sum}`);
+      throw new Error(
+        `Inventory conservation failed for ${item.id}: ${item.totalQuantity} != ${sum}`
+      );
     }
-    if (
-      item.trackingMode === "INDIVIDUAL_ASSET" &&
-      item.assets.length !== item.totalQuantity
-    ) {
+    if (item.trackingMode === "INDIVIDUAL_ASSET" && item.assets.length !== item.totalQuantity) {
       throw new Error(`Asset count mismatch for ${item.id}`);
     }
 
@@ -53,10 +52,21 @@ try {
         data=excluded.data,
         updated_at=excluded.updated_at`,
       args: [
-        item.id,item.name,item.category,item.equipmentClass,item.trackingMode,
-        item.totalQuantity,item.availableQuantity,item.allocatedQuantity,item.borrowedQuantity,
-        item.damagedQuantity,item.maintenanceQuantity,item.lostQuantity,
-        item.borrowerVisible ? 1 : 0,JSON.stringify(item),now,
+        item.id,
+        item.name,
+        item.category,
+        item.equipmentClass,
+        item.trackingMode,
+        item.totalQuantity,
+        item.availableQuantity,
+        item.allocatedQuantity,
+        item.borrowedQuantity,
+        item.damagedQuantity,
+        item.maintenanceQuantity,
+        item.lostQuantity,
+        item.borrowerVisible ? 1 : 0,
+        JSON.stringify(item),
+        now,
       ],
     });
 
@@ -68,7 +78,7 @@ try {
                 serial_number=excluded.serial_number,
                 state=excluded.state,
                 data=excluded.data`,
-        args: [asset.id,item.id,asset.serialNumber,asset.state,JSON.stringify(asset)],
+        args: [asset.id, item.id, asset.serialNumber, asset.state, JSON.stringify(asset)],
       });
     }
   }

@@ -7,9 +7,7 @@ const handler = getRequestListener((incomingRequest) => {
     incomingRequest.headers.get("x-forwarded-host") ||
     incomingRequest.headers.get("host") ||
     "localhost";
-  const proto =
-    incomingRequest.headers.get("x-forwarded-proto") ||
-    "https";
+  const proto = incomingRequest.headers.get("x-forwarded-proto") || "https";
   const requestUrl = new URL(incomingRequest.url ?? "/", `${proto}://${host}`);
   const rewrittenPath = requestUrl.searchParams.get("__api_path");
   requestUrl.searchParams.delete("__api_path");

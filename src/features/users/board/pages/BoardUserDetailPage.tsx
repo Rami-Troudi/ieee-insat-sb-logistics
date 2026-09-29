@@ -383,7 +383,9 @@ export const BoardUserDetailPage: React.FC = () => {
             </div>
 
             <p className="text-xs text-muted-foreground">
-              Clearance and role changes are recorded by the authorized human operator and kept in the audit trail.</p>
+              Clearance and role changes are recorded by the authorized human operator and kept in
+              the audit trail.
+            </p>
 
             {/* Manual Level IV Clearance */}
             <div className="p-3 rounded-lg border border-purple-200 bg-card space-y-2 text-xs">

@@ -56,11 +56,7 @@ export interface IBoardUserService {
     actorUserId: string,
     actorRole: string
   ): Promise<UserProfile>;
-  removeUser(
-    userId: string,
-    actorUserId: string,
-    actorRole: string
-  ): Promise<{ success: boolean }>;
+  removeUser(userId: string, actorUserId: string, actorRole: string): Promise<{ success: boolean }>;
   processUser(
     payload: ProcessUserPayload,
     actorUserId: string,

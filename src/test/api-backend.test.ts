@@ -299,7 +299,10 @@ describe("Vercel API backend on SQLite-compatible storage", () => {
           "Content-Type": "application/json",
           "Idempotency-Key": "request-key-invalid-00001",
         },
-        body: JSON.stringify({ ...baseBody, items: [{ itemId: "non-existent-item", quantity: 1 }] }),
+        body: JSON.stringify({
+          ...baseBody,
+          items: [{ itemId: "non-existent-item", quantity: 1 }],
+        }),
       },
       member.cookie
     );
@@ -459,158 +462,195 @@ describe("Vercel API backend on SQLite-compatible storage", () => {
   });
 });
 
-  it("runs the real request -> allocation -> handover -> return lifecycle", async () => {
-    const member = await seedUser({ id: "member-lifecycle", email: "member-lifecycle@example.test" });
-    const operator = await seedUser({
-      id: "operator-lifecycle",
-      email: "operator-lifecycle@example.test",
-      role: "OPERATOR",
-      clearance: "V",
-    });
-    await seedFreshBoardSession(operator.id);
-    await addInventory("item-lifecycle", "E");
+it("runs the real request -> allocation -> handover -> return lifecycle", async () => {
+  const member = await seedUser({ id: "member-lifecycle", email: "member-lifecycle@example.test" });
+  const operator = await seedUser({
+    id: "operator-lifecycle",
+    email: "operator-lifecycle@example.test",
+    role: "OPERATOR",
+    clearance: "V",
+  });
+  await seedFreshBoardSession(operator.id);
+  await addInventory("item-lifecycle", "E");
 
-    const create = await request(
-      "/api/v1/requests",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Idempotency-Key": "lifecycle-request-0001",
-        },
-        body: JSON.stringify({
-          contactEmail: "member-lifecycle@example.test",
-          expectedReturnDate: new Date(Date.now() + 7 * 86400000).toISOString(),
-          items: [{ itemId: "item-lifecycle", quantity: 1 }],
-        }),
+  const create = await request(
+    "/api/v1/requests",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": "lifecycle-request-0001",
       },
-      member.cookie
-    );
-    expect(create.status).toBe(201);
-    const created = (await create.json()) as any;
+      body: JSON.stringify({
+        contactEmail: "member-lifecycle@example.test",
+        expectedReturnDate: new Date(Date.now() + 7 * 86400000).toISOString(),
+        items: [{ itemId: "item-lifecycle", quantity: 1 }],
+      }),
+    },
+    member.cookie
+  );
+  expect(create.status).toBe(201);
+  const created = (await create.json()) as any;
 
-    const review = await request(
-      "/api/v1/board/rpc",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          service: "request",
-          method: "reviewRequest",
-          args: [{
+  const review = await request(
+    "/api/v1/board/rpc",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        service: "request",
+        method: "reviewRequest",
+        args: [
+          {
             requestId: created.id,
             lines: [{ lineId: created.items[0].id, approvedQuantity: 1 }],
-          }],
-        }),
-      },
-      operator.cookie
-    );
-    expect(review.status).toBe(200);
-    const reviewed = (await review.json()) as any;
-    expect(reviewed.decisionStatus).toBe("APPROVED");
+          },
+        ],
+      }),
+    },
+    operator.cookie
+  );
+  expect(review.status).toBe(200);
+  const reviewed = (await review.json()) as any;
+  expect(reviewed.decisionStatus).toBe("APPROVED");
 
-    const handover = await request(
-      "/api/v1/board/rpc",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          service: "request",
-          method: "confirmHandover",
-          args: [{ requestId: created.id, lineHandoverDetails: [], idempotencyKey: "lifecycle-handover-0001" }],
-        }),
-      },
-      operator.cookie
-    );
-    expect(handover.status).toBe(200);
-    const handoverBody = (await handover.json()) as any;
-    expect(handoverBody.loanId).toBeTruthy();
+  const handover = await request(
+    "/api/v1/board/rpc",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        service: "request",
+        method: "confirmHandover",
+        args: [
+          {
+            requestId: created.id,
+            lineHandoverDetails: [],
+            idempotencyKey: "lifecycle-handover-0001",
+          },
+        ],
+      }),
+    },
+    operator.cookie
+  );
+  expect(handover.status).toBe(200);
+  const handoverBody = (await handover.json()) as any;
+  expect(handoverBody.loanId).toBeTruthy();
 
-    const loan = await db.prepare("SELECT data FROM record_store WHERE kind='loan' AND id=?")
-      .bind(handoverBody.loanId)
-      .first<{ data: string }>();
-    expect(loan).not.toBeNull();
+  const loan = await db
+    .prepare("SELECT data FROM record_store WHERE kind='loan' AND id=?")
+    .bind(handoverBody.loanId)
+    .first<{ data: string }>();
+  expect(loan).not.toBeNull();
 
-    const returned = await request(
-      "/api/v1/board/rpc",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          service: "loan",
-          method: "confirmReturn",
-          args: [{
+  const returned = await request(
+    "/api/v1/board/rpc",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        service: "loan",
+        method: "confirmReturn",
+        args: [
+          {
             loanId: handoverBody.loanId,
             items: [{ lineItemId: JSON.parse(loan!.data).items[0].id, returnedQuantity: 1 }],
             idempotencyKey: "lifecycle-return-0001",
-          }],
-        }),
-      },
-      operator.cookie
-    );
-    expect(returned.status).toBe(200);
-    const returnedLoan = (await returned.json()) as any;
-    expect(returnedLoan.lifecycleStatus).toBe("CLOSED");
+          },
+        ],
+      }),
+    },
+    operator.cookie
+  );
+  expect(returned.status).toBe(200);
+  const returnedLoan = (await returned.json()) as any;
+  expect(returnedLoan.lifecycleStatus).toBe("CLOSED");
 
-    const stock = await db.prepare(
+  const stock = await db
+    .prepare(
       "SELECT available_quantity,allocated_quantity,borrowed_quantity FROM inventory WHERE id=?"
-    ).bind("item-lifecycle").first<any>();
-    expect(stock).toMatchObject({ available_quantity: 1, allocated_quantity: 0, borrowed_quantity: 0 });
+    )
+    .bind("item-lifecycle")
+    .first<any>();
+  expect(stock).toMatchObject({
+    available_quantity: 1,
+    allocated_quantity: 0,
+    borrowed_quantity: 0,
   });
+});
 
-  it("enforces human authorization for clearance changes", async () => {
-    const operator = await seedUser({
-      id: "operator-clearance",
-      email: "operator-clearance@example.test",
-      role: "OPERATOR",
-      clearance: "V",
-    });
-    const member = await seedUser({ id: "member-clearance", email: "member-clearance@example.test" });
-    await seedFreshBoardSession(operator.id);
-
-    const denied = await request(
-      "/api/v1/board/rpc",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          service: "user",
-          method: "updateClearance",
-          args: [{ userId: member.id, newClearance: "V", source: "MANUAL_LEVEL_IV", reason: "human review" }],
-        }),
-      },
-      operator.cookie
-    );
-    expect(denied.status).toBe(403);
+it("enforces human authorization for clearance changes", async () => {
+  const operator = await seedUser({
+    id: "operator-clearance",
+    email: "operator-clearance@example.test",
+    role: "OPERATOR",
+    clearance: "V",
   });
+  const member = await seedUser({ id: "member-clearance", email: "member-clearance@example.test" });
+  await seedFreshBoardSession(operator.id);
 
-  it("maps verified Eurobot and RAS Board affiliations to Level V during human processing", async () => {
-    const operator = await seedUser({
-      id: "operator-process",
-      email: "operator-process@example.test",
-      role: "OPERATOR",
-      clearance: "V",
-    });
-    const member = await seedUser({ id: "member-process", email: "member-process@example.test", clearance: "I" });
-    await client.execute("UPDATE app_users SET affiliation='EXTERNAL', affiliation_verified=0 WHERE id=?", [member.id]);
-    await seedFreshBoardSession(operator.id);
+  const denied = await request(
+    "/api/v1/board/rpc",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        service: "user",
+        method: "updateClearance",
+        args: [
+          {
+            userId: member.id,
+            newClearance: "V",
+            source: "MANUAL_LEVEL_IV",
+            reason: "human review",
+          },
+        ],
+      }),
+    },
+    operator.cookie
+  );
+  expect(denied.status).toBe(403);
+});
 
-    const response = await request(
-      "/api/v1/board/rpc",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          service: "user",
-          method: "processUser",
-          args: [{ userId: member.id, verifiedAffiliation: "EUROBOT", notes: "Verified by logistics desk" }],
-        }),
-      },
-      operator.cookie
-    );
-    expect(response.status).toBe(200);
-    const processed = (await response.json()) as any;
-    expect(processed.clearance).toBe("V");
-    expect(processed.affiliation).toBe("EUROBOT");
+it("maps verified Eurobot and RAS Board affiliations to Level V during human processing", async () => {
+  const operator = await seedUser({
+    id: "operator-process",
+    email: "operator-process@example.test",
+    role: "OPERATOR",
+    clearance: "V",
   });
+  const member = await seedUser({
+    id: "member-process",
+    email: "member-process@example.test",
+    clearance: "I",
+  });
+  await client.execute(
+    "UPDATE app_users SET affiliation='EXTERNAL', affiliation_verified=0 WHERE id=?",
+    [member.id]
+  );
+  await seedFreshBoardSession(operator.id);
 
+  const response = await request(
+    "/api/v1/board/rpc",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        service: "user",
+        method: "processUser",
+        args: [
+          {
+            userId: member.id,
+            verifiedAffiliation: "EUROBOT",
+            notes: "Verified by logistics desk",
+          },
+        ],
+      }),
+    },
+    operator.cookie
+  );
+  expect(response.status).toBe(200);
+  const processed = (await response.json()) as any;
+  expect(processed.clearance).toBe("V");
+  expect(processed.affiliation).toBe("EUROBOT");
+});

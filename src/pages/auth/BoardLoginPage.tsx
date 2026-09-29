@@ -13,7 +13,11 @@ type FormData = z.infer<typeof schema>;
 export const BoardLoginPage: React.FC = () => {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm<FormData>({
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+  } = useForm<FormData>({
     resolver: zodResolver(schema),
     defaultValues: { email: "" },
   });
@@ -42,7 +46,9 @@ export const BoardLoginPage: React.FC = () => {
     <div className="min-h-screen flex items-center justify-center p-4 bg-background">
       <div className="w-full max-w-md p-6 rounded-2xl border border-border bg-card shadow-lg space-y-6">
         <div className="text-center space-y-2">
-          <div className="inline-block"><AppBrand to="/" /></div>
+          <div className="inline-block">
+            <AppBrand to="/" />
+          </div>
           <h1 className="text-xl font-bold">Board & Operator Access</h1>
           <p className="text-sm text-muted-foreground">
             Sign in with the staff email. The system will send a single-use link to that mailbox.
@@ -50,23 +56,48 @@ export const BoardLoginPage: React.FC = () => {
         </div>
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
           <div className="space-y-1.5">
-            <label htmlFor="board-email" className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block">
+            <label
+              htmlFor="board-email"
+              className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block"
+            >
               Staff email
             </label>
-            <input id="board-email" type="email" autoComplete="email" required {...register("email")}
+            <input
+              id="board-email"
+              type="email"
+              autoComplete="email"
+              required
+              {...register("email")}
               placeholder="operator@insat.u-carthage.tn"
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm min-h-[44px]" />
-            {errors.email && <span className="text-xs text-destructive">{errors.email.message}</span>}
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm min-h-[44px]"
+            />
+            {errors.email && (
+              <span className="text-xs text-destructive">{errors.email.message}</span>
+            )}
           </div>
-          {message && <p role="status" className="text-sm text-emerald-600">{message}</p>}
-          {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-          <Button type="submit" disabled={isSubmitting} className="w-full min-h-[44px] gap-2 font-bold">
+          {message && (
+            <p role="status" className="text-sm text-emerald-600">
+              {message}
+            </p>
+          )}
+          {error && (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          )}
+          <Button
+            type="submit"
+            disabled={isSubmitting}
+            className="w-full min-h-[44px] gap-2 font-bold"
+          >
             <ShieldCheck className="w-4 h-4" />
             {isSubmitting ? "Sending link…" : "Send Sign-In Link"}
           </Button>
         </form>
         <p className="text-center text-xs">
-          <Link to="/auth/login" className="text-primary font-bold hover:underline">← Switch to Borrower access</Link>
+          <Link to="/auth/login" className="text-primary font-bold hover:underline">
+            ← Switch to Borrower access
+          </Link>
         </p>
       </div>
     </div>

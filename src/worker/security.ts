@@ -13,14 +13,9 @@ export const sameOrigin: MiddlewareHandler<{ Bindings: Env }> = async (c, next) 
   try {
     const originUrl = new URL(origin);
     const host =
-      c.req.header("x-forwarded-host") ||
-      c.req.header("host") ||
-      new URL(c.req.url).host;
+      c.req.header("x-forwarded-host") || c.req.header("host") || new URL(c.req.url).host;
     const hostWithoutPort = host.split(":")[0];
-    if (
-      originUrl.hostname !== hostWithoutPort &&
-      origin !== new URL(c.req.url).origin
-    ) {
+    if (originUrl.hostname !== hostWithoutPort && origin !== new URL(c.req.url).origin) {
       return jsonError(c, 403, "ORIGIN_REJECTED", "Request origin is not allowed");
     }
   } catch {

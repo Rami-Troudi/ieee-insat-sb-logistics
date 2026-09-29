@@ -14,7 +14,9 @@ test.describe("Production shell", () => {
       await page.setViewportSize({ width: vp.width, height: vp.height });
       await page.goto("/app/inventory");
       await expect(page.getByRole("heading", { name: "Equipment Catalogue" })).toBeVisible();
-      await expect(page.getByRole("link", { name: /IEEE RAS INSAT Logistics Home/i })).toBeVisible();
+      await expect(
+        page.getByRole("link", { name: /IEEE RAS INSAT Logistics Home/i })
+      ).toBeVisible();
       if (vp.width < 1024) {
         await expect(page.getByRole("navigation", { name: "Mobile Navigation" })).toBeVisible();
       } else {

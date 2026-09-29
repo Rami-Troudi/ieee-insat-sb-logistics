@@ -45,7 +45,8 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
 
   const [authMode, setAuthMode] = useState<"BORROWER" | "STAFF">(initialMode);
   const [internalOpen, setInternalOpen] = useState(false);
-  const isOpen = controlledIsOpen !== undefined ? controlledIsOpen : (isAuthModalOpen ?? internalOpen);
+  const isOpen =
+    controlledIsOpen !== undefined ? controlledIsOpen : (isAuthModalOpen ?? internalOpen);
 
   // Staff login state
   const [staffEmail, setStaffEmail] = useState("");
@@ -86,12 +87,16 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
     defaultValues: {
       firstName:
         saved?.firstName ||
-        (currentPersona.name && !currentPersona.name.includes("(") && currentPersona.name !== "Guest"
+        (currentPersona.name &&
+        !currentPersona.name.includes("(") &&
+        currentPersona.name !== "Guest"
           ? currentPersona.name.split(" ")[0]
           : ""),
       lastName:
         saved?.lastName ||
-        (currentPersona.name && !currentPersona.name.includes("(") && currentPersona.name !== "Guest"
+        (currentPersona.name &&
+        !currentPersona.name.includes("(") &&
+        currentPersona.name !== "Guest"
           ? currentPersona.name.split(" ").slice(1).join(" ")
           : ""),
       email:
@@ -114,7 +119,8 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
       const latestSaved = getSavedProfile();
       if (latestSaved) {
         reset({
-          firstName: latestSaved.firstName || (latestSaved.name ? latestSaved.name.split(" ")[0] : ""),
+          firstName:
+            latestSaved.firstName || (latestSaved.name ? latestSaved.name.split(" ")[0] : ""),
           lastName:
             latestSaved.lastName ||
             (latestSaved.name ? latestSaved.name.split(" ").slice(1).join(" ") : ""),
@@ -185,7 +191,6 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
       setStaffSubmitting(false);
     }
   };
-
 
   if (!isOpen) return null;
 

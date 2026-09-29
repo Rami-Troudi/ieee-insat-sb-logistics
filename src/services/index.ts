@@ -60,8 +60,7 @@ export const boardInventoryService: IBoardInventoryService =
 export const boardUserService: IBoardUserService = remoteBoardUserService as IBoardUserService;
 export const boardProjectService: IBoardProjectService =
   remoteBoardProjectService as IBoardProjectService;
-export const boardAuditService: IBoardAuditService =
-  remoteBoardAuditService as IBoardAuditService;
+export const boardAuditService: IBoardAuditService = remoteBoardAuditService as IBoardAuditService;
 export const boardDisciplineService: IBoardDisciplineService =
   remoteBoardDisciplineService as IBoardDisciplineService;
 export const boardInsightsService: IBoardInsightsService =

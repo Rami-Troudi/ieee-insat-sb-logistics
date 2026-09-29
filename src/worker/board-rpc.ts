@@ -1667,10 +1667,8 @@ async function genericRecords(
     ]);
     return ok(auditRecord);
   }
-  if (service === "user" && method === "createUser")
-    return createUser(env, actor, args[0]);
-  if (service === "user" && method === "removeUser")
-    return removeUser(env, actor, args[0]);
+  if (service === "user" && method === "createUser") return createUser(env, actor, args[0]);
+  if (service === "user" && method === "removeUser") return removeUser(env, actor, args[0]);
   if (
     service === "user" &&
     ["processUser", "updateClearance", "updateRole", "updateStatus"].includes(method)
@@ -1775,11 +1773,7 @@ async function updateUser(
   return ok(publicProfile(updated));
 }
 
-async function createUser(
-  env: Env,
-  actor: AppUser,
-  input: any
-): Promise<RpcResult> {
+async function createUser(env: Env, actor: AppUser, input: any): Promise<RpcResult> {
   if (actor.role !== "SUPERADMIN" && actor.role !== "OPERATOR")
     return fail(403, "FORBIDDEN", "Staff access is required to add people");
   if (!input || typeof input.email !== "string" || !input.email.includes("@"))
@@ -1850,16 +1844,14 @@ async function createUser(
   return ok(createdRow ? publicProfile(createdRow) : null, 201);
 }
 
-async function removeUser(
-  env: Env,
-  actor: AppUser,
-  input: any
-): Promise<RpcResult> {
+async function removeUser(env: Env, actor: AppUser, input: any): Promise<RpcResult> {
   const targetId = typeof input === "string" ? input : String(input?.userId ?? "");
   if (!targetId) return fail(400, "VALIDATION", "User ID is required");
   if (targetId === actor.id) return fail(400, "VALIDATION", "You cannot remove your own account");
 
-  const row = await env.DB.prepare("SELECT * FROM app_users WHERE id=?").bind(targetId).first<any>();
+  const row = await env.DB.prepare("SELECT * FROM app_users WHERE id=?")
+    .bind(targetId)
+    .first<any>();
   if (!row) return fail(404, "NOT_FOUND", "User not found");
   if (row.role === "SUPERADMIN" && actor.role !== "SUPERADMIN")
     return fail(403, "FORBIDDEN", "Only Superadmins can remove another Superadmin");
@@ -1897,8 +1889,14 @@ async function removeUser(
     env.DB.prepare("DELETE FROM user WHERE id=?").bind(targetId),
     env.DB.prepare("DELETE FROM session WHERE userId=?").bind(targetId),
     env.DB.prepare("DELETE FROM staff_sessions WHERE user_id=?").bind(targetId),
-    env.DB.prepare("DELETE FROM record_store WHERE kind='notification' AND owner_id=?").bind(targetId),
-    audit(env, actor, "USER", targetId, "USER_REMOVED", { email: row.email, name: row.name, role: row.role }),
+    env.DB.prepare("DELETE FROM record_store WHERE kind='notification' AND owner_id=?").bind(
+      targetId
+    ),
+    audit(env, actor, "USER", targetId, "USER_REMOVED", {
+      email: row.email,
+      name: row.name,
+      role: row.role,
+    }),
   ]);
 
   return ok({ success: true });
