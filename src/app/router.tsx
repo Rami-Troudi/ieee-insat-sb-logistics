@@ -62,14 +62,6 @@ export const router = createBrowserRouter([
     element: <Navigate to="/app?auth=login" replace />,
   },
   {
-    path: "/_dev/design",
-    async lazy() {
-      if (!import.meta.env.DEV) return { Component: NotFoundPage };
-      const { DesignLabPage } = await import("@/pages/system/DesignLabPage");
-      return { Component: DesignLabPage };
-    },
-  },
-  {
     path: "/app",
     element: <MemberLayout />,
     children: [
