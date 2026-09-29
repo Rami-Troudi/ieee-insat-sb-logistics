@@ -172,11 +172,8 @@ export const BoardPeoplePage: React.FC = () => {
       role: "MEMBER",
       affiliation: "IEEE",
       clearance: "III",
-      password: "",
     });
     setFormError(null);
-    setCopiedPassword(false);
-    setCreatedCredentials(null);
   };
 
   const handleConfirmRemove = async () => {
@@ -366,84 +363,7 @@ export const BoardPeoplePage: React.FC = () => {
         }}
       >
         <DialogContent className="max-w-lg">
-          {createdCredentials ? (
-            <div>
-              <DialogHeader>
-                <div className="mx-auto w-12 h-12 rounded-full bg-emerald-100 dark:bg-emerald-950 flex items-center justify-center text-emerald-600 mb-2">
-                  <ShieldCheck className="h-6 w-6" />
-                </div>
-                <DialogTitle className="text-center text-xl">Account Created</DialogTitle>
-                <DialogDescription className="text-center">
-                  Account provisioned successfully. Please copy the credentials below and provide
-                  them to the user.
-                </DialogDescription>
-              </DialogHeader>
-
-              <div className="my-5 p-4 rounded-xl border border-border bg-muted/40 space-y-3 text-sm">
-                <div>
-                  <span className="text-xs text-muted-foreground block font-medium">Full Name</span>
-                  <span className="font-semibold text-foreground">{createdCredentials.name}</span>
-                </div>
-                <div>
-                  <span className="text-xs text-muted-foreground block font-medium">Email Address</span>
-                  <span className="font-mono text-foreground">{createdCredentials.email}</span>
-                </div>
-                <div>
-                  <span className="text-xs text-muted-foreground block font-medium">Assigned Role</span>
-                  <span className="font-semibold text-foreground">{createdCredentials.role}</span>
-                </div>
-                {createdCredentials.password && (
-                  <div>
-                    <span className="text-xs text-muted-foreground block font-medium">
-                      Generated Secure Password
-                    </span>
-                    <div className="flex items-center gap-2 mt-1">
-                      <code className="px-3 py-1.5 rounded-md bg-background border border-border font-mono text-sm text-primary font-bold flex-1 select-all">
-                        {createdCredentials.password}
-                      </code>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() =>
-                          handleCopyPassword(
-                            `Email: ${createdCredentials.email}\nPassword: ${createdCredentials.password}`
-                          )
-                        }
-                        className="shrink-0 gap-1"
-                      >
-                        {copiedPassword ? (
-                          <>
-                            <Check className="h-3.5 w-3.5 text-emerald-600" />
-                            <span>Copied</span>
-                          </>
-                        ) : (
-                          <>
-                            <Copy className="h-3.5 w-3.5" />
-                            <span>Copy</span>
-                          </>
-                        )}
-                      </Button>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <DialogFooter>
-                <Button
-                  onClick={() => {
-                    setIsAddModalOpen(false);
-                    setSuccessBanner(`Account for "${createdCredentials.name}" added successfully.`);
-                    resetAddForm();
-                  }}
-                  className="w-full"
-                >
-                  Done
-                </Button>
-              </DialogFooter>
-            </div>
-          ) : (
-            <form onSubmit={handleAddSubmit} className="space-y-4">
+          <form onSubmit={handleAddSubmit} className="space-y-4">
               <DialogHeader>
                 <DialogTitle className="text-lg">Add Person / Staff</DialogTitle>
                 <DialogDescription>
@@ -579,7 +499,7 @@ export const BoardPeoplePage: React.FC = () => {
                   {createUserMutation.isPending ? "Creating..." : "Create Account"}
                 </Button>
               </DialogFooter>
-            </form>
+          </form>
           )}
         </DialogContent>
       </Dialog>
