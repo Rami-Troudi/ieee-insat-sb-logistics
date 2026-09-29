@@ -171,15 +171,6 @@ app.post("/api/v1/auth/borrower", async (c) => {
     .bind(email)
     .first<AppUser>();
 
-  if (!user) {
-    const userId = `borrower-${await digest(email)}`;
-    await c.env.DB.batch([
-      c.env.DB.prepare(
-        "INSERT INTO user(id,name,email,emailVerified,createdAt,updatedAt) VALUES(?,?,?,0,?,?,?)".replace(",?,?,?)", ",?,?)")
-      ),
-    ]);
-  }
-
   const existing = await c.env.DB.prepare("SELECT * FROM app_users WHERE email=? COLLATE NOCASE")
     .bind(email)
     .first<AppUser>();
