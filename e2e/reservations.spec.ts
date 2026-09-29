@@ -27,21 +27,21 @@ test("member requests equipment, Board approves it, and the reservation appears 
 }) => {
   await signIn(page, sessions.memberCookie);
   await page.goto("/app");
-  await expect(page.getByRole("heading", { name: /Make room for your next idea/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Equipment catalogue" })).toBeVisible();
   await expect(page.getByText("E2E Digital Multimeter")).toBeVisible();
   await page
-    .getByRole("button", { name: /Add to basket/i })
+    .getByRole("button", { name: /Select item/i })
     .first()
     .click();
-  await page.getByRole("link", { name: /View basket/i }).click();
-  await expect(page.getByRole("heading", { name: /Build a basket/i })).toBeVisible();
+  await page.getByRole("link", { name: /View selection/i }).click();
+  await expect(page.getByRole("heading", { name: "Selected items" })).toBeVisible();
   await page.getByRole("button", { name: /Send reservation request/i }).click();
   await expect(page).toHaveURL(/\/app\/reservations/);
   await expect(page.getByText("Pending", { exact: true }).first()).toBeVisible();
 
   await signIn(page, sessions.boardCookie);
   await page.goto("/board/reservations");
-  await expect(page.getByRole("heading", { name: /Good requests/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Reservation requests" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Alex Member" })).toBeVisible();
   await page.getByRole("button", { name: /Assign assets/i }).click();
   await expect(page.getByText("Choose the physical units")).toBeVisible();
@@ -67,7 +67,7 @@ test("guest can request a sign-in link and the layout works at a narrow viewport
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/app");
   await page
-    .getByRole("button", { name: /Add to basket/i })
+    .getByRole("button", { name: /Select item/i })
     .first()
     .click();
   await expect(page.getByRole("heading", { name: /Sign in to reserve/i })).toBeVisible();

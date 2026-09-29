@@ -43,8 +43,6 @@ import {
   Search,
   Settings2,
   ShieldCheck,
-  ShoppingBag,
-  Sparkles,
   Users,
   Wrench,
   X,
@@ -157,8 +155,8 @@ function AppFrame() {
   }, [location.pathname]);
 
   const activePath = location.pathname;
-  const heading = activePath.includes("cart")
-    ? "Your reservation"
+  const heading = activePath.includes("selection")
+    ? "Item selection"
     : activePath.includes("reservations")
       ? isBoardPath
         ? "Reservation queue"
@@ -192,9 +190,9 @@ function AppFrame() {
           </span>
         </Link>
         <div className="workspace-chip">
-          <span className="status-dot" /> Equipment desk <ChevronDown size={14} />
+          <span className="status-dot" /> Equipment reservations <ChevronDown size={14} />
         </div>
-        <div className="side-label">WORKSPACE</div>
+        <div className="side-label">NAVIGATION</div>
         <nav className="side-nav" aria-label="Main navigation">
           {boardAccess ? (
             <>
@@ -211,7 +209,7 @@ function AppFrame() {
             </>
           ) : (
             <>
-              <NavItem to="/app" label="Explore equipment" icon={<Compass />} end />
+              <NavItem to="/app" label="Equipment" icon={<Compass />} end />
               <NavItem to="/app/reservations" label="My reservations" icon={<PackageCheck />} />
             </>
           )}
@@ -259,8 +257,8 @@ function AppFrame() {
             <span className="time-chip">
               <span className="status-dot" /> Tunis time
             </span>
-            <Link className="button button-quiet top-cart" to="/app/cart">
-              <ShoppingBag size={16} /> Basket <b>{cartCount}</b>
+            <Link className="button button-quiet top-cart" to="/app/selection">
+              <ClipboardList size={16} /> Selected items <b>{cartCount}</b>
             </Link>
             <button className="avatar avatar-small" title={user?.email ?? "Sign in"}>
               {user?.name?.slice(0, 1).toUpperCase() ?? "G"}
@@ -353,9 +351,9 @@ function PageRouter(props: {
   if (route === "/board/accounts" && props.user?.role === "SUPERADMIN")
     return <Accounts setNotice={props.setNotice} />;
   if (route === "/board/audit") return <AuditLog />;
-  if (route === "/app/cart")
+  if (route === "/app/selection")
     return (
-      <CartPage
+      <SelectionPage
         cart={props.cart}
         setCart={props.setCart}
         user={props.user}
@@ -434,7 +432,7 @@ function AccessGate({
         <span className="large-icon">
           <ShieldCheck />
         </span>
-        <div className="eyebrow">SECURE WORKSPACE</div>
+        <div className="eyebrow">ACCOUNT STATUS</div>
         <h2>{title}</h2>
         <p>
           Signed in as <strong>{user.name}</strong>. Your account is{" "}
@@ -449,18 +447,14 @@ function AccessGate({
     <div className="auth-layout">
       <div className="auth-copy">
         <div className="eyebrow">IEEE INSAT STUDENT BRANCH</div>
-        <h1>
-          Good tools.
-          <br />
-          <em>Ready when you are.</em>
-        </h1>
+        <h1>Equipment reservations</h1>
         <p>
           Reserve the equipment your team needs, then collect it from the Board desk at the time you
           selected.
         </p>
         <div className="auth-perks">
           <span>
-            <Check /> Clear availability
+            <Check /> Availability by date and time
           </span>
           <span>
             <Check /> Board-approved handover
@@ -608,22 +602,17 @@ function Catalogue({
       return;
     }
     setCart({ ...cart, [item.id]: Math.min(item.availableQuantity, (cart[item.id] ?? 0) + 1) });
-    setNotice(`${item.name} added to your basket.`);
+    setNotice(`${item.name} added to your selection.`);
   };
   return (
     <>
       <PageHeading
-        eyebrow="EQUIPMENT DESK · CATALOGUE"
-        title={
-          <>
-            Make room for
-            <br className="mobile-only" /> <em>your next idea.</em>
-          </>
-        }
-        description="Find the tools your team needs. Choose a time window to see what’s available."
+        eyebrow="MEMBER · EQUIPMENT"
+        title="Equipment catalogue"
+        description="Choose a pickup and return time to check availability."
         action={
-          <Link className="button button-primary" to="/app/cart">
-            <ShoppingBag size={16} /> View basket{" "}
+          <Link className="button button-primary" to="/app/selection">
+            <ClipboardList size={16} /> View selection{" "}
             <span className="count-pill">{Object.values(cart).reduce((s, n) => s + n, 0)}</span>
           </Link>
         }
@@ -631,7 +620,7 @@ function Catalogue({
       <DateWindow start={start} end={end} setStart={setStart} setEnd={setEnd} />
       <div className="catalog-toolbar">
         <div className="section-intro">
-          <span className="eyebrow">THE COLLECTION</span>
+          <span className="eyebrow">AVAILABLE EQUIPMENT</span>
           <h2>
             Equipment <span className="subtle count-text">{items.length} items</span>
           </h2>
@@ -688,14 +677,11 @@ function Catalogue({
               </div>
               <div className="equipment-body">
                 <h3>{item.name}</h3>
-                <p>
-                  {item.description ||
-                    "A useful piece of kit for your next build, demo, or workshop."}
-                </p>
+                <p>{item.description || "No description has been added for this equipment."}</p>
                 <div className="card-footer">
                   <span className="stock-copy">
                     <Package size={14} />{" "}
-                    {item.availableQuantity ? "Ready for your dates" : "Try another time"}
+                    {item.availableQuantity ? "Available for this period" : "Unavailable"}
                   </span>
                   <button
                     className={`button ${item.availableQuantity ? "button-dark" : "button-disabled"} add-button`}
@@ -708,7 +694,7 @@ function Catalogue({
                       </>
                     ) : (
                       <>
-                        <Plus size={15} /> Add to basket
+                        <Plus size={15} /> Select item
                       </>
                     )}
                   </button>
@@ -725,10 +711,10 @@ function Catalogue({
         />
       )}
       <div className="catalog-note">
-        <Sparkles size={16} />
+        <ShieldCheck size={16} />
         <span>
-          <strong>Every reservation is reviewed by the Board.</strong> We’ll confirm specific asset
-          assignments before collection.
+          <strong>Board approval is required.</strong> A specific asset is assigned before
+          collection.
         </span>
         <ArrowRight size={15} />
       </div>
@@ -755,7 +741,7 @@ function Catalogue({
   );
 }
 
-function CartPage({
+function SelectionPage({
   cart,
   setCart,
   user,
@@ -821,20 +807,15 @@ function CartPage({
   return (
     <>
       <PageHeading
-        eyebrow="YOUR WORKSPACE · REQUEST"
-        title={
-          <>
-            Build a basket.
-            <br className="mobile-only" /> <em>Pick a window.</em>
-          </>
-        }
+        eyebrow="MEMBER · NEW RESERVATION"
+        title="Selected items"
         description="The Board confirms the individual assets before your reservation is approved."
       />
       <div className="cart-layout">
         <section className="card basket-card">
           <div className="card-heading">
             <div>
-              <span className="eyebrow">RESERVATION BASKET</span>
+              <span className="eyebrow">ITEM SELECTION</span>
               <h2>
                 {cartItems.length} equipment {cartItems.length === 1 ? "type" : "types"}
               </h2>
@@ -893,9 +874,9 @@ function CartPage({
             </div>
           ) : (
             <EmptyState
-              icon={<ShoppingBag />}
-              title="Your basket is ready"
-              body="Add equipment from the catalogue and it will appear here."
+              icon={<ClipboardList />}
+              title="No items selected"
+              body="Select equipment from the catalogue to prepare a reservation request."
               action={
                 <Link className="button button-dark" to="/app">
                   Explore equipment <ArrowRight size={15} />
@@ -1007,14 +988,9 @@ function MyReservations({ user }: { user: User }) {
   return (
     <>
       <PageHeading
-        eyebrow="MEMBER WORKSPACE"
-        title={
-          <>
-            Your next handoff,
-            <br className="mobile-only" /> <em>all in one place.</em>
-          </>
-        }
-        description={`Reservation activity for ${user.name}. The Board confirms your pickup before the desk handover.`}
+        eyebrow="MEMBER · RESERVATIONS"
+        title="My reservations"
+        description={`Reservation requests for ${user.name}, including approval and handover status.`}
         action={
           <Link className="button button-primary" to="/app">
             <Plus size={16} /> New reservation
@@ -1129,14 +1105,9 @@ function BoardDashboard() {
   return (
     <>
       <PageHeading
-        eyebrow="BOARD WORKSPACE · TODAY"
-        title={
-          <>
-            The desk,
-            <br className="mobile-only" /> <em>at a glance.</em>
-          </>
-        }
-        description="A live view of equipment handovers and reservation activity."
+        eyebrow="BOARD · OVERVIEW"
+        title="Logistics dashboard"
+        description="Current reservation, pickup, return, and inventory activity."
         action={
           <Link className="button button-dark" to="/board/scan">
             <QrCode size={16} /> Open desk scanner
@@ -1186,14 +1157,14 @@ function BoardDashboard() {
           ) : (
             <EmptyState
               icon={<CalendarDays />}
-              title="A little breathing room"
-              body="No upcoming pickups are scheduled yet."
+              title="No upcoming pickups"
+              body="Approved pickups will appear here."
             />
           )}
         </section>
         <section className="card action-card">
           <span className="eyebrow">QUICK ACTIONS</span>
-          <h2>Keep the desk moving</h2>
+          <h2>Board operations</h2>
           <div className="quick-action-list">
             <Link to="/board/reservations">
               <span className="quick-icon green">
@@ -1229,11 +1200,8 @@ function BoardDashboard() {
         </section>
       </div>
       <div className="board-note">
-        <Sparkles size={16} />
-        <span>
-          Handover first, everything else follows. Each scan is recorded in the immutable activity
-          log.
-        </span>
+        <ShieldCheck size={16} />
+        <span>Each collection and return scan is recorded in the activity log.</span>
       </div>
     </>
   );
@@ -1300,13 +1268,8 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
   return (
     <>
       <PageHeading
-        eyebrow="BOARD WORKSPACE · REQUESTS"
-        title={
-          <>
-            Good requests.
-            <br className="mobile-only" /> <em>Clear decisions.</em>
-          </>
-        }
+        eyebrow="BOARD · RESERVATIONS"
+        title="Reservation requests"
         description="Review the requested window and assign actual assets before approving."
         action={
           <Link className="button button-quiet" to="/board/calendar">
@@ -1517,13 +1480,8 @@ function BoardCalendar() {
   return (
     <>
       <PageHeading
-        eyebrow="BOARD WORKSPACE · LIVE SCHEDULE"
-        title={
-          <>
-            Every handoff,
-            <br className="mobile-only" /> <em>in view.</em>
-          </>
-        }
+        eyebrow="BOARD · CALENDAR"
+        title="Reservation calendar"
         description="Approved asset reservations shown in Africa/Tunis time. Select month, week, or day."
         action={
           <span className="timezone-badge">
@@ -1650,13 +1608,8 @@ function BoardInventory({ setNotice }: { setNotice: (message: string) => void })
   return (
     <>
       <PageHeading
-        eyebrow="BOARD WORKSPACE · EQUIPMENT"
-        title={
-          <>
-            The right tool.
-            <br className="mobile-only" /> <em>Every time.</em>
-          </>
-        }
+        eyebrow="BOARD · INVENTORY"
+        title="Equipment inventory"
         description="Manage equipment types, individually tracked assets, and printable QR labels."
         action={
           <a className="button button-dark" href="#new-equipment">
@@ -1810,7 +1763,7 @@ function BoardInventory({ setNotice }: { setNotice: (message: string) => void })
       )}
       <form id="new-equipment" className="card create-equipment" onSubmit={createEquipment}>
         <div>
-          <span className="eyebrow">GROW THE COLLECTION</span>
+          <span className="eyebrow">NEW EQUIPMENT TYPE</span>
           <h2>Add an equipment type</h2>
           <p className="subtle">Then add individual assets to create their desk labels.</p>
         </div>
@@ -1898,13 +1851,8 @@ function BoardChapters({ setNotice }: { setNotice: (message: string) => void }) 
   return (
     <>
       <PageHeading
-        eyebrow="BOARD WORKSPACE · CHAPTER BORROWING"
-        title={
-          <>
-            Shared tools.
-            <br className="mobile-only" /> <em>Chapter by chapter.</em>
-          </>
-        }
+        eyebrow="BOARD · CHAPTERS"
+        title="Chapter borrowers"
         description="Active chapters can request equipment as a group borrower. Past reservations keep their chapter history."
       />
       <div className="chapter-layout">
@@ -2048,13 +1996,8 @@ function BoardScan({
   return (
     <>
       <PageHeading
-        eyebrow="BOARD WORKSPACE · HANDOVER"
-        title={
-          <>
-            A quick scan.
-            <br className="mobile-only" /> <em>A clear record.</em>
-          </>
-        }
+        eyebrow="BOARD · HANDOVER"
+        title="Equipment scanner"
         description="Scan the asset when it leaves the desk and again when it comes back."
         action={
           <span className="timezone-badge">
@@ -2223,12 +2166,7 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
     <>
       <PageHeading
         eyebrow="SUPERADMIN · ACCESS CONTROL"
-        title={
-          <>
-            Good governance,
-            <br className="mobile-only" /> <em>simple roles.</em>
-          </>
-        }
+        title="Accounts and roles"
         description="Create Board accounts and grant access to the Student Branch equipment desk."
       />
       <form className="card account-create" onSubmit={create}>
@@ -2342,13 +2280,8 @@ function AuditLog() {
   return (
     <>
       <PageHeading
-        eyebrow="BOARD WORKSPACE · APPEND-ONLY"
-        title={
-          <>
-            The work is visible.
-            <br className="mobile-only" /> <em>The history stays.</em>
-          </>
-        }
+        eyebrow="BOARD · ACTIVITY LOG"
+        title="Recorded activity"
         description="Reservation, inventory, and handover actions in chronological order."
       />
       <section className="card audit-card">

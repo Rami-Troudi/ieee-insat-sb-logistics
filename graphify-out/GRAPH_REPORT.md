@@ -1,7 +1,7 @@
 # Graph Report - ieee-insat-sb-logistics  (2026-09-29)
 
 ## Corpus Check
-- 38 files · ~31,827 words
+- 38 files · ~31,703 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
@@ -10,7 +10,7 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `bc0ef1f1`
+- Built from commit: `ddd45e39`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -19,7 +19,7 @@
 - reservations.spec.ts
 - e2e-setup.mjs
 - seed-inventory.mjs
-- drizzle-kit
+- @eslint/js
 - eslint-plugin-react-refresh
 - @fullcalendar/core
 - class-variance-authority
@@ -139,7 +139,7 @@ Nodes (25): api, DOM, DOM.Iterable, ES2022, src, vite.config.ts, compilerOptions
 
 ### Community 35 - "devDependencies"
 Cohesion: 0.29
-Nodes (7): autoprefixer, @eslint/js, devDependencies, autoprefixer, @eslint/js, @types/luxon, @types/luxon
+Nodes (7): autoprefixer, drizzle-kit, devDependencies, autoprefixer, drizzle-kit, @types/luxon, @types/luxon
 
 ### Community 40 - "Deployment and operations"
 Cohesion: 0.18
@@ -187,7 +187,7 @@ _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `dependencies` connect `dependencies` to `@hookform/resolvers`, `@radix-ui/react-alert-dialog`, `@radix-ui/react-dialog`, `@radix-ui/react-popover`, `@fullcalendar/core`, `class-variance-authority`, `@fullcalendar/daygrid`, `@fullcalendar/interaction`, `@fullcalendar/luxon3`, `@fullcalendar/react`, `@fullcalendar/timegrid`, `hono`, `@radix-ui/react-separator`, `react-hook-form`, `tailwind-merge`, `luxon`, `qrcode.react`, `@radix-ui/react-dropdown-menu`, `vaul`, `zod`, `@zxing/browser`, `scripts`, `lucide-react`, `@tanstack/react-query`, `date-fns`, `@hono/node-server`, `@libsql/client`, `@radix-ui/react-avatar`, `@radix-ui/react-slot`, `@radix-ui/react-tooltip`, `react`, `react-dom`, `drizzle-orm`?**
   _High betweenness centrality (0.090) - this node is a cross-community bridge._
-- **Why does `devDependencies` connect `devDependencies` to `drizzle-kit`, `eslint-plugin-react-refresh`, `@testing-library/user-event`, `prettier`, `jsdom`, `@types/react-dom`, `@vitejs/plugin-react`, `vitest`, `@playwright/test`, `@types/react`, `vercel`, `eslint-plugin-react-hooks`, `scripts`, `@testing-library/jest-dom`, `globals`, `postcss`, `tailwindcss`, `@testing-library/react`, `@types/node`, `typescript`, `typescript-eslint`, `vite`, `eslint`?**
+- **Why does `devDependencies` connect `devDependencies` to `@eslint/js`, `eslint-plugin-react-refresh`, `@testing-library/user-event`, `prettier`, `jsdom`, `@types/react-dom`, `@vitejs/plugin-react`, `vitest`, `@playwright/test`, `@types/react`, `vercel`, `eslint-plugin-react-hooks`, `scripts`, `@testing-library/jest-dom`, `globals`, `postcss`, `tailwindcss`, `@testing-library/react`, `@types/node`, `typescript`, `typescript-eslint`, `vite`, `eslint`?**
   _High betweenness centrality (0.069) - this node is a cross-community bridge._
 - **What connects `sessions`, `name`, `private` to the rest of the system?**
   _175 weakly-connected nodes found - possible documentation gaps or missing edges._

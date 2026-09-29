@@ -1,27 +1,33 @@
-@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap");
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  font-family: "DM Sans", sans-serif;
-  color: #202923;
-  background: #f5f6f3;
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  color: #0f172a;
+  background: #f8fafc;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   font-optical-sizing: auto;
   font-weight: 400;
-  --ink: #202923;
-  --muted: #778179;
-  --line: #e6e9e4;
+  --ink: #0f172a;
+  --muted: #64748b;
+  --line: #e2e8f0;
   --paper: #fff;
   --forest: #18382f;
   --deep: #102c25;
   --mint: #dff1df;
   --lime: #d9f37d;
   --blue: #dfeafa;
-  --sans: "DM Sans", sans-serif;
-  --display: "Manrope", sans-serif;
+  --sans: Inter, ui-sans-serif, system-ui, sans-serif;
+  --display: Inter, ui-sans-serif, system-ui, sans-serif;
 }
 * {
   box-sizing: border-box;
@@ -30,7 +36,7 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
-  background: #f5f6f3;
+  background: #f8fafc;
 }
 button,
 input,
@@ -72,19 +78,19 @@ b {
   font-family: var(--display);
 }
 h1 {
-  font-size: clamp(2.5rem, 5vw, 4.1rem);
-  line-height: 1.05;
-  letter-spacing: -0.065em;
+  font-size: clamp(1.65rem, 3vw, 2rem);
+  line-height: 1.2;
+  letter-spacing: -0.025em;
   font-weight: 700;
   margin: 0;
 }
 h1 em {
-  color: #718477;
+  color: inherit;
   font-style: normal;
 }
 h2 {
-  font-size: 1.38rem;
-  letter-spacing: -0.04em;
+  font-size: 1.15rem;
+  letter-spacing: -0.02em;
   margin: 0;
 }
 h3 {
@@ -106,14 +112,14 @@ textarea:focus-visible {
 .app-shell {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: 252px minmax(0, 1fr);
+  grid-template-columns: 240px minmax(0, 1fr);
 }
 .sidebar {
   position: fixed;
   inset: 0 auto 0 0;
-  width: 252px;
-  padding: 25px 16px 15px;
-  background: #fcfdfa;
+  width: 240px;
+  padding: 20px 14px 14px;
+  background: #ffffff;
   border-right: 1px solid var(--line);
   display: flex;
   flex-direction: column;
@@ -158,7 +164,7 @@ textarea:focus-visible {
   margin-top: 4px;
 }
 .workspace-chip {
-  margin: 28px 2px 26px;
+  margin: 22px 2px 22px;
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 11px 10px;
@@ -310,14 +316,13 @@ textarea:focus-visible {
   flex-direction: column;
 }
 .topbar {
-  height: 70px;
-  padding: 0 clamp(22px, 4vw, 60px);
+  height: 64px;
+  padding: 0 clamp(22px, 4vw, 48px);
   display: flex;
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid #e9ece7;
-  background: rgba(250, 251, 249, 0.88);
-  backdrop-filter: blur(18px);
+  background: rgba(255, 255, 255, 0.96);
   position: sticky;
   top: 0;
   z-index: 4;
@@ -447,9 +452,9 @@ textarea:focus-visible {
   height: 27px;
 }
 .page-content {
-  width: min(100%, 1400px);
+  width: min(100%, 1200px);
   margin: 0 auto;
-  padding: 38px clamp(22px, 4vw, 60px) 30px;
+  padding: 30px clamp(22px, 4vw, 48px) 30px;
   flex: 1;
 }
 .page-footer {
@@ -467,18 +472,18 @@ textarea:focus-visible {
 }
 .page-heading {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: 24px;
-  margin: 6px 0 28px;
+  margin: 0 0 22px;
 }
 .page-heading h1 {
-  margin: 9px 0 12px;
+  margin: 6px 0 7px;
 }
 .page-heading p {
-  font-size: 13px;
-  line-height: 1.65;
-  color: #7c867e;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #64748b;
   margin: 0;
   max-width: 560px;
 }
@@ -492,7 +497,7 @@ textarea:focus-visible {
   border: 1px solid #e1e6dd;
   border-radius: 12px;
   padding: 15px 17px;
-  background: #fbfcfa;
+  background: #fff;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -624,17 +629,17 @@ textarea:focus-visible {
   gap: 15px;
 }
 .equipment-card {
-  border: 1px solid #e5e9e3;
+  border: 1px solid #e2e8f0;
   background: #fff;
-  border-radius: 11px;
+  border-radius: 9px;
   overflow: hidden;
   transition:
     box-shadow 0.15s,
     transform 0.15s;
 }
 .equipment-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 12px 30px #1b30220c;
+  border-color: #cbd5e1;
+  box-shadow: 0 4px 12px #0f172a0a;
 }
 .equipment-image {
   height: 155px;
@@ -763,8 +768,8 @@ textarea:focus-visible {
 }
 .card {
   background: #fff;
-  border: 1px solid #e5e9e3;
-  border-radius: 11px;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
   padding: 20px;
 }
 .card-heading {
@@ -1215,11 +1220,11 @@ textarea:focus-visible {
 }
 .metric-card {
   position: relative;
-  min-height: 139px;
-  border: 1px solid #e5e9e3;
-  border-radius: 10px;
+  min-height: 118px;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
   background: #fff;
-  padding: 16px;
+  padding: 14px;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -2035,8 +2040,8 @@ textarea:focus-visible {
   padding: 35px 5%;
 }
 .auth-copy h1 {
-  font-size: clamp(2.7rem, 5vw, 4.3rem);
-  margin: 14px 0;
+  font-size: clamp(1.75rem, 3vw, 2.2rem);
+  margin: 10px 0;
 }
 .auth-copy h1 em {
   color: #6e8774;
@@ -2180,7 +2185,7 @@ textarea:focus-visible {
   gap: 30px;
 }
 .modal-card .auth-copy h1 {
-  font-size: 2.7rem;
+  font-size: 1.85rem;
 }
 .modal-card .auth-copy > p {
   font-size: 10px;
@@ -2368,8 +2373,8 @@ textarea:focus-visible {
     gap: 10px;
   }
   .page-heading h1 {
-    font-size: 2.4rem;
-    margin: 8px 0;
+    font-size: 1.55rem;
+    margin: 6px 0;
   }
   .page-heading p {
     font-size: 10px;
@@ -2780,7 +2785,7 @@ textarea:focus-visible {
     min-height: auto;
   }
   .auth-copy h1 {
-    font-size: 2.75rem;
+    font-size: 1.8rem;
   }
   .auth-copy > p {
     font-size: 10px;
@@ -2802,7 +2807,7 @@ textarea:focus-visible {
     gap: 16px;
   }
   .modal-card .auth-copy h1 {
-    font-size: 2rem;
+    font-size: 1.65rem;
   }
   .modal-card .auth-perks {
     display: none;

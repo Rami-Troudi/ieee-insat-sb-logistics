@@ -7,9 +7,9 @@ A responsive equipment desk for IEEE INSAT Student Branch members and Board oper
 ## Visual direction
 
 - Use a light interface with forest green, warm chalk, muted sage, and a small lime accent.
-- Use oversized editorial headings for page introductions, compact uppercase eyebrow labels, and clear readable body text.
-- Keep equipment cards, time-window controls, reservation rows, and inventory labels calm and scannable.
-- Use Manrope for display text and DM Sans for interface copy.
+- Use compact dashboard headings, factual page descriptions, uppercase section labels, and clear readable body text.
+- Keep equipment cards, time-window controls, reservation rows, and inventory labels dense and scannable.
+- Use the system sans-serif stack throughout the interface.
 - Use consistent rounded cards, restrained borders, and subtle shadows. Reserve stronger green fills for primary actions.
 
 ## Interaction rules
@@ -18,6 +18,8 @@ A responsive equipment desk for IEEE INSAT Student Branch members and Board oper
 - Make Board asset assignment explicit before approval; identify each physical asset by its code.
 - Use semantic links, buttons, labelled fields, visible focus, clear disabled states, and accessible dialog names.
 - Keep member and Board navigation usable on narrow screens without hiding destinations.
+- Refer to the member's pending choices as an item selection, never a basket or shopping cart.
+- Use operational product copy; avoid slogans, promotional phrasing, and synthetic-sounding language.
 - Include loading, empty, and error feedback for data-backed views.
 
 ## Product boundaries

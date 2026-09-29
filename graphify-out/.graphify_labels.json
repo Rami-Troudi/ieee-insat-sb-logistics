@@ -3,7 +3,7 @@
   "1": "reservations.spec.ts",
   "2": "e2e-setup.mjs",
   "3": "seed-inventory.mjs",
-  "4": "drizzle-kit",
+  "4": "@eslint/js",
   "5": "eslint-plugin-react-refresh",
   "6": "@fullcalendar/core",
   "7": "class-variance-authority",
