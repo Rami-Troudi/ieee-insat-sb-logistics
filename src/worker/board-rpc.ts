@@ -119,12 +119,11 @@ const isFresh = (method: string) =>
     "updateStatus",
     "createUser",
     "removeUser",
-    "resetPassword",
     "exportCsv",
     "logEvent",
   ].includes(method);
 const superadminOnly = (service: string, method: string, args: any[]) =>
-  (service === "user" && ["updateRole", "updateStatus", "resetPassword"].includes(method)) ||
+  (service === "user" && ["updateClearance", "updateRole", "updateStatus"].includes(method)) ||
   (service === "export" &&
     ["USERS", "AUDITS", "STRIKES", "INCIDENTS", "COMPENSATIONS", "AUDIT_LOG"].includes(args[0]));
 
@@ -1672,8 +1671,6 @@ async function genericRecords(
     return createUser(env, actor, args[0]);
   if (service === "user" && method === "removeUser")
     return removeUser(env, actor, args[0]);
-  if (service === "user" && method === "resetPassword")
-    return resetUserPassword(env, actor, args[0]);
   if (
     service === "user" &&
     ["processUser", "updateClearance", "updateRole", "updateStatus"].includes(method)
@@ -1810,7 +1807,7 @@ async function createUser(
   const phone = input.phone ? String(input.phone).trim() : "";
   const newId = crypto.randomUUID();
   const timestamp = stamp();
-  const userData = input.password ? { password: String(input.password).trim() } : {};
+  const userData = {};
 
   await env.DB.batch([
     env.DB.prepare(
@@ -1900,52 +1897,6 @@ async function removeUser(
   return ok({ success: true });
 }
 
-function generateStaffPassword(): string {
-  const chars = "abcdefghjkmnpqrstuvwxyz23456789";
-  const arr = new Uint8Array(12);
-  crypto.getRandomValues(arr);
-  const part1 = Array.from(arr.slice(0, 4), (b) => chars[b % chars.length]).join("");
-  const part2 = Array.from(arr.slice(4, 8), (b) => chars[b % chars.length]).join("");
-  const part3 = Array.from(arr.slice(8, 12), (b) => chars[b % chars.length]).join("");
-  return `ras-${part1}-${part2}-${part3}`;
-}
-
-async function resetUserPassword(
-  env: Env,
-  actor: AppUser,
-  input: any
-): Promise<RpcResult> {
-  const targetId = typeof input === "string" ? input : String(input?.userId ?? "");
-  if (!targetId) return fail(400, "VALIDATION", "User ID is required");
-  if (actor.role !== "SUPERADMIN" && actor.id !== targetId)
-    return fail(403, "FORBIDDEN", "Only Superadmins can reset passwords for other accounts");
-
-  const row = await env.DB.prepare("SELECT * FROM app_users WHERE id=?").bind(targetId).first<any>();
-  if (!row) return fail(404, "NOT_FOUND", "User not found");
-
-  const newPassword = generateStaffPassword();
-  const currentData = decode<any>(row.data) ?? {};
-  currentData.password = newPassword;
-
-  await env.DB.batch([
-    env.DB.prepare("UPDATE app_users SET data=?, updated_at=? WHERE id=?").bind(
-      JSON.stringify(currentData),
-      stamp(),
-      targetId
-    ),
-    env.DB.prepare("UPDATE staff_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL").bind(
-      stamp(),
-      targetId
-    ),
-    audit(env, actor, "USER", targetId, "USER_PASSWORD_RESET", {
-      email: row.email,
-      name: row.name,
-      role: row.role,
-    }),
-  ]);
-
-  return ok({ success: true, newPassword });
-}
 function publicProfile(row: any) {
   return {
     id: row.id,
