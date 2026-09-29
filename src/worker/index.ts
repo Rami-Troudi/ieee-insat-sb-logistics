@@ -755,19 +755,10 @@ app.post("/api/v1/requests", async (c) => {
         item.available_quantity < 1
       )
         throw new Error("INELIGIBLE_ITEM");
-      const clearanceRank: Record<string, number> = { I: 1, II: 2, III: 3, IV: 4, V: 5, VI: 6 };
-      const reqRank: Record<string, number> = { A: 1, B: 1, C: 2, D: 3, E: 3, F: 3, G: 4 };
-      const requiredClearance =
-        { A: "I", B: "I", C: "II", D: "III", E: "III", F: "III", G: "IV" }[item.equipment_class] ??
-        "I";
-      const userCl = existing?.clearance ?? "I";
-      const hasClearanceMismatch = (clearanceRank[userCl] ?? 1) < (reqRank[item.equipment_class] ?? 1);
-      const isRestricted = hasClearanceMismatch || !["C", "E"].includes(item.equipment_class);
-      const flagReason = hasClearanceMismatch
-        ? `Level restriction: Requires Clearance ${requiredClearance} (Member has ${userCl})`
-        : !["C", "E"].includes(item.equipment_class)
-          ? `Class restriction: Class ${item.equipment_class} requires manual board approval`
-          : undefined;
+      const isRestricted = !["C", "E"].includes(item.equipment_class);
+      const flagReason = isRestricted
+        ? `Class restriction: Class ${item.equipment_class} requires manual board approval`
+        : undefined;
       return {
         itemId: item.id,
         itemName: item.name,
@@ -800,7 +791,7 @@ app.post("/api/v1/requests", async (c) => {
     userName: borrowerName,
     userEmail: email,
     contactEmailVerified: false,
-    userClearance: "I",
+    userClearance: existing?.clearance ?? "I",
     ...(body.note?.trim() ? { note: body.note.trim() } : {}),
     expectedReturnDate: body.expectedReturnDate,
     decisionStatus: "PENDING",
@@ -829,7 +820,7 @@ app.post("/api/v1/requests", async (c) => {
     ? (body.borrowerAffiliation as string)
     : "EXTERNAL";
   const phone = body.borrowerPhone?.trim() || "";
-  const clearance = affiliation === "IEEE" ? "III" : affiliation === "AEROBOTIX" ? "II" : "I";
+  const clearance = existing?.clearance ?? "I";
 
   const statements = [
     ...(existing
