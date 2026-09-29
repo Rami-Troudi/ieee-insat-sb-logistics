@@ -14,7 +14,7 @@ import {
   useUpdateUserRole,
 } from "../hooks/useBoardUsers";
 import { useBoardStrikes } from "@/features/discipline/board/hooks/useBoardDiscipline";
-import { ArrowLeft, User, Shield, ShieldAlert, ShieldCheck, Lock, Award, Key, Copy, Check, RefreshCw } from "lucide-react";
+import { ArrowLeft, User, Shield, ShieldAlert, ShieldCheck, Lock, Award } from "lucide-react";
 import { UserRole, Affiliation } from "@/types/users";
 
 export const BoardUserDetailPage: React.FC = () => {
