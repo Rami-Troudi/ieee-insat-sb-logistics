@@ -177,10 +177,6 @@ export const remoteAuthService = {
   },
   getCurrentUser: () => cachedPersona,
   getCurrentSession: () => refreshSession(),
-  setSession: (persona: UserPersona) => {
-    cachedPersona = { ...persona };
-    listeners.forEach((listener) => listener(cachedPersona));
-  },
   clearSession: () => {
     void api("/api/auth/sign-out", { method: "POST" })
       .catch(() => undefined)
