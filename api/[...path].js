@@ -12,7 +12,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { requestId } from "hono/request-id";
 import { secureHeaders } from "hono/secure-headers";
-import { and as and2, asc, desc, eq as eq2, inArray } from "drizzle-orm";
+import { and as and2, asc, desc, eq as eq2, inArray, or } from "drizzle-orm";
 import { z } from "zod";
 
 // src/worker/database.ts
@@ -2655,6 +2655,21 @@ app.delete("/api/v1/board/users/:id", requireSuperadmin, async (c) => {
       "ACTIVE_RESERVATIONS",
       "Cannot delete a user with active or pending reservations."
     );
+  }
+  await c.env.DB.delete(schema_exports.notifications).where(eq2(schema_exports.notifications.userId, targetId));
+  await c.env.DB.update(schema_exports.reservations).set({ approvedByUserId: null }).where(eq2(schema_exports.reservations.approvedByUserId, targetId));
+  await c.env.DB.update(schema_exports.reservationAssets).set({ checkedOutByUserId: null }).where(eq2(schema_exports.reservationAssets.checkedOutByUserId, targetId));
+  await c.env.DB.update(schema_exports.reservationAssets).set({ checkedInByUserId: null }).where(eq2(schema_exports.reservationAssets.checkedInByUserId, targetId));
+  const userReservations = await c.env.DB.select({ id: schema_exports.reservations.id }).from(schema_exports.reservations).where(
+    or(
+      eq2(schema_exports.reservations.requestedByUserId, targetId),
+      eq2(schema_exports.reservations.borrowerUserId, targetId)
+    )
+  );
+  for (const r of userReservations) {
+    await c.env.DB.delete(schema_exports.reservationAssets).where(eq2(schema_exports.reservationAssets.reservationId, r.id));
+    await c.env.DB.delete(schema_exports.reservationLines).where(eq2(schema_exports.reservationLines.reservationId, r.id));
+    await c.env.DB.delete(schema_exports.reservations).where(eq2(schema_exports.reservations.id, r.id));
   }
   await c.env.DB.delete(schema_exports.authSessions).where(eq2(schema_exports.authSessions.userId, targetId));
   await c.env.CLIENT.execute({

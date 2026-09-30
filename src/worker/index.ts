@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { requestId } from "hono/request-id";
 import { secureHeaders } from "hono/secure-headers";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or } from "drizzle-orm";
 import { z } from "zod";
 import { schema } from "./database";
 import type { CurrentUser, Env } from "./env";
@@ -1333,16 +1333,45 @@ app.delete("/api/v1/board/users/:id", requireSuperadmin, async (c) => {
     );
   }
 
-  // Invalidate all sessions for this user
+  // 1. Delete notifications for this user
+  await c.env.DB.delete(schema.notifications).where(eq(schema.notifications.userId, targetId));
+
+  // 2. Anonymize/unlink board actions on other users' reservations
+  await c.env.DB.update(schema.reservations)
+    .set({ approvedByUserId: null })
+    .where(eq(schema.reservations.approvedByUserId, targetId));
+  await c.env.DB.update(schema.reservationAssets)
+    .set({ checkedOutByUserId: null })
+    .where(eq(schema.reservationAssets.checkedOutByUserId, targetId));
+  await c.env.DB.update(schema.reservationAssets)
+    .set({ checkedInByUserId: null })
+    .where(eq(schema.reservationAssets.checkedInByUserId, targetId));
+
+  // 3. Delete past (completed/cancelled/rejected) reservations belonging to this user
+  const userReservations = await c.env.DB.select({ id: schema.reservations.id })
+    .from(schema.reservations)
+    .where(
+      or(
+        eq(schema.reservations.requestedByUserId, targetId),
+        eq(schema.reservations.borrowerUserId, targetId)
+      )
+    );
+  for (const r of userReservations) {
+    await c.env.DB.delete(schema.reservationAssets).where(eq(schema.reservationAssets.reservationId, r.id));
+    await c.env.DB.delete(schema.reservationLines).where(eq(schema.reservationLines.reservationId, r.id));
+    await c.env.DB.delete(schema.reservations).where(eq(schema.reservations.id, r.id));
+  }
+
+  // 4. Invalidate all sessions for this user
   await c.env.DB.delete(schema.authSessions).where(eq(schema.authSessions.userId, targetId));
 
-  // Delete credentials from account table
+  // 5. Delete credentials from account table
   await c.env.CLIENT.execute({
     sql: "DELETE FROM account WHERE userId=?",
     args: [targetId],
   });
 
-  // Delete user record
+  // 7. Delete user record
   await c.env.DB.delete(schema.authUsers).where(eq(schema.authUsers.id, targetId));
 
   await c.env.CLIENT.execute({
