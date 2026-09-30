@@ -1,6 +1,6 @@
 import { createMiddleware } from "hono/factory";
 import type { Context } from "hono";
-import { eq } from "drizzle-orm";
+import { and, eq, gt } from "drizzle-orm";
 import { createAuth, trustedAuthOrigin } from "./auth";
 import type { CurrentUser, Env, UserRole } from "./env";
 import { schema } from "./database";
@@ -8,9 +8,43 @@ import { schema } from "./database";
 export type AppContext = Context<{ Bindings: Env; Variables: { actor: CurrentUser } }>;
 
 export async function resolveIdentity(c: AppContext): Promise<CurrentUser | null> {
-  const origin = trustedAuthOrigin(c.env, c.req.url, c.req.header("Origin"));
-  const session = await createAuth(c.env, origin).api.getSession({ headers: c.req.raw.headers });
-  const userId = session?.user?.id;
+  let userId: string | null | undefined = null;
+
+  try {
+    const origin = trustedAuthOrigin(c.env, c.req.url, c.req.header("Origin"));
+    const session = await createAuth(c.env, origin).api.getSession({ headers: c.req.raw.headers });
+    userId = session?.user?.id;
+  } catch {
+    // If better-auth getSession throws (e.g. origin issue), fall back to DB lookup
+  }
+
+  // Fallback: extract token from cookie and check database
+  if (!userId) {
+    try {
+      const cookieHeader = c.req.header("Cookie") || "";
+      const tokenMatch = cookieHeader.match(/(?:__Secure-)?better-auth\.session_token=([^;]+)/);
+      if (tokenMatch) {
+        const rawVal = decodeURIComponent(tokenMatch[1]);
+        const token = rawVal.split(".")[0];
+        if (token) {
+          const now = new Date();
+          const [session] = await c.env.DB.select({
+            userId: schema.authSessions.userId,
+          })
+            .from(schema.authSessions)
+            .where(and(eq(schema.authSessions.token, token), gt(schema.authSessions.expiresAt, now)))
+            .limit(1);
+
+          if (session?.userId) {
+            userId = session.userId;
+          }
+        }
+      }
+    } catch {
+      // Ignore DB fallback error
+    }
+  }
+
   if (!userId) return null;
 
   const [user] = await c.env.DB.select({

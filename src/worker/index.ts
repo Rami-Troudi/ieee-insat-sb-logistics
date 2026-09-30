@@ -6,7 +6,7 @@ import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { schema } from "./database";
 import type { CurrentUser, Env } from "./env";
-import { createAuth, trustedAuthOrigin } from "./auth";
+import { createAuth, signCookieValue, trustedAuthOrigin } from "./auth";
 import { hashPassword } from "better-auth/crypto";
 import { requireBoard, requireSuperadmin, requireUser, resolveIdentity } from "./identity";
 import {
@@ -173,12 +173,22 @@ app.post("/api/v1/auth/borrower", async (c) => {
   });
 
   const isHttps = c.req.url.startsWith("https:");
-  const secure = isHttps ? "; Secure" : "";
+  const signedToken = await signCookieValue(token, c.env.BETTER_AUTH_SECRET);
+  const maxAge = 30 * 24 * 60 * 60; // 30 days
   const response = c.json({ ok: true, user });
+
+  // Standard session cookie
   response.headers.append(
     "Set-Cookie",
-    `better-auth.session_token=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${secure}`
+    `better-auth.session_token=${signedToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${isHttps ? "; Secure" : ""}`
   );
+  // __Secure- prefixed cookie for HTTPS / production environments
+  if (isHttps) {
+    response.headers.append(
+      "Set-Cookie",
+      `__Secure-better-auth.session_token=${signedToken}; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=${maxAge}`
+    );
+  }
   return response;
 });
 
@@ -207,7 +217,11 @@ app.post("/api/v1/auth/board-login", async (c) => {
     return jsonError(c, 403, "FORBIDDEN", "This account does not have Board staff access.");
   }
   const response = c.json({ ok: true, user });
-  for (const cookie of res.headers.getSetCookie()) {
+  const setCookies =
+    typeof res.headers.getSetCookie === "function"
+      ? res.headers.getSetCookie()
+      : (res.headers.get("set-cookie") ? [res.headers.get("set-cookie")!] : []);
+  for (const cookie of setCookies) {
     response.headers.append("Set-Cookie", cookie);
   }
   return response;

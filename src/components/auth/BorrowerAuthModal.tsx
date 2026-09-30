@@ -8,7 +8,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
-import { Sparkles, ShieldCheck, AlertCircle, UserCheck, Mail } from "lucide-react";
+import { Sparkles, ShieldCheck, AlertCircle, UserCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export interface BorrowerAuthModalProps {
@@ -32,11 +32,10 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
-  const [membership, setMembership] = useState<"IEEE" | "AEROBOTIX" | "EXTERNAL">("IEEE");
+  const [membership, setMembership] = useState<"IEEE" | "EXTERNAL">("IEEE");
   const [phone, setPhone] = useState("");
   const [borrowerError, setBorrowerError] = useState("");
   const [borrowerSubmitting, setBorrowerSubmitting] = useState(false);
-  const [magicSent, setMagicSent] = useState(false);
 
   // Staff state
   const [staffEmail, setStaffEmail] = useState("");
@@ -85,7 +84,7 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
       const response = await fetch("/api/v1/auth/borrower", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
+        credentials: "include",
         body: JSON.stringify({
           firstName: firstName.trim(),
           lastName: lastName.trim(),
@@ -127,30 +126,6 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
     }
   };
 
-  const onSendMagicLink = async () => {
-    if (!email.trim()) {
-      setBorrowerError("Please enter your email address first.");
-      return;
-    }
-    setBorrowerSubmitting(true);
-    try {
-      await fetch("/api/auth/sign-in/magic-link", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify({
-          email: email.trim().toLowerCase(),
-          callbackURL: window.location.pathname,
-        }),
-      });
-      setMagicSent(true);
-      setBorrowerError("");
-    } catch {
-      setBorrowerError("Could not send sign-in link. Please verify your email.");
-    } finally {
-      setBorrowerSubmitting(false);
-    }
-  };
 
   const onSubmitStaff = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -160,7 +135,7 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
       const response = await fetch("/api/v1/auth/board-login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
+        credentials: "include",
         body: JSON.stringify({
           email: staffEmail.trim().toLowerCase(),
           password: staffPassword,
@@ -200,7 +175,7 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
             )}
           >
             <UserCheck className="w-3.5 h-3.5" />
-            <span>Borrower Sign Up</span>
+            <span>Borrower Sign In</span>
           </button>
           <button
             type="button"
@@ -294,12 +269,11 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
                 <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block">
                   Affiliation *
                 </label>
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-2 gap-2">
                   {(
                     [
-                      { id: "IEEE", label: "IEEE" },
-                      { id: "AEROBOTIX", label: "Aerobotix" },
-                      { id: "EXTERNAL", label: "External" },
+                      { id: "IEEE", label: "IEEE Member" },
+                      { id: "EXTERNAL", label: "External / Guest" },
                     ] as const
                   ).map((m) => {
                     const isSelected = membership === m.id;
@@ -311,7 +285,7 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
                         className={cn(
                           "h-9 rounded-xl text-xs font-semibold border transition-all flex items-center justify-center",
                           isSelected
-                            ? "bg-primary text-primary-foreground border-primary shadow-xs"
+                            ? "bg-primary text-primary-foreground border-primary shadow-xs font-bold"
                             : "bg-background border-input text-foreground hover:bg-surface-subtle"
                         )}
                       >
@@ -350,34 +324,16 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
                 </div>
               )}
 
-              {magicSent && (
-                <div
-                  role="status"
-                  className="p-3 rounded-xl bg-primary/10 border border-primary/20 text-primary text-xs flex items-center gap-2"
-                >
-                  <Mail className="h-4 w-4 shrink-0" />
-                  <span>Sign-in link sent to your email. Check your inbox!</span>
-                </div>
-              )}
-
               <Button
                 type="submit"
                 disabled={borrowerSubmitting}
                 className="w-full h-10 text-xs font-bold gap-2 rounded-xl mt-3 shadow-xs"
               >
                 <Sparkles className="w-4 h-4" />
-                <span>{borrowerSubmitting ? "Saving Profile..." : "Get Started & Save Info"}</span>
+                <span>{borrowerSubmitting ? "Signing in..." : "Continue to Reservations"}</span>
               </Button>
 
               <div className="flex flex-col items-center gap-1.5 pt-2">
-                <button
-                  type="button"
-                  onClick={onSendMagicLink}
-                  className="text-xs text-primary hover:underline font-semibold"
-                >
-                  Email me a sign-in link
-                </button>
-
                 <button
                   type="button"
                   onClick={() => setAuthMode("STAFF")}

@@ -12,7 +12,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { requestId } from "hono/request-id";
 import { secureHeaders } from "hono/secure-headers";
-import { and, asc, desc, eq as eq2, inArray } from "drizzle-orm";
+import { and as and2, asc, desc, eq as eq2, inArray } from "drizzle-orm";
 import { z } from "zod";
 
 // src/worker/database.ts
@@ -517,17 +517,57 @@ function createAuth(env, origin) {
     ]
   });
 }
+async function makeCookieSignature(value, secret) {
+  const secretBuf = typeof secret === "string" ? new TextEncoder().encode(secret) : secret;
+  const key = await crypto.subtle.importKey(
+    "raw",
+    secretBuf,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign", "verify"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value));
+  return btoa(String.fromCharCode(...new Uint8Array(signature)));
+}
+async function signCookieValue(value, secret) {
+  const signature = await makeCookieSignature(value, secret);
+  return encodeURIComponent(`${value}.${signature}`);
+}
 
 // src/worker/index.ts
 import { hashPassword } from "better-auth/crypto";
 
 // src/worker/identity.ts
 import { createMiddleware } from "hono/factory";
-import { eq } from "drizzle-orm";
+import { and, eq, gt } from "drizzle-orm";
 async function resolveIdentity(c) {
-  const origin = trustedAuthOrigin(c.env, c.req.url, c.req.header("Origin"));
-  const session = await createAuth(c.env, origin).api.getSession({ headers: c.req.raw.headers });
-  const userId = session?.user?.id;
+  let userId = null;
+  try {
+    const origin = trustedAuthOrigin(c.env, c.req.url, c.req.header("Origin"));
+    const session = await createAuth(c.env, origin).api.getSession({ headers: c.req.raw.headers });
+    userId = session?.user?.id;
+  } catch {
+  }
+  if (!userId) {
+    try {
+      const cookieHeader = c.req.header("Cookie") || "";
+      const tokenMatch = cookieHeader.match(/(?:__Secure-)?better-auth\.session_token=([^;]+)/);
+      if (tokenMatch) {
+        const rawVal = decodeURIComponent(tokenMatch[1]);
+        const token = rawVal.split(".")[0];
+        if (token) {
+          const now = /* @__PURE__ */ new Date();
+          const [session] = await c.env.DB.select({
+            userId: schema_exports.authSessions.userId
+          }).from(schema_exports.authSessions).where(and(eq(schema_exports.authSessions.token, token), gt(schema_exports.authSessions.expiresAt, now))).limit(1);
+          if (session?.userId) {
+            userId = session.userId;
+          }
+        }
+      }
+    } catch {
+    }
+  }
   if (!userId) return null;
   const [user] = await c.env.DB.select({
     id: schema_exports.authUsers.id,
@@ -1565,12 +1605,19 @@ app.post("/api/v1/auth/borrower", async (c) => {
     userId
   });
   const isHttps = c.req.url.startsWith("https:");
-  const secure = isHttps ? "; Secure" : "";
+  const signedToken = await signCookieValue(token, c.env.BETTER_AUTH_SECRET);
+  const maxAge = 30 * 24 * 60 * 60;
   const response = c.json({ ok: true, user });
   response.headers.append(
     "Set-Cookie",
-    `better-auth.session_token=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${secure}`
+    `better-auth.session_token=${signedToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${isHttps ? "; Secure" : ""}`
   );
+  if (isHttps) {
+    response.headers.append(
+      "Set-Cookie",
+      `__Secure-better-auth.session_token=${signedToken}; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=${maxAge}`
+    );
+  }
   return response;
 });
 app.post("/api/v1/auth/board-login", async (c) => {
@@ -1593,7 +1640,8 @@ app.post("/api/v1/auth/board-login", async (c) => {
     return jsonError(c, 403, "FORBIDDEN", "This account does not have Board staff access.");
   }
   const response = c.json({ ok: true, user });
-  for (const cookie of res.headers.getSetCookie()) {
+  const setCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : res.headers.get("set-cookie") ? [res.headers.get("set-cookie")] : [];
+  for (const cookie of setCookies) {
     response.headers.append("Set-Cookie", cookie);
   }
   return response;
@@ -1681,7 +1729,7 @@ app.get("/api/v1/chapters", async (c) => {
 app.get("/api/v1/equipment/:id/availability", async (c) => {
   const { pickupAt, returnAt } = intervalFromQuery(new URL(c.req.url).searchParams);
   const item = await c.env.DB.select({ id: schema_exports.equipmentItems.id }).from(schema_exports.equipmentItems).where(
-    and(eq2(schema_exports.equipmentItems.id, c.req.param("id")), eq2(schema_exports.equipmentItems.active, true))
+    and2(eq2(schema_exports.equipmentItems.id, c.req.param("id")), eq2(schema_exports.equipmentItems.active, true))
   ).limit(1);
   if (!item.length) return jsonError(c, 404, "NOT_FOUND", "Equipment not found.");
   const availableAssets = await findAvailableAssets(
@@ -1754,7 +1802,7 @@ app.patch("/api/v1/notifications/:id/read", async (c) => {
   const actor = await resolveIdentity(c);
   if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue.");
   const result = await c.env.DB.update(schema_exports.notifications).set({ readAt: Date.now() }).where(
-    and(eq2(schema_exports.notifications.id, c.req.param("id")), eq2(schema_exports.notifications.userId, actor.id))
+    and2(eq2(schema_exports.notifications.id, c.req.param("id")), eq2(schema_exports.notifications.userId, actor.id))
   );
   return c.json({ ok: true, changes: result.rowsAffected });
 });
@@ -1953,7 +2001,7 @@ app.patch("/api/v1/board/equipment/:id", async (c) => {
 app.delete("/api/v1/board/equipment/:id", requireBoard, async (c) => {
   const id2 = c.req.param("id");
   const activeAssets = await c.env.DB.select({ id: schema_exports.assets.id, state: schema_exports.assets.state }).from(schema_exports.assets).where(
-    and(
+    and2(
       eq2(schema_exports.assets.equipmentItemId, id2),
       inArray(schema_exports.assets.state, ["BORROWED", "RESERVED"])
     )
@@ -2312,7 +2360,7 @@ app.delete("/api/v1/board/users/:id", requireSuperadmin, async (c) => {
   const existing = await c.env.DB.select().from(schema_exports.authUsers).where(eq2(schema_exports.authUsers.id, targetId)).limit(1);
   if (!existing[0]) return jsonError(c, 404, "NOT_FOUND", "Account not found.");
   const activeRes = await c.env.DB.select({ id: schema_exports.reservations.id }).from(schema_exports.reservations).where(
-    and(
+    and2(
       eq2(schema_exports.reservations.requestedByUserId, targetId),
       inArray(schema_exports.reservations.status, ["PENDING", "APPROVED"])
     )

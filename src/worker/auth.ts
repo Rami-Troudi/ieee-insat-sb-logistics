@@ -178,3 +178,21 @@ export function createAuth(env: Env, origin: string) {
     ],
   });
 }
+
+export async function makeCookieSignature(value: string, secret: string): Promise<string> {
+  const secretBuf = typeof secret === "string" ? new TextEncoder().encode(secret) : secret;
+  const key = await crypto.subtle.importKey(
+    "raw",
+    secretBuf,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign", "verify"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value));
+  return btoa(String.fromCharCode(...new Uint8Array(signature)));
+}
+
+export async function signCookieValue(value: string, secret: string): Promise<string> {
+  const signature = await makeCookieSignature(value, secret);
+  return encodeURIComponent(`${value}.${signature}`);
+}
