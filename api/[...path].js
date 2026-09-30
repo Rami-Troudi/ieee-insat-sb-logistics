@@ -2304,6 +2304,42 @@ app.patch("/api/v1/board/users/:id/role", requireSuperadmin, async (c) => {
   });
   return c.json({ ok: true, role: parsed.data.role });
 });
+app.delete("/api/v1/board/users/:id", requireSuperadmin, async (c) => {
+  const targetId = c.req.param("id");
+  if (targetId === c.get("actor").id) {
+    return jsonError(c, 400, "BAD_REQUEST", "You cannot delete your own account.");
+  }
+  const existing = await c.env.DB.select().from(schema_exports.authUsers).where(eq2(schema_exports.authUsers.id, targetId)).limit(1);
+  if (!existing[0]) return jsonError(c, 404, "NOT_FOUND", "Account not found.");
+  const activeRes = await c.env.DB.select({ id: schema_exports.reservations.id }).from(schema_exports.reservations).where(
+    and(
+      eq2(schema_exports.reservations.requestedByUserId, targetId),
+      inArray(schema_exports.reservations.status, ["PENDING", "APPROVED"])
+    )
+  ).limit(1);
+  if (activeRes.length > 0) {
+    return jsonError(c, 409, "ACTIVE_RESERVATIONS", "Cannot delete a user with active or pending reservations.");
+  }
+  await c.env.DB.delete(schema_exports.authSessions).where(eq2(schema_exports.authSessions.userId, targetId));
+  await c.env.CLIENT.execute({
+    sql: "DELETE FROM account WHERE userId=?",
+    args: [targetId]
+  });
+  await c.env.DB.delete(schema_exports.authUsers).where(eq2(schema_exports.authUsers.id, targetId));
+  await c.env.CLIENT.execute({
+    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+    args: [
+      randomId("audit"),
+      c.get("actor").id,
+      "USER",
+      targetId,
+      "USER_DELETED",
+      Date.now(),
+      JSON.stringify({ email: existing[0].email, name: existing[0].name, role: existing[0].role })
+    ]
+  });
+  return c.json({ ok: true });
+});
 app.get("/api/v1/board/audit", async (c) => c.json(await listBoardAudit(c.env)));
 app.notFound((c) => jsonError(c, 404, "NOT_FOUND", "API endpoint not found."));
 

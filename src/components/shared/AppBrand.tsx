@@ -18,41 +18,31 @@ export const AppBrand: React.FC<AppBrandProps> = ({ className, to = "/app", isDa
       )}
       aria-label="IEEE INSAT Student Branch Equipment Reservations"
     >
-      {/* IEEE Official Mark — SVG from ieee.tn */}
+      {/* Official IEEE INSAT Student Branch Logo */}
       <div className="flex-shrink-0 flex items-center justify-center">
-        {isDark ? (
-          <img
-            src="/assets/ieee_mb.svg"
-            alt="IEEE"
-            className="h-5 w-auto object-contain"
-            style={{ filter: "brightness(0) invert(1)" }}
-          />
-        ) : (
-          <img
-            src="/assets/ieee_mb_blue.svg"
-            alt="IEEE"
-            className="h-5 w-auto object-contain"
-          />
-        )}
+        <img
+          src={isDark ? "/assets/ieee_insat_logo_white.png" : "/assets/ieee_insat_logo.png"}
+          alt="IEEE INSAT Student Branch"
+          className="h-8 w-auto object-contain max-w-[145px]"
+        />
       </div>
 
-      {/* Brand Hierarchy: IEEE INSAT SB / Equipment Reservations */}
-      <div className="flex flex-col text-left">
+      <div className={cn("flex flex-col text-left border-l pl-2", isDark ? "border-white/20" : "border-border")}>
         <span
           className={cn(
-            "text-sm font-bold tracking-tight leading-tight",
+            "text-xs font-bold tracking-tight leading-tight",
             isDark ? "text-white" : "text-foreground"
           )}
         >
-          INSAT Student Branch
+          Logistics
         </span>
         <span
           className={cn(
-            "text-[11px] leading-tight",
+            "text-[10px] leading-tight",
             isDark ? "text-white/70" : "text-muted-foreground"
           )}
         >
-          Equipment Reservations
+          Equipment
         </span>
       </div>
     </Link>
