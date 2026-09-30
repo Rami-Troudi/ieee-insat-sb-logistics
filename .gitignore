@@ -48,5 +48,6 @@ graphify-out/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/
 graphify-out/cache/
 .vercel
 .env*
+!.env.example
 .agents/
 skills-lock.json

@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" role="img" aria-label="Ultra-thin 4K smart television display with vibrant digital screen">
+  <defs>
+    <linearGradient id="tv-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#faf5ff" />
+      <stop offset="50%" stop-color="#f3e8ff" />
+      <stop offset="100%" stop-color="#ede9fe" />
+    </linearGradient>
+    <linearGradient id="tv-screen" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#002855" />
+      <stop offset="40%" stop-color="#00629b" />
+      <stop offset="70%" stop-color="#00b5e2" />
+      <stop offset="100%" stop-color="#981d97" />
+    </linearGradient>
+    <linearGradient id="tv-stand" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#cbd5e1" />
+      <stop offset="50%" stop-color="#94a3b8" />
+      <stop offset="100%" stop-color="#475569" />
+    </linearGradient>
+    <linearGradient id="tv-bezel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#334155" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+    <filter id="tv-shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="24" stdDeviation="28" flood-color="#002855" flood-opacity="0.25" />
+    </filter>
+  </defs>
+
+  <!-- Canvas Background -->
+  <rect width="800" height="600" rx="32" fill="url(#tv-bg)" />
+
+  <!-- Ambient Light Reflection on Desk -->
+  <ellipse cx="400" cy="505" rx="310" ry="34" fill="#002855" opacity="0.18" />
+  <ellipse cx="400" cy="495" rx="240" ry="16" fill="#00b5e2" opacity="0.15" />
+
+  <!-- Sleek Brushed Aluminum Blade Stand Legs -->
+  <!-- Left Leg -->
+  <polygon points="230,470 200,505 235,505 250,470" fill="url(#tv-stand)" />
+  <!-- Right Leg -->
+  <polygon points="570,470 600,505 565,505 550,470" fill="url(#tv-stand)" />
+
+  <!-- Main Television Assembly -->
+  <g filter="url(#tv-shadow)">
+    <!-- Ultra-Slim Outer Bezel Chassis -->
+    <rect x="110" y="110" width="580" height="360" rx="14" fill="url(#tv-bezel)" stroke="#64748b" stroke-width="2.5" />
+
+    <!-- Borderless Edge-to-Edge OLED Display Panel -->
+    <rect x="120" y="120" width="560" height="340" rx="8" fill="url(#tv-screen)" />
+
+    <!-- On-Screen Graphic Artwork: Vibrant IEEE INSAT Energy Wave -->
+    <g opacity="0.9">
+      <!-- Wave 1 (Deep IEEE Blue) -->
+      <path d="M120 320 C240 240 340 380 480 280 C580 200 640 260 680 220 L680 460 L120 460 Z" fill="#002855" opacity="0.6" />
+      <!-- Wave 2 (Electric Cyan) -->
+      <path d="M120 360 C260 280 380 420 500 320 C600 240 650 300 680 270 L680 460 L120 460 Z" fill="#00b5e2" opacity="0.4" />
+      <!-- Wave 3 (INSAT Signature Violet) -->
+      <path d="M120 400 C220 340 340 440 460 370 C560 300 620 380 680 340 L680 460 L120 460 Z" fill="#981d97" opacity="0.5" />
+
+      <!-- Modern On-Screen UI Widgets -->
+      <!-- Top Status Bar -->
+      <text x="145" y="155" font-family="sans-serif" font-size="14" font-weight="900" fill="#ffffff" letter-spacing="1">IEEE INSAT</text>
+      <text x="145" y="172" font-family="sans-serif" font-size="9" font-weight="bold" fill="#67e8f9">CONFERENCE DISPLAY 01</text>
+      <text x="655" y="155" font-family="sans-serif" font-size="12" font-weight="bold" fill="#ffffff" text-anchor="end">10:45 AM</text>
+      <text x="655" y="170" font-family="sans-serif" font-size="8" font-weight="bold" fill="#86efac" text-anchor="end">● CONNECTED (AIRPLAY / HDMI 1)</text>
+
+      <!-- Center Welcome Presentation Graphic -->
+      <g transform="translate(400 270)">
+        <circle cx="0" cy="0" r="38" fill="rgba(255,255,255,0.15)" stroke="#ffffff" stroke-width="2" />
+        <polygon points="-10,-18 18,0 -10,18" fill="#ffffff" />
+        <text x="0" y="58" font-family="sans-serif" font-size="16" font-weight="bold" fill="#ffffff" text-anchor="middle">Ready to Present</text>
+        <text x="0" y="74" font-family="sans-serif" font-size="10" font-weight="medium" fill="#e0f2fe" text-anchor="middle">Connect your laptop or select source</text>
+      </g>
+    </g>
+
+    <!-- Glass Specular Reflection Diagonal Sweep Across Screen -->
+    <polygon points="120,120 280,120 180,460 120,460" fill="#ffffff" opacity="0.08" />
+
+    <!-- Bottom Center Bezel IEEE Logo Pip & Power LED -->
+    <rect x="390" y="462" width="20" height="4" rx="2" fill="#94a3b8" />
+    <circle cx="665" cy="464" r="2.5" fill="#38bdf8" />
+  </g>
+</svg>

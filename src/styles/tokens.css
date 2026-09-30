@@ -1,0 +1,104 @@
+:root {
+  /* ==========================================================================
+     IEEE INSAT Student Branch Design System Tokens
+     ========================================================================== */
+
+  /* --- 1. Brand Colors --- */
+  --ieee-blue: #00629b;
+  --ieee-navy: #002855;
+  --ieee-cyan: #00b5e2;
+  --insat-violet: #981d97;
+
+  /* --- 2. Neutral Palette --- */
+  --color-background: #f6f8fb;
+  --surface: #ffffff;
+  --surface-subtle: #eef3f6;
+
+  --text-primary: #172a3a;
+  --text-secondary: #667085;
+  --text-muted: #98a2b3;
+
+  --color-border: #d9e2e8;
+  --border-strong: #b8c5ce;
+
+  /* --- 3. Semantic State Colors --- */
+  --success: #00843d;
+  --warning: #d97706;
+  --danger: #ba0c2f;
+  --info: #00629b;
+
+  /* Reservation States (Semantic Tokens) */
+  --status-pending-bg: #eef3f6;
+  --status-pending-text: #667085;
+  --status-pending-border: #d9e2e8;
+
+  --status-approved-bg: #e6f2f8;
+  --status-approved-text: #00629b;
+  --status-approved-border: #b3d7ec;
+
+  --status-borrowed-bg: #f7e8f7;
+  --status-borrowed-text: #981d97;
+  --status-borrowed-border: #e6bce6;
+
+  --status-returned-bg: #e6f6ed;
+  --status-returned-text: #00843d;
+  --status-returned-border: #b3e6c9;
+
+  --status-overdue-bg: #fbe6eb;
+  --status-overdue-text: #ba0c2f;
+  --status-overdue-border: #f2b3c1;
+
+  --status-cancelled-bg: #eef3f6;
+  --status-cancelled-text: #98a2b3;
+  --status-cancelled-border: #d9e2e8;
+
+  /* --- 4. INSAT Signature Gradient --- */
+  --insat-gradient: linear-gradient(135deg, #00629b 0%, #00b5e2 50%, #981d97 100%);
+
+  /* --- 5. Geometry Constraints --- */
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  --radius-full: 9999px;
+
+  /* --- 6. HSL Mappings for Tailwind Semantic Utilities --- */
+  --background: 216 43% 97%; /* #F6F8FB */
+  --foreground: 206 43% 16%; /* #172A3A */
+
+  --card: 0 0% 100%; /* #FFFFFF */
+  --card-foreground: 206 43% 16%;
+
+  --popover: 0 0% 100%;
+  --popover-foreground: 206 43% 16%;
+
+  --primary: 201 100% 30%; /* #00629B IEEE Blue */
+  --primary-foreground: 0 0% 100%;
+
+  --secondary: 211 100% 17%; /* #002855 IEEE Navy */
+  --secondary-foreground: 0 0% 100%;
+
+  --muted: 204 29% 95%; /* #EEF3F6 */
+  --muted-foreground: 220 13% 46%; /* #667085 */
+
+  --accent: 191 100% 44%; /* #00B5E2 IEEE Cyan */
+  --accent-foreground: 211 100% 17%;
+
+  --destructive: 348 88% 39%; /* #BA0C2F Danger */
+  --destructive-foreground: 0 0% 100%;
+
+  --border: 206 24% 88%; /* #D9E2E8 */
+  --input: 206 24% 88%;
+  --ring: 201 100% 30%; /* IEEE Blue focus ring */
+
+  /* Board Operational Sidebar Tokens */
+  --sidebar-background: 211 100% 17%; /* #002855 IEEE Navy */
+  --sidebar-foreground: 0 0% 100%;
+  --sidebar-primary: 201 100% 30%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 211 60% 25%;
+  --sidebar-accent-foreground: 0 0% 100%;
+  --sidebar-border: 211 80% 25%;
+  --sidebar-ring: 191 100% 44%;
+}

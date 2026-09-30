@@ -7,10 +7,10 @@ import {
   type FormEvent,
   type ReactNode,
 } from "react";
-import { BrowserRouter, Link, NavLink, useLocation, useNavigate } from "react-router-dom";
+import { BrowserRouter, Link, useLocation, useNavigate } from "react-router-dom";
 import { DateTime } from "luxon";
 import FullCalendar from "@fullcalendar/react";
-import type { EventInput } from "@fullcalendar/core";
+import type { EventClickArg, EventInput } from "@fullcalendar/core";
 import dayGridPlugin from "@fullcalendar/daygrid";
 import timeGridPlugin from "@fullcalendar/timegrid";
 import interactionPlugin from "@fullcalendar/interaction";
@@ -20,46 +20,62 @@ import { QRCodeSVG } from "qrcode.react";
 import {
   Activity,
   ArrowDownToLine,
+  ArrowLeft,
   ArrowRight,
-  ArrowUpRight,
   CalendarDays,
   Check,
-  ChevronDown,
-  ChevronRight,
-  CircleHelp,
+  CheckCircle2,
   ClipboardList,
+  Clock,
   Clock3,
-  Compass,
-  Cpu,
   FileClock,
-  Filter,
-  LayoutDashboard,
-  LifeBuoy,
-  LogOut,
   Package,
   PackageCheck,
   Plus,
   QrCode,
-  Search,
+  RefreshCw,
   Settings2,
   ShieldCheck,
-  Users,
-  Wrench,
+  ShoppingBag,
+  Trash2,
+  Copy,
+  Eye,
+  EyeOff,
   X,
+  XCircle,
 } from "lucide-react";
 
+import { DesktopSidebar } from "@/components/shared/DesktopSidebar";
+import { TopBar } from "@/components/shared/TopBar";
+import { MobileBottomNav } from "@/components/shared/MobileBottomNav";
+import { SearchInput } from "@/components/shared/SearchInput";
+import { StatusBadge, type DomainStatus } from "@/components/shared/StatusBadge";
+import { Metric } from "@/components/shared/Metric";
+import { EmptyState, ErrorState } from "@/components/shared/FeedbackStates";
+import { LoadingState } from "@/components/shared/LoadingState";
+import { EquipmentCard, type EquipmentItem } from "@/components/equipment/EquipmentCard";
+import { BorrowerAuthModal } from "@/components/auth/BorrowerAuthModal";
+import {
+  AssetQrStickerModal,
+  type AssetStickerData,
+} from "@/components/equipment/AssetQrStickerModal";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import { cn } from "@/lib/utils";
+
 const TZ = "Africa/Tunis";
-type Role = "USER" | "BOARD" | "SUPERADMIN";
-type User = { id: string; name: string; email: string; role: Role };
-type Item = {
-  id: string;
-  name: string;
-  description: string;
-  category: string;
-  imageUrl: string | null;
-  availableQuantity: number;
-};
-type Reservation = {
+export type Role = "USER" | "BOARD" | "SUPERADMIN";
+export type User = { id: string; name: string; email: string; role: Role };
+export type Item = EquipmentItem;
+export type Reservation = {
   id: string;
   requestedBy: { id: string; name: string; email: string };
   borrower: { type: "PERSON" | "CHAPTER"; id: string; name: string };
@@ -80,7 +96,7 @@ type Reservation = {
   totalQuantity: number;
   createdAt: string;
 };
-type InventoryItem = Item & {
+export type InventoryItem = Item & {
   active: boolean;
   assets: Array<{
     id: string;
@@ -91,11 +107,12 @@ type InventoryItem = Item & {
     active: boolean;
   }>;
 };
-type AllocationCandidate = {
+export type AllocationCandidate = {
   lineId: string;
   assets: Array<{ id: string; assetCode: string; serialNumber: string | null; state: string }>;
 };
 type ApiError = { error?: { message?: string; code?: string } };
+
 const fmtDay = (iso: string) => DateTime.fromISO(iso).setZone(TZ).toFormat("ccc, d LLL");
 const fmtTime = (iso: string) => DateTime.fromISO(iso).setZone(TZ).toFormat("HH:mm");
 const fmtWindow = (start: string, end: string) =>
@@ -122,6 +139,7 @@ const post = (body?: unknown): RequestInit => ({
   body: JSON.stringify(body ?? {}),
 });
 const patch = (body: unknown): RequestInit => ({ method: "PATCH", body: JSON.stringify(body) });
+
 function useNotice() {
   const [notice, setNotice] = useState("");
   useEffect(() => {
@@ -132,10 +150,53 @@ function useNotice() {
   return { notice, setNotice };
 }
 
+function roleLabel(role: Role) {
+  return role === "SUPERADMIN" ? "Superadmin" : role === "BOARD" ? "Board Member" : "Member";
+}
+
+function titleCase(value: string) {
+  return value.toLowerCase().replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function generateSecurePassword(length = 16): string {
+  const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+  const lower = "abcdefghijkmnopqrstuvwxyz";
+  const numbers = "23456789";
+  const symbols = "!@#$%&*?";
+  const all = upper + lower + numbers + symbols;
+
+  const passwordChars = [
+    upper[crypto.getRandomValues(new Uint32Array(1))[0] % upper.length],
+    lower[crypto.getRandomValues(new Uint32Array(1))[0] % lower.length],
+    numbers[crypto.getRandomValues(new Uint32Array(1))[0] % numbers.length],
+    symbols[crypto.getRandomValues(new Uint32Array(1))[0] % symbols.length],
+  ];
+
+  const randomValues = new Uint32Array(length - 4);
+  crypto.getRandomValues(randomValues);
+  for (let i = 0; i < length - 4; i++) {
+    passwordChars.push(all[randomValues[i] % all.length]);
+  }
+
+  for (let i = passwordChars.length - 1; i > 0; i--) {
+    const j = crypto.getRandomValues(new Uint32Array(1))[0] % (i + 1);
+    [passwordChars[i], passwordChars[j]] = [passwordChars[j], passwordChars[i]];
+  }
+
+  return passwordChars.join("");
+}
+
 function AppFrame() {
   const [user, setUser] = useState<User | null>(null);
   const [identityLoaded, setIdentityLoaded] = useState(false);
-  const [cart, setCart] = useState<Record<string, number>>({});
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [cart, setCart] = useState<Record<string, number>>(() => {
+    try {
+      return JSON.parse(sessionStorage.getItem("sb-item-selection") ?? "{}");
+    } catch {
+      return {};
+    }
+  });
   const { notice, setNotice } = useNotice();
   const location = useLocation();
   const isBoardPath = location.pathname.startsWith("/board");
@@ -143,143 +204,96 @@ function AppFrame() {
   const cartCount = Object.values(cart).reduce((sum, quantity) => sum + quantity, 0);
 
   useEffect(() => {
-    api<{ user: User | null }>("/api/v1/me")
-      .then(({ user: current }) => setUser(current))
-      .catch((error: Error) => setNotice(error.message))
-      .finally(() => setIdentityLoaded(true));
+    sessionStorage.setItem("sb-item-selection", JSON.stringify(cart));
+  }, [cart]);
+
+  const refreshUser = useCallback(async () => {
+    try {
+      const { user: current } = await api<{ user: User | null }>("/api/v1/me");
+      setUser(current);
+    } catch (error) {
+      if (error instanceof Error) setNotice(error.message);
+    } finally {
+      setIdentityLoaded(true);
+    }
   }, [setNotice]);
+
+  useEffect(() => {
+    void refreshUser();
+  }, [refreshUser]);
 
   useEffect(() => {
     const tokenPath = location.pathname.match(/^\/scan\/([a-f0-9]{64})$/i);
     if (tokenPath) window.history.replaceState(null, "", `/board/scan?token=${tokenPath[1]}`);
   }, [location.pathname]);
 
-  const activePath = location.pathname;
-  const heading = activePath.includes("selection")
-    ? "Item selection"
-    : activePath.includes("reservations")
-      ? isBoardPath
-        ? "Reservation queue"
-        : "My reservations"
-      : activePath.includes("calendar")
-        ? "Reservation calendar"
-        : activePath.includes("inventory")
-          ? "Equipment inventory"
-          : activePath.includes("chapters")
-            ? "Chapter borrowers"
-            : activePath.includes("scan")
-              ? "Desk scanner"
-              : activePath.includes("accounts")
-                ? "Access & accounts"
-                : activePath.includes("audit")
-                  ? "Activity log"
-                  : isBoardPath
-                    ? "Board overview"
-                    : "Equipment catalogue";
+  const handleSignOut = async () => {
+    try {
+      await fetch("/api/v1/auth/sign-out", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: "{}",
+      });
+      await fetch("/api/auth/sign-out", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: "{}",
+      }).catch(() => {});
+    } catch {
+      // Ignore network error on signout
+    }
+    document.cookie = "better-auth.session_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT;";
+    document.cookie = "better-auth.session_data=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT;";
+    setUser(null);
+    window.location.assign("/app/equipment");
+  };
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <Link className="brand" to="/app" aria-label="IEEE INSAT Student Branch home">
-          <span className="brand-mark">
-            <span>IEEE</span>
-            <b>SB</b>
-          </span>
-          <span className="brand-title">
-            INSAT <small>STUDENT BRANCH</small>
-          </span>
-        </Link>
-        <div className="workspace-chip">
-          <span className="status-dot" /> Equipment reservations <ChevronDown size={14} />
-        </div>
-        <div className="side-label">NAVIGATION</div>
-        <nav className="side-nav" aria-label="Main navigation">
-          {boardAccess ? (
-            <>
-              <NavItem to="/board" label="Overview" icon={<LayoutDashboard />} end />
-              <NavItem to="/board/reservations" label="Reservations" icon={<ClipboardList />} />
-              <NavItem to="/board/calendar" label="Calendar" icon={<CalendarDays />} />
-              <NavItem to="/board/inventory" label="Inventory" icon={<Package />} />
-              <NavItem to="/board/chapters" label="Chapters" icon={<Users />} />
-              <NavItem to="/board/scan" label="Desk scanner" icon={<QrCode />} />
-              {user?.role === "SUPERADMIN" && (
-                <NavItem to="/board/accounts" label="Accounts" icon={<Users />} />
-              )}
-              <NavItem to="/board/audit" label="Activity log" icon={<FileClock />} />
-            </>
-          ) : (
-            <>
-              <NavItem to="/app" label="Equipment" icon={<Compass />} end />
-              <NavItem to="/app/reservations" label="My reservations" icon={<PackageCheck />} />
-            </>
-          )}
-        </nav>
-        <div className="sidebar-spacer" />
-        <div className="help-card">
-          <span className="help-icon">
-            <LifeBuoy size={17} />
-          </span>
-          <strong>Need a hand?</strong>
-          <p>Ask the Student Branch Board at the equipment desk.</p>
-          <a href="mailto:ieee@insat.ucar.tn">
-            Contact the team <ArrowUpRight size={13} />
-          </a>
-        </div>
-        <div className="profile-row">
-          <div className="avatar">{user?.name?.slice(0, 1).toUpperCase() ?? "G"}</div>
-          <div className="profile-info">
-            <strong>{user?.name ?? "Guest access"}</strong>
-            <small>{user ? roleLabel(user.role) : "Sign in to reserve"}</small>
-          </div>
-          {user && (
-            <button
-              className="icon-button quiet"
-              title="Sign out"
-              onClick={async () => {
-                await fetch("/api/auth/sign-out", { method: "POST", credentials: "same-origin" });
-                setUser(null);
-                window.location.assign("/app");
-              }}
-            >
-              <LogOut size={16} />
-            </button>
-          )}
-        </div>
-      </aside>
-      <main className="main-column">
-        <header className="topbar">
-          <div className="crumb">
-            <span>IEEE INSAT SB</span>
-            <ChevronRight size={14} />
-            <strong>{heading}</strong>
-          </div>
-          <div className="top-actions">
-            <span className="time-chip">
-              <span className="status-dot" /> Tunis time
-            </span>
-            <Link className="button button-quiet top-cart" to="/app/selection">
-              <ClipboardList size={16} /> Selected items <b>{cartCount}</b>
-            </Link>
-            <button className="avatar avatar-small" title={user?.email ?? "Sign in"}>
-              {user?.name?.slice(0, 1).toUpperCase() ?? "G"}
-            </button>
-          </div>
-        </header>
-        <div className="page-content">
+    <div className="app-shell flex min-h-screen bg-background text-foreground antialiased selection:bg-primary/20">
+      {/* Persistent Desktop Sidebar (Board uses IEEE Navy, Member uses clean card) */}
+      <DesktopSidebar isBoard={isBoardPath} user={user} onSignOut={handleSignOut} />
+
+      {/* Main Column Pane */}
+      <div className="flex-1 flex flex-col min-w-0 pb-16 lg:pb-0">
+        <TopBar
+          isBoard={isBoardPath}
+          user={user}
+          cartCount={cartCount}
+          onOpenAuth={() => setShowAuthModal(true)}
+          onSignOut={handleSignOut}
+        />
+
+        <main className="flex-1 overflow-y-auto">
+          {/* Toast / Feedback Notice */}
           {notice && (
-            <div className="toast" role="status">
-              <span className="toast-mark">
-                <Check size={15} />
-              </span>
-              {notice}
-              <button className="icon-button" onClick={() => setNotice("")} aria-label="Dismiss">
-                <X size={15} />
-              </button>
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 pt-4">
+              <div
+                className="flex items-center justify-between gap-3 p-3.5 rounded-xl border border-primary/20 bg-primary/5 text-primary text-sm shadow-xs animate-in fade-in duration-200"
+                role="status"
+              >
+                <div className="flex items-center gap-2.5">
+                  <span className="w-6 h-6 rounded-full bg-primary text-white flex items-center justify-center shrink-0">
+                    <Check size={14} className="stroke-[3]" />
+                  </span>
+                  <span className="font-medium text-foreground">{notice}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setNotice("")}
+                  className="text-muted-foreground hover:text-foreground p-1 rounded-md transition-colors"
+                  aria-label="Dismiss"
+                >
+                  <X size={15} />
+                </button>
+              </div>
             </div>
           )}
+
           {!identityLoaded ? (
-            <div className="loading-panel">
-              <span className="spinner" /> Loading your workspace…
+            <div className="py-16">
+              <LoadingState message="Loading your workspace…" />
             </div>
           ) : (
             <PageRouter
@@ -288,40 +302,27 @@ function AppFrame() {
               cart={cart}
               setCart={setCart}
               setNotice={setNotice}
+              onOpenAuth={() => setShowAuthModal(true)}
             />
           )}
-        </div>
-        <footer className="page-footer">
-          <span>IEEE INSAT Student Branch</span>
-          <span>
-            Equipment reservations <i>·</i> All times Africa/Tunis
-          </span>
-        </footer>
-      </main>
+        </main>
+      </div>
+
+      {/* Mobile Bottom Navigation */}
+      <MobileBottomNav isBoard={isBoardPath} cartCount={cartCount} user={user} />
+
+      {/* Borrower & Board Staff Auth Modal (Identical to RAS) */}
+      <BorrowerAuthModal
+        isOpen={showAuthModal}
+        onClose={() => setShowAuthModal(false)}
+        initialMode="BORROWER"
+        title="Sign in to reserve"
+        onSuccess={() => {
+          setShowAuthModal(false);
+          void refreshUser();
+        }}
+      />
     </div>
-  );
-}
-
-function roleLabel(role: Role) {
-  return role === "SUPERADMIN" ? "Superadmin" : role === "BOARD" ? "Board member" : "Member";
-}
-
-function NavItem({
-  to,
-  label,
-  icon,
-  end = false,
-}: {
-  to: string;
-  label: string;
-  icon: ReactNode;
-  end?: boolean;
-}) {
-  return (
-    <NavLink to={to} end={end} className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}>
-      {icon}
-      <span>{label}</span>
-    </NavLink>
   );
 }
 
@@ -331,49 +332,96 @@ function PageRouter(props: {
   cart: Record<string, number>;
   setCart: (next: Record<string, number>) => void;
   setNotice: (message: string) => void;
+  onOpenAuth: () => void;
 }) {
   const { pathname, search } = useLocation();
   const route = pathname.replace(/\/$/, "") || "/app";
   const params = new URLSearchParams(search);
-  if (route === "/board/scan" && !props.boardAccess)
+
+  if (route === "/board/scan" && !props.boardAccess) {
+    return (
+      <AccessGate
+        user={props.user}
+        setNotice={props.setNotice}
+        title="Board credentials required"
+      />
+    );
+  }
+  if (route.startsWith("/board") && !props.boardAccess) {
     return (
       <AccessGate user={props.user} setNotice={props.setNotice} title="Board access required" />
     );
-  if (route.startsWith("/board") && !props.boardAccess)
-    return <AccessGate user={props.user} setNotice={props.setNotice} title="Board workspace" />;
-  if (route === "/board") return <BoardDashboard />;
-  if (route === "/board/reservations") return <BoardReservations setNotice={props.setNotice} />;
-  if (route === "/board/calendar") return <BoardCalendar />;
-  if (route === "/board/inventory") return <BoardInventory setNotice={props.setNotice} />;
-  if (route === "/board/chapters") return <BoardChapters setNotice={props.setNotice} />;
-  if (route === "/board/scan")
-    return <BoardScan initialToken={params.get("token") ?? ""} setNotice={props.setNotice} />;
-  if (route === "/board/accounts" && props.user?.role === "SUPERADMIN")
-    return <Accounts setNotice={props.setNotice} />;
-  if (route === "/board/audit") return <AuditLog />;
-  if (route === "/app/selection")
-    return (
-      <SelectionPage
-        cart={props.cart}
-        setCart={props.setCart}
-        user={props.user}
-        setNotice={props.setNotice}
-      />
-    );
-  if (route === "/app/reservations")
-    return props.user ? (
-      <MyReservations user={props.user} />
-    ) : (
-      <AccessGate user={props.user} setNotice={props.setNotice} title="Your reservations" />
-    );
-  return (
-    <Catalogue
-      cart={props.cart}
-      setCart={props.setCart}
-      user={props.user}
-      setNotice={props.setNotice}
-    />
-  );
+  }
+
+  switch (route) {
+    case "/app":
+    case "/app/equipment":
+      return (
+        <Catalogue
+          user={props.user}
+          cart={props.cart}
+          setCart={props.setCart}
+          setNotice={props.setNotice}
+          onOpenAuth={props.onOpenAuth}
+        />
+      );
+    case "/app/selection":
+    case "/app/cart":
+      return (
+        <SelectionPage
+          cart={props.cart}
+          setCart={props.setCart}
+          user={props.user}
+          setNotice={props.setNotice}
+          onOpenAuth={props.onOpenAuth}
+        />
+      );
+    case "/app/reservations":
+      return props.user ? (
+        <MyReservations user={props.user} />
+      ) : (
+        <AccessGate
+          user={props.user}
+          setNotice={props.setNotice}
+          title="Sign in to view your reservations"
+        />
+      );
+    case "/board":
+      return <BoardDashboard />;
+    case "/board/reservations":
+      return <BoardReservations setNotice={props.setNotice} />;
+    case "/board/calendar":
+      return <BoardCalendar />;
+    case "/board/inventory":
+      return <BoardInventory setNotice={props.setNotice} />;
+    case "/board/chapters":
+      return <BoardChapters setNotice={props.setNotice} />;
+    case "/board/scan":
+      return <BoardScan initialToken={params.get("token") ?? ""} setNotice={props.setNotice} />;
+    case "/board/accounts":
+      return props.user?.role === "SUPERADMIN" ? (
+        <Accounts setNotice={props.setNotice} />
+      ) : (
+        <AccessGate
+          user={props.user}
+          setNotice={props.setNotice}
+          title="Superadmin role required"
+        />
+      );
+    case "/board/audit":
+      return <AuditLog />;
+    default:
+      return (
+        <div className="py-16">
+          <EmptyState
+            title="Page not found"
+            description="The requested page does not exist or has been moved."
+            actionLabel="Return to catalogue"
+            onAction={() => window.location.assign("/app/equipment")}
+          />
+        </div>
+      );
+  }
 }
 
 function PageHeading({
@@ -383,128 +431,98 @@ function PageHeading({
   action,
 }: {
   eyebrow: string;
-  title: ReactNode;
+  title: string;
   description: string;
   action?: ReactNode;
 }) {
   return (
-    <div className="page-heading">
+    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-border/80">
       <div>
-        <div className="eyebrow">{eyebrow}</div>
-        <h1>{title}</h1>
-        <p>{description}</p>
+        <div className="text-[11px] font-bold uppercase tracking-wider text-primary mb-1">
+          {eyebrow}
+        </div>
+        <h1 className="text-2xl sm:text-[32px] sm:leading-[40px] font-bold tracking-tight text-foreground">
+          {title}
+        </h1>
+        <p className="text-xs sm:text-sm text-muted-foreground mt-0.5 max-w-2xl">{description}</p>
       </div>
-      {action && <div className="heading-action">{action}</div>}
+      {action && <div className="shrink-0 flex items-center gap-2">{action}</div>}
     </div>
   );
 }
 
 function AccessGate({
   user,
-  setNotice,
+  setNotice: _setNotice,
   title,
+  onSuccess,
 }: {
   user: User | null;
   setNotice: (message: string) => void;
   title: string;
+  onSuccess?: () => void;
 }) {
-  const [email, setEmail] = useState("");
-  const [sent, setSent] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    setBusy(true);
-    try {
-      await api(
-        "/api/auth/sign-in/magic-link",
-        post({ email, callbackURL: window.location.pathname })
-      );
-      setSent(true);
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Could not send a sign-in link.");
-    } finally {
-      setBusy(false);
-    }
-  };
-  if (user)
+  const isStaff =
+    title.toLowerCase().includes("board") || title.toLowerCase().includes("superadmin");
+  const [isOpen, setIsOpen] = useState(true);
+
+  if (user) {
     return (
-      <section className="access-card">
-        <span className="large-icon">
-          <ShieldCheck />
-        </span>
-        <div className="eyebrow">ACCOUNT STATUS</div>
-        <h2>{title}</h2>
-        <p>
-          Signed in as <strong>{user.name}</strong>. Your account is{" "}
-          <strong>{roleLabel(user.role)}</strong>.
-        </p>
-        <Link className="button button-primary" to="/app">
-          Go to equipment catalogue <ArrowRight size={16} />
-        </Link>
-      </section>
-    );
-  return (
-    <div className="auth-layout">
-      <div className="auth-copy">
-        <div className="eyebrow">IEEE INSAT STUDENT BRANCH</div>
-        <h1>Equipment reservations</h1>
-        <p>
-          Reserve the equipment your team needs, then collect it from the Board desk at the time you
-          selected.
-        </p>
-        <div className="auth-perks">
-          <span>
-            <Check /> Availability by date and time
-          </span>
-          <span>
-            <Check /> Board-approved handover
-          </span>
-          <span>
-            <Check /> Shared chapter borrowing
-          </span>
+      <div className="max-w-md mx-auto p-6 bg-card border border-border rounded-2xl shadow-sm text-center space-y-4">
+        <div className="w-12 h-12 rounded-full bg-primary/10 text-primary mx-auto flex items-center justify-center">
+          <ShieldCheck className="w-6 h-6" />
         </div>
+        <div className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+          ACCOUNT STATUS
+        </div>
+        <h2 className="text-xl font-bold">{title}</h2>
+        <p className="text-sm text-muted-foreground">
+          Signed in as <strong className="text-foreground">{user.name}</strong>. Your role is{" "}
+          <strong className="text-primary">{roleLabel(user.role)}</strong>.
+        </p>
+        <Button asChild className="w-full min-h-11">
+          <Link to="/app/equipment">
+            <span>Browse equipment catalogue</span>
+            <ArrowRight className="w-4 h-4 ml-2" />
+          </Link>
+        </Button>
       </div>
-      <form className="auth-card" onSubmit={submit}>
-        <span className="auth-card-icon">
-          <ShieldCheck size={20} />
-        </span>
-        <div className="eyebrow">MEMBER ACCESS</div>
-        <h2>{sent ? "Check your inbox" : title}</h2>
-        {sent ? (
-          <p className="subtle">
-            If this email can access IEEE INSAT SB, a secure sign-in link is on its way. It expires
-            in 10 minutes.
-          </p>
-        ) : (
-          <>
-            <p className="subtle">
-              No password to remember. We’ll email you a one-time sign-in link.
-            </p>
-            <label className="field-label" htmlFor="sign-in-email">
-              Email address
-            </label>
-            <input
-              id="sign-in-email"
-              className="text-input"
-              type="email"
-              autoComplete="email"
-              required
-              maxLength={320}
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.com"
-            />
-            <button className="button button-dark wide" disabled={busy}>
-              {busy ? "Sending link…" : "Email me a sign-in link"}
-              <ArrowRight size={16} />
-            </button>
-          </>
-        )}
-        <div className="auth-note">
-          <ShieldCheck size={15} /> Your role is assigned by the Student Branch Board.
+    );
+  }
+
+  return (
+    <>
+      <div className="max-w-md mx-auto p-6 bg-card border border-border rounded-2xl shadow-sm text-center space-y-4">
+        <div className="w-12 h-12 rounded-full bg-primary/10 text-primary mx-auto flex items-center justify-center">
+          <ShieldCheck className="w-6 h-6" />
         </div>
-      </form>
-    </div>
+        <div className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+          AUTHENTICATION REQUIRED
+        </div>
+        <h2 className="text-xl font-bold">{title}</h2>
+        <p className="text-sm text-muted-foreground">
+          {isStaff
+            ? "Sign in with your staff email and assigned password to access the Board workspace."
+            : "Sign up or sign in as a borrower to manage your equipment reservations."}
+        </p>
+        <Button onClick={() => setIsOpen(true)} className="w-full min-h-11 font-bold gap-2">
+          {isStaff ? "Board Staff Sign In" : "Borrower Sign Up"}
+          <ArrowRight className="w-4 h-4" />
+        </Button>
+      </div>
+
+      <BorrowerAuthModal
+        isOpen={isOpen}
+        onClose={() => setIsOpen(false)}
+        initialMode={isStaff ? "STAFF" : "BORROWER"}
+        title={title}
+        onSuccess={() => {
+          setIsOpen(false);
+          if (onSuccess) onSuccess();
+          else window.location.reload();
+        }}
+      />
+    </>
   );
 }
 
@@ -520,56 +538,62 @@ function DateWindow({
   setEnd: (value: string) => void;
 }) {
   return (
-    <div className="window-panel">
-      <div className="window-title">
-        <span className="window-icon">
-          <CalendarDays size={18} />
-        </span>
+    <div className="bg-card border border-border rounded-xl p-3.5 sm:p-4 shadow-xs flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+      <div className="flex items-center gap-2.5">
+        <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center text-primary shrink-0">
+          <CalendarDays className="w-5 h-5" />
+        </div>
         <div>
-          <strong>When do you need it?</strong>
-          <small>Availability checks the complete time window.</small>
+          <div className="text-xs sm:text-sm font-semibold text-foreground">
+            When do you need it?
+          </div>
+          <div className="text-[11px] text-muted-foreground">
+            Availability checks the complete time window.
+          </div>
         </div>
       </div>
-      <div className="window-fields">
-        <label>
-          <span>Pick up</span>
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-2 bg-surface-subtle border border-input rounded-lg px-2.5 py-1.5 text-xs">
+          <span className="text-muted-foreground font-medium">Pick up:</span>
           <input
             aria-label="Pick up"
-            className="text-input"
             type="datetime-local"
             value={start}
             onChange={(e) => setStart(e.target.value)}
+            className="bg-transparent text-xs font-semibold focus:outline-none text-foreground"
           />
         </label>
-        <span className="window-arrow">
-          <ArrowRight size={16} />
-        </span>
-        <label>
-          <span>Return</span>
+        <ArrowRight className="w-3.5 h-3.5 text-muted-foreground hidden sm:block" />
+        <label className="flex items-center gap-2 bg-surface-subtle border border-input rounded-lg px-2.5 py-1.5 text-xs">
+          <span className="text-muted-foreground font-medium">Return:</span>
           <input
             aria-label="Return"
-            className="text-input"
             type="datetime-local"
             value={end}
             onChange={(e) => setEnd(e.target.value)}
+            className="bg-transparent text-xs font-semibold focus:outline-none text-foreground"
           />
         </label>
-        <span className="timezone-label">UTC+1 · Tunis</span>
+        <span className="text-[11px] font-medium text-muted-foreground bg-surface-subtle px-2 py-1 rounded-md border border-border">
+          UTC+1 · Tunis
+        </span>
       </div>
     </div>
   );
 }
 
 function Catalogue({
+  user,
   cart,
   setCart,
-  user,
   setNotice,
+  onOpenAuth,
 }: {
+  user: User | null;
   cart: Record<string, number>;
   setCart: (next: Record<string, number>) => void;
-  user: User | null;
   setNotice: (message: string) => void;
+  onOpenAuth: () => void;
 }) {
   const startInitial = useMemo(() => initialStart(), []);
   const [start, setStart] = useState(dateInput(startInitial));
@@ -577,8 +601,11 @@ function Catalogue({
   const [items, setItems] = useState<Item[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [category, setCategory] = useState("All equipment");
-  const [showAuth, setShowAuth] = useState(false);
+  const [selectedCategory, setSelectedCategory] = useState("ALL");
+  const [availableOnly, setAvailableOnly] = useState(false);
+
+  const cartCount = Object.values(cart).reduce((sum, qty) => sum + qty, 0);
+
   useEffect(() => {
     if (!start || !end || Date.parse(isoFromInput(end)) <= Date.parse(isoFromInput(start))) return;
     setLoading(true);
@@ -589,155 +616,200 @@ function Catalogue({
       .catch((error: Error) => setNotice(error.message))
       .finally(() => setLoading(false));
   }, [start, end, setNotice]);
-  const categories = ["All equipment", ...new Set(items.map((item) => item.category))];
-  const shown = items.filter(
-    (item) =>
-      (category === "All equipment" || item.category === category) &&
-      item.name.toLowerCase().includes(search.toLowerCase())
-  );
-  const add = (item: Item) => {
+
+  const categories = useMemo(() => {
+    return Array.from(new Set(items.map((item) => item.category)));
+  }, [items]);
+
+  const displayedItems = useMemo(() => {
+    return items.filter((item) => {
+      if (selectedCategory !== "ALL" && item.category !== selectedCategory) return false;
+      if (availableOnly && item.availableQuantity < 1) return false;
+      if (search.trim()) {
+        const query = search.toLowerCase();
+        return (
+          item.name.toLowerCase().includes(query) ||
+          item.category.toLowerCase().includes(query) ||
+          item.description?.toLowerCase().includes(query)
+        );
+      }
+      return true;
+    });
+  }, [items, selectedCategory, availableOnly, search]);
+
+  const handleAdd = (item: Item) => {
     if (item.availableQuantity < 1) return;
     if (!user) {
-      setShowAuth(true);
+      onOpenAuth();
       return;
     }
-    setCart({ ...cart, [item.id]: Math.min(item.availableQuantity, (cart[item.id] ?? 0) + 1) });
-    setNotice(`${item.name} added to your selection.`);
+    const currentQty = cart[item.id] ?? 0;
+    if (currentQty >= item.availableQuantity) return;
+    setCart({ ...cart, [item.id]: currentQty + 1 });
+    setNotice(`${item.name} added to selection.`);
   };
+
+  const handleIncrement = (item: Item) => {
+    handleAdd(item);
+  };
+
+  const handleDecrement = (item: Item) => {
+    const next = { ...cart };
+    if (!next[item.id]) return;
+    if (next[item.id] <= 1) delete next[item.id];
+    else next[item.id]--;
+    setCart(next);
+  };
+
   return (
-    <>
-      <PageHeading
-        eyebrow="MEMBER · EQUIPMENT"
-        title="Equipment catalogue"
-        description="Choose a pickup and return time to check availability."
-        action={
-          <Link className="button button-primary" to="/app/selection">
-            <ClipboardList size={16} /> View selection{" "}
-            <span className="count-pill">{Object.values(cart).reduce((s, n) => s + n, 0)}</span>
-          </Link>
-        }
-      />
-      <DateWindow start={start} end={end} setStart={setStart} setEnd={setEnd} />
-      <div className="catalog-toolbar">
-        <div className="section-intro">
-          <span className="eyebrow">AVAILABLE EQUIPMENT</span>
-          <h2>
-            Equipment <span className="subtle count-text">{items.length} items</span>
-          </h2>
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-4 sm:space-y-6">
+      {/* Top Header: Section 15 */}
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-foreground">
+            Equipment catalogue
+          </h1>
+          <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">
+            Find the equipment you need.
+          </p>
         </div>
-        <div className="toolbar-controls">
-          <label className="search-box">
-            <Search size={16} />
-            <input
-              aria-label="Search equipment"
+
+        {/* View Selection button */}
+        <Button
+          asChild
+          variant="default"
+          size="sm"
+          className="gap-2 min-h-11 px-3.5 shadow-xs shrink-0"
+        >
+          <Link to="/app/selection" aria-label="View selection">
+            <ShoppingBag className="w-4 h-4" />
+            <span className="font-semibold">View selection</span>
+            {cartCount > 0 && (
+              <span className="ml-0.5 px-1.5 py-0.2 bg-white text-primary rounded-full text-xs font-bold">
+                {cartCount}
+              </span>
+            )}
+          </Link>
+        </Button>
+      </div>
+
+      {/* Date Window */}
+      <DateWindow start={start} end={end} setStart={setStart} setEnd={setEnd} />
+
+      {/* Prominent Search & Filters */}
+      <div className="space-y-2.5">
+        <div className="flex items-center gap-2">
+          <div className="flex-1">
+            <SearchInput
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search equipment"
+              onClear={() => setSearch("")}
+              placeholder="Search equipment (projector, HDMI, power strip, router)..."
             />
-          </label>
-          <label className="select-box">
-            <Filter size={15} />
-            <select
-              aria-label="Filter category"
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
-            >
-              {categories.map((c) => (
-                <option key={c}>{c}</option>
-              ))}
-            </select>
-          </label>
+          </div>
+
+          {/* Quick "In stock" Toggle pill */}
+          <button
+            type="button"
+            onClick={() => setAvailableOnly(!availableOnly)}
+            className={cn(
+              "min-h-11 px-3.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all shrink-0 active:scale-95 focus-visible:ring-2 focus-visible:ring-primary",
+              availableOnly
+                ? "bg-[#e6f6ed] border-[#b3e6c9] text-[#00843d] font-bold"
+                : "bg-card border-input text-muted-foreground hover:text-foreground"
+            )}
+            aria-pressed={availableOnly}
+          >
+            <span
+              className={cn(
+                "w-2 h-2 rounded-full",
+                availableOnly ? "bg-[#00843d]" : "bg-muted-foreground/40"
+              )}
+            />
+            <span className="hidden xs:inline">In stock</span>
+          </button>
+        </div>
+
+        {/* Clean Quick Filter Pills */}
+        <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none -mx-4 px-4 sm:mx-0 sm:px-0">
+          {["ALL", ...categories].map((category) => {
+            const isSelected = selectedCategory === category;
+            return (
+              <button
+                key={category}
+                type="button"
+                onClick={() => setSelectedCategory(category)}
+                className={cn(
+                  "min-h-11 px-3.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all flex items-center gap-1.5 border active:scale-95 focus-visible:ring-2 focus-visible:ring-primary",
+                  isSelected
+                    ? "bg-primary text-primary-foreground border-primary font-bold shadow-xs"
+                    : "bg-card border-border/80 text-muted-foreground hover:text-foreground hover:bg-surface-subtle"
+                )}
+              >
+                <span>{category === "ALL" ? "All Equipment" : category}</span>
+              </button>
+            );
+          })}
         </div>
       </div>
+
+      {/* Equipment Grid: Section 15 */}
       {loading ? (
-        <div className="loading-panel">
-          <span className="spinner" /> Checking availability for your dates…
-        </div>
-      ) : shown.length ? (
-        <div className="equipment-grid">
-          {shown.map((item, index) => (
-            <article className="equipment-card" key={item.id}>
-              <div className={`equipment-image tone-${index % 5}`}>
-                <img
-                  src={item.imageUrl ?? "/equipment/fallback.svg"}
-                  alt=""
-                  onError={(e) => {
-                    e.currentTarget.src = "/equipment/fallback.svg";
-                  }}
-                />
-                <span className="category-tag">{item.category}</span>
-                <span
-                  className={`availability-tag ${item.availableQuantity ? "is-available" : "is-unavailable"}`}
-                >
-                  <i />
-                  {item.availableQuantity
-                    ? `${item.availableQuantity} available`
-                    : "Fully reserved"}
-                </span>
-              </div>
-              <div className="equipment-body">
-                <h3>{item.name}</h3>
-                <p>{item.description || "No description has been added for this equipment."}</p>
-                <div className="card-footer">
-                  <span className="stock-copy">
-                    <Package size={14} />{" "}
-                    {item.availableQuantity ? "Available for this period" : "Unavailable"}
-                  </span>
-                  <button
-                    className={`button ${item.availableQuantity ? "button-dark" : "button-disabled"} add-button`}
-                    disabled={!item.availableQuantity}
-                    onClick={() => add(item)}
-                  >
-                    {cart[item.id] ? (
-                      <>
-                        <Check size={15} /> Add one more
-                      </>
-                    ) : (
-                      <>
-                        <Plus size={15} /> Select item
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-            </article>
+        <LoadingState message="Checking equipment availability for your dates…" />
+      ) : displayedItems.length === 0 ? (
+        <EmptyState
+          title="No equipment found"
+          description="Try another search term or clear your category filters."
+          actionLabel="View all equipment"
+          onAction={() => {
+            setSearch("");
+            setSelectedCategory("ALL");
+            setAvailableOnly(false);
+          }}
+        />
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-4 pb-20 sm:pb-6">
+          {displayedItems.map((item) => (
+            <EquipmentCard
+              key={item.id}
+              item={item}
+              quantity={cart[item.id] ?? 0}
+              onAdd={() => handleAdd(item)}
+              onIncrement={() => handleIncrement(item)}
+              onDecrement={() => handleDecrement(item)}
+            />
           ))}
         </div>
-      ) : (
-        <EmptyState
-          icon={<Search />}
-          title="No equipment found"
-          body="Try another search or broaden your category filter."
-        />
       )}
-      <div className="catalog-note">
-        <ShieldCheck size={16} />
-        <span>
-          <strong>Board approval is required.</strong> A specific asset is assigned before
-          collection.
-        </span>
-        <ArrowRight size={15} />
-      </div>
-      {showAuth && (
-        <div className="modal-backdrop">
-          <div
-            className="modal-card"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Sign in to reserve"
+
+      {/* Floating Sticky Mobile Cart Bar */}
+      {cartCount > 0 && (
+        <div className="fixed bottom-16 sm:bottom-6 left-4 right-4 z-40 max-w-lg mx-auto animate-in slide-in-from-bottom-4 duration-300">
+          <Link
+            to="/app/selection"
+            aria-label="Review cart and reserve"
+            className="flex min-h-11 items-center justify-between px-4 py-3.5 bg-primary text-primary-foreground rounded-2xl shadow-elevation hover:bg-primary/95 active:scale-[0.99] transition-all group"
           >
-            <button
-              className="icon-button modal-close"
-              onClick={() => setShowAuth(false)}
-              aria-label="Close"
-            >
-              <X size={17} />
-            </button>
-            <AccessGate user={user} setNotice={setNotice} title="Sign in to reserve" />
-          </div>
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-xl bg-white/20 flex items-center justify-center font-bold text-xs">
+                {cartCount}
+              </div>
+              <div className="text-left">
+                <span className="text-xs font-bold block leading-tight">
+                  {cartCount === 1 ? "1 item selected" : `${cartCount} items selected`}
+                </span>
+                <span className="text-[10px] text-white/80 block">Tap to review & reserve</span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5 text-xs font-bold bg-white text-primary px-3 py-1.5 rounded-xl shadow-xs group-hover:translate-x-0.5 transition-transform">
+              <span>Review Selection</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </div>
+          </Link>
         </div>
       )}
-    </>
+    </div>
   );
 }
 
@@ -746,11 +818,13 @@ function SelectionPage({
   setCart,
   user,
   setNotice,
+  onOpenAuth,
 }: {
   cart: Record<string, number>;
   setCart: (next: Record<string, number>) => void;
   user: User | null;
   setNotice: (message: string) => void;
+  onOpenAuth: () => void;
 }) {
   const navigate = useNavigate();
   const [items, setItems] = useState<Item[]>([]);
@@ -764,6 +838,7 @@ function SelectionPage({
   const [end, setEnd] = useState(dateInput(startInitial.plus({ hours: 2 })));
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+
   useEffect(() => {
     api<Item[]>(
       `/api/v1/catalogue?pickupAt=${encodeURIComponent(isoFromInput(start))}&returnAt=${encodeURIComponent(isoFromInput(end))}`
@@ -771,15 +846,18 @@ function SelectionPage({
       .then(setItems)
       .catch((e: Error) => setNotice(e.message));
   }, [start, end, setNotice]);
+
   useEffect(() => {
     api<Array<{ id: string; name: string; shortCode: string }>>("/api/v1/chapters")
       .then(setChapters)
       .catch(() => setChapters([]));
   }, []);
+
   const cartItems = items.filter((item) => cart[item.id]);
+
   const submit = async () => {
     if (!user) {
-      setNotice("Sign in before submitting a reservation.");
+      onOpenAuth();
       return;
     }
     setBusy(true);
@@ -796,7 +874,7 @@ function SelectionPage({
         })
       );
       setCart({});
-      setNotice("Reservation sent to the Board for approval.");
+      setNotice("Reservation request submitted for Board approval.");
       navigate("/app/reservations?created=" + result.id);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not submit reservation.");
@@ -804,41 +882,60 @@ function SelectionPage({
       setBusy(false);
     }
   };
+
   return (
-    <>
-      <PageHeading
-        eyebrow="MEMBER · NEW RESERVATION"
-        title="Selected items"
-        description="The Board confirms the individual assets before your reservation is approved."
-      />
-      <div className="cart-layout">
-        <section className="card basket-card">
-          <div className="card-heading">
-            <div>
-              <span className="eyebrow">ITEM SELECTION</span>
-              <h2>
-                {cartItems.length} equipment {cartItems.length === 1 ? "type" : "types"}
-              </h2>
-            </div>
-            <Link className="text-link" to="/app">
-              Continue browsing <ArrowRight size={14} />
-            </Link>
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-foreground">
+            Selected items
+          </h1>
+          <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">
+            The Board confirms individual asset codes before your reservation is approved.
+          </p>
+        </div>
+        <Button asChild variant="outline" size="sm" className="gap-1.5">
+          <Link to="/app/equipment">
+            <span>Continue browsing</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </Link>
+        </Button>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+        {/* Left Column: Items List */}
+        <section className="lg:col-span-2 space-y-3">
+          <div className="flex items-center justify-between px-1">
+            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Selected Equipment ({cartItems.length})
+            </span>
           </div>
-          {cartItems.length ? (
-            <div className="basket-list">
+
+          {cartItems.length > 0 ? (
+            <div className="space-y-3">
               {cartItems.map((item) => (
-                <div className="basket-row" key={item.id}>
-                  <div className="mini-image">
-                    <img src={item.imageUrl ?? "/equipment/fallback.svg"} alt="" />
+                <div
+                  key={item.id}
+                  className="flex items-center gap-3 p-3.5 rounded-xl border border-border bg-card shadow-xs"
+                >
+                  <img
+                    src={item.imageUrl || "/equipment/fallback.svg"}
+                    alt={item.name}
+                    className="h-16 w-16 shrink-0 rounded-lg object-contain bg-surface-subtle p-1 border border-border"
+                    onError={(e) => {
+                      e.currentTarget.src = "/equipment/fallback.svg";
+                    }}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs text-muted-foreground">{item.category}</p>
+                    <h3 className="font-semibold text-sm text-foreground truncate">{item.name}</h3>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      {item.availableQuantity} available for this window
+                    </p>
                   </div>
-                  <div className="basket-info">
-                    <strong>{item.name}</strong>
-                    <small>
-                      {item.category} · {item.availableQuantity} available for this window
-                    </small>
-                  </div>
-                  <div className="qty-control">
+                  <div className="flex items-center border border-border rounded-lg bg-surface-subtle p-1">
                     <button
+                      type="button"
                       aria-label={`Decrease ${item.name} quantity`}
                       onClick={() => {
                         const next = { ...cart };
@@ -846,122 +943,136 @@ function SelectionPage({
                         else next[item.id]--;
                         setCart(next);
                       }}
+                      className="w-8 h-8 rounded-md bg-card border border-border flex items-center justify-center text-foreground hover:bg-muted active:scale-95 transition-all text-sm font-bold"
                     >
                       −
                     </button>
-                    <b>{cart[item.id]}</b>
+                    <span className="w-8 text-center text-xs font-bold text-foreground">
+                      {cart[item.id]}
+                    </span>
                     <button
+                      type="button"
                       aria-label={`Increase ${item.name} quantity`}
                       disabled={cart[item.id] >= item.availableQuantity}
                       onClick={() => setCart({ ...cart, [item.id]: cart[item.id] + 1 })}
+                      className="w-8 h-8 rounded-md bg-card border border-border flex items-center justify-center text-foreground hover:bg-muted active:scale-95 transition-all text-sm font-bold disabled:opacity-40"
                     >
                       +
                     </button>
                   </div>
                   <button
-                    className="icon-button remove-button"
+                    type="button"
                     aria-label={`Remove ${item.name}`}
                     onClick={() => {
                       const next = { ...cart };
                       delete next[item.id];
                       setCart(next);
                     }}
+                    className="w-9 h-9 rounded-lg flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
                   >
-                    <X size={16} />
+                    <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
               ))}
             </div>
           ) : (
             <EmptyState
-              icon={<ClipboardList />}
               title="No items selected"
-              body="Select equipment from the catalogue to prepare a reservation request."
-              action={
-                <Link className="button button-dark" to="/app">
-                  Explore equipment <ArrowRight size={15} />
-                </Link>
-              }
+              description="Select equipment from the catalogue to prepare a reservation request."
+              actionLabel="Explore equipment"
+              onAction={() => navigate("/app/equipment")}
             />
           )}
         </section>
-        <aside className="card booking-card">
-          <span className="eyebrow">RESERVATION DETAILS</span>
-          <h2>Choose your window</h2>
-          <p className="subtle">Times are shown in Tunis local time.</p>
-          <DateWindow start={start} end={end} setStart={setStart} setEnd={setEnd} />
-          <div className="form-divider" />
-          <label className="field-label">Who is borrowing?</label>
-          <div className="segmented">
-            <button
-              className={borrowerType === "PERSON" ? "selected" : ""}
-              onClick={() => setBorrowerType("PERSON")}
+
+        {/* Right Column: Reservation Details & Submit Form (Section 17) */}
+        <aside className="space-y-4">
+          <div className="p-4 sm:p-5 rounded-xl border border-border bg-card shadow-xs space-y-4">
+            <div>
+              <h2 className="text-base font-bold text-foreground">Reservation Details</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Times in Africa/Tunis local time
+              </p>
+            </div>
+
+            <DateWindow start={start} end={end} setStart={setStart} setEnd={setEnd} />
+
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-foreground block">
+                Who is borrowing?
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setBorrowerType("PERSON")}
+                  className={cn(
+                    "min-h-10 px-3 rounded-lg text-xs font-semibold border transition-all",
+                    borrowerType === "PERSON"
+                      ? "bg-primary text-primary-foreground border-primary shadow-xs"
+                      : "bg-surface-subtle border-input text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  Myself / Member
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBorrowerType("CHAPTER")}
+                  className={cn(
+                    "min-h-10 px-3 rounded-lg text-xs font-semibold border transition-all",
+                    borrowerType === "CHAPTER"
+                      ? "bg-primary text-primary-foreground border-primary shadow-xs"
+                      : "bg-surface-subtle border-input text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  Chapter
+                </button>
+              </div>
+            </div>
+
+            {borrowerType === "CHAPTER" && (
+              <div className="space-y-1.5 animate-in fade-in duration-150">
+                <label className="text-xs font-semibold text-foreground block">
+                  Select Chapter
+                </label>
+                <select
+                  value={chapterId}
+                  onChange={(e) => setChapterId(e.target.value)}
+                  className="w-full min-h-10 rounded-lg border border-input bg-card px-3 py-2 text-xs font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                >
+                  <option value="">Select a chapter...</option>
+                  {chapters.map((ch) => (
+                    <option key={ch.id} value={ch.id}>
+                      {ch.name} ({ch.shortCode})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-foreground block">
+                Purpose / Notes (optional)
+              </label>
+              <textarea
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="Event, workshop, or project details..."
+                className="w-full min-h-[70px] rounded-lg border border-input bg-card p-2.5 text-xs text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary resize-none"
+              />
+            </div>
+
+            <Button
+              className="w-full min-h-11 font-semibold gap-2 shadow-xs"
+              disabled={busy || !cartItems.length || (borrowerType === "CHAPTER" && !chapterId)}
+              onClick={submit}
             >
-              Personally
-            </button>
-            <button
-              className={borrowerType === "CHAPTER" ? "selected" : ""}
-              onClick={() => setBorrowerType("CHAPTER")}
-            >
-              For a chapter
-            </button>
+              {busy ? "Submitting request…" : "Send reservation request"}
+              <ArrowRight className="w-4 h-4" />
+            </Button>
           </div>
-          {borrowerType === "CHAPTER" && (
-            <label className="field-label">
-              Chapter
-              <select
-                className="text-input"
-                value={chapterId}
-                onChange={(e) => setChapterId(e.target.value)}
-              >
-                <option value="">Choose a chapter</option>
-                {chapters.map((chapter) => (
-                  <option value={chapter.id} key={chapter.id}>
-                    {chapter.name} · {chapter.shortCode}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          <label className="field-label" htmlFor="request-note">
-            Note for the Board <span className="optional">OPTIONAL</span>
-          </label>
-          <textarea
-            id="request-note"
-            className="text-input textarea"
-            maxLength={500}
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            placeholder="What are you building? Anything the desk should know?"
-          />
-          <button
-            className="button button-primary wide"
-            disabled={busy || !cartItems.length || (borrowerType === "CHAPTER" && !chapterId)}
-            onClick={submit}
-          >
-            {busy ? "Submitting…" : "Send reservation request"}
-            <ArrowRight size={16} />
-          </button>
-          <p className="fine-print">
-            <ShieldCheck size={14} /> Nothing is issued until the Board approves and scans it out.
-          </p>
         </aside>
       </div>
-    </>
-  );
-}
-
-function StatusPill({ status }: { status: string }) {
-  const key = status.toLowerCase().replaceAll("_", "-");
-  const label = status
-    .replaceAll("_", " ")
-    .toLowerCase()
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
-  return (
-    <span className={`status-pill status-${key}`}>
-      <i />
-      {label}
-    </span>
+    </div>
   );
 }
 
@@ -969,14 +1080,21 @@ function MyReservations({ user }: { user: User }) {
   const [reservations, setReservations] = useState<Reservation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [selectedQr, setSelectedQr] = useState<Reservation | null>(null);
+  const [activeTab, setActiveTab] = useState<"ALL" | "BORROWED" | "UPCOMING" | "PENDING" | "PAST">(
+    "ALL"
+  );
+
   const refresh = () =>
     api<Reservation[]>("/api/v1/reservations")
       .then(setReservations)
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
+
   useEffect(() => {
     void refresh();
   }, []);
+
   const cancel = async (id: string) => {
     try {
       await api(`/api/v1/reservations/${id}`, { method: "DELETE" });
@@ -985,72 +1103,163 @@ function MyReservations({ user }: { user: User }) {
       setError(e instanceof Error ? e.message : "Could not cancel reservation.");
     }
   };
+
+  // Section 18 Grouped Filter Categories
+  const filteredReservations = useMemo(() => {
+    return reservations.filter((r) => {
+      if (activeTab === "ALL") return true;
+      if (activeTab === "BORROWED")
+        return ["ACTIVE", "BORROWED", "HANDED_OVER"].includes(r.derivedStatus);
+      if (activeTab === "UPCOMING") return r.derivedStatus === "APPROVED";
+      if (activeTab === "PENDING") return ["PENDING", "WAITING"].includes(r.derivedStatus);
+      if (activeTab === "PAST")
+        return ["RETURNED", "COMPLETED", "CANCELLED", "REJECTED", "EXPIRED", "CLOSED"].includes(
+          r.derivedStatus
+        );
+      return true;
+    });
+  }, [reservations, activeTab]);
+
   return (
-    <>
-      <PageHeading
-        eyebrow="MEMBER · RESERVATIONS"
-        title="My reservations"
-        description={`Reservation requests for ${user.name}, including approval and handover status.`}
-        action={
-          <Link className="button button-primary" to="/app">
-            <Plus size={16} /> New reservation
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-foreground">
+            My Reservations
+          </h1>
+          <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">
+            Reservation schedule and handover status for {user.name}.
+          </p>
+        </div>
+        <Button asChild variant="default" size="sm" className="gap-1.5">
+          <Link to="/app/equipment">
+            <Plus className="w-4 h-4" />
+            <span>New reservation</span>
           </Link>
-        }
-      />
-      <div className="reservation-toolbar">
-        <div className="toolbar-stats">
-          <span>
-            <b>{reservations.length}</b> total reservations
-          </span>
-          <span className="stat-divider" />
-          <span>
-            <i className="status-dot" /> Updates from the Board
-          </span>
-        </div>
+        </Button>
       </div>
-      {error && <InlineError message={error} />}
+
+      {/* Section 18: Clear grouped sections / tabs */}
+      <div className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto pb-1 scrollbar-none">
+        {[
+          { id: "ALL", label: "All" },
+          { id: "BORROWED", label: "Currently Borrowed" },
+          { id: "UPCOMING", label: "Upcoming" },
+          { id: "PENDING", label: "Pending" },
+          { id: "PAST", label: "Past" },
+        ].map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setActiveTab(tab.id as typeof activeTab)}
+            className={cn(
+              "min-h-10 px-3.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all flex items-center gap-1.5 border active:scale-95 focus-visible:ring-2 focus-visible:ring-primary",
+              activeTab === tab.id
+                ? "bg-primary text-primary-foreground border-primary shadow-xs font-bold"
+                : "bg-card border-border/80 text-muted-foreground hover:text-foreground hover:bg-surface-subtle"
+            )}
+          >
+            <span>{tab.label}</span>
+          </button>
+        ))}
+      </div>
+
+      {error && (
+        <ErrorState
+          title="Could not load reservations"
+          description={error}
+          onRetry={() => refresh()}
+        />
+      )}
+
       {loading ? (
-        <div className="loading-panel">
-          <span className="spinner" /> Loading reservations…
-        </div>
-      ) : reservations.length ? (
-        <div className="reservation-list">
-          {reservations.map((r) => (
-            <article className="reservation-card" key={r.id}>
-              <div className="reservation-date">
-                <span>{DateTime.fromISO(r.pickupAt).setZone(TZ).toFormat("LLL")}</span>
-                <b>{DateTime.fromISO(r.pickupAt).setZone(TZ).toFormat("dd")}</b>
-                <small>{DateTime.fromISO(r.pickupAt).setZone(TZ).toFormat("ccc")}</small>
-              </div>
-              <div className="reservation-main">
-                <div className="reservation-title-row">
-                  <h3>{r.items.map((i) => i.name).join(", ")}</h3>
-                  <StatusPill status={r.derivedStatus} />
-                </div>
-                <p>
-                  {fmtWindow(r.pickupAt, r.returnAt)} <i>·</i> Borrowing for{" "}
-                  <strong>{r.borrower.name}</strong>
-                </p>
-                <div className="reservation-items">
-                  {r.items.map((i) => (
-                    <span key={i.lineId}>
-                      <Package size={13} />
-                      {i.quantity} × {i.name}
+        <LoadingState message="Loading your reservations…" />
+      ) : filteredReservations.length ? (
+        <div className="space-y-3">
+          {filteredReservations.map((r) => (
+            <article
+              key={r.id}
+              className="rounded-xl border border-border bg-card p-4 sm:p-5 shadow-xs space-y-4 hover:border-primary/40 transition-colors"
+            >
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-border/60 pb-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-lg bg-primary/10 flex flex-col items-center justify-center text-primary font-bold text-xs shrink-0">
+                    <span>{DateTime.fromISO(r.pickupAt).setZone(TZ).toFormat("dd")}</span>
+                    <span className="text-[9px] uppercase font-semibold">
+                      {DateTime.fromISO(r.pickupAt).setZone(TZ).toFormat("LLL")}
                     </span>
-                  ))}
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-sm text-foreground">
+                      {r.items.map((i) => i.name).join(", ")}
+                    </h3>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Borrowing for <strong className="text-foreground">{r.borrower.name}</strong>
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 self-start sm:self-center">
+                  <StatusBadge status={r.derivedStatus as DomainStatus} />
                 </div>
               </div>
-              <div className="reservation-side">
-                <div>
-                  <strong>
-                    {r.collectedCount}/{r.totalQuantity}
-                  </strong>
-                  <small>collected</small>
+
+              <div className="flex flex-wrap items-center justify-between gap-4 text-xs text-muted-foreground">
+                <div className="flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-primary" />
+                  <span className="font-medium text-foreground">
+                    {fmtWindow(r.pickupAt, r.returnAt)}
+                  </span>
                 </div>
+
+                <div className="flex items-center gap-2">
+                  <span>Handover progress:</span>
+                  <span className="font-bold text-foreground">
+                    {r.collectedCount}/{r.totalQuantity} items collected
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2 pt-1">
+                {r.items.map((item) => (
+                  <span
+                    key={item.lineId}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-surface-subtle border border-border text-xs text-foreground"
+                  >
+                    <Package className="w-3.5 h-3.5 text-muted-foreground" />
+                    <span>
+                      {item.quantity} × {item.name}
+                    </span>
+                    {item.assignedAssets && item.assignedAssets.length > 0 && (
+                      <span className="font-mono text-[10px] text-primary font-semibold">
+                        ({item.assignedAssets.map((a) => a.assetCode).join(", ")})
+                      </span>
+                    )}
+                  </span>
+                ))}
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-border/50">
                 {["PENDING", "APPROVED"].includes(r.status) && (
-                  <button className="button button-quiet" onClick={() => cancel(r.id)}>
-                    Cancel
-                  </button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => cancel(r.id)}
+                    className="text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+                  >
+                    Cancel reservation
+                  </Button>
+                )}
+                {r.status === "APPROVED" && (
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={() => setSelectedQr(r)}
+                    className="text-xs gap-1.5"
+                  >
+                    <QrCode className="w-3.5 h-3.5" />
+                    <span>Show Handover QR</span>
+                  </Button>
                 )}
               </div>
             </article>
@@ -1058,17 +1267,37 @@ function MyReservations({ user }: { user: User }) {
         </div>
       ) : (
         <EmptyState
-          icon={<PackageCheck />}
-          title="No reservations yet"
-          body="Your approved, upcoming, and completed reservations will show up here."
-          action={
-            <Link className="button button-dark" to="/app">
-              Browse equipment <ArrowRight size={15} />
-            </Link>
-          }
+          icon={PackageCheck}
+          title="No reservations found"
+          description="Your approved, upcoming, and completed equipment reservations will show up here."
+          actionLabel="Browse equipment"
+          onAction={() => window.location.assign("/app/equipment")}
         />
       )}
-    </>
+
+      {/* Handover QR Dialog */}
+      <Dialog open={Boolean(selectedQr)} onOpenChange={() => setSelectedQr(null)}>
+        <DialogContent className="max-w-sm p-6 bg-card border-border text-center space-y-4">
+          <DialogHeader>
+            <DialogTitle>Desk Handover QR</DialogTitle>
+            <DialogDescription>
+              Present this QR code to the Board desk staff to collect or return your equipment.
+            </DialogDescription>
+          </DialogHeader>
+          {selectedQr && (
+            <div className="p-4 bg-white rounded-xl border border-border inline-block mx-auto shadow-sm">
+              <QRCodeSVG
+                value={`${window.location.origin}/board/scan?res=${selectedQr.id}`}
+                size={180}
+              />
+            </div>
+          )}
+          <p className="text-xs text-muted-foreground font-mono">
+            Reservation ID: {selectedQr?.id.slice(0, 12)}
+          </p>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }
 
@@ -1081,129 +1310,154 @@ function BoardDashboard() {
     nextPickups: Reservation[];
     nextReturns: Reservation[];
   } | null>(null);
+
   useEffect(() => {
     api<typeof data>("/api/v1/board/dashboard")
       .then(setData)
       .catch(() => setData(null));
   }, []);
-  const metrics = [
-    {
-      label: "Pickups today",
-      value: data?.pickupsToday ?? "—",
-      icon: <ArrowDownToLine />,
-      tone: "blue",
-    },
-    { label: "Returns today", value: data?.returnsToday ?? "—", icon: <Check />, tone: "green" },
-    {
-      label: "Out with members",
-      value: data?.currentlyBorrowed ?? "—",
-      icon: <Package />,
-      tone: "violet",
-    },
-    { label: "Past return time", value: data?.overdue ?? "—", icon: <Clock3 />, tone: "amber" },
-  ];
+
   return (
-    <>
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-6">
       <PageHeading
         eyebrow="BOARD · OVERVIEW"
-        title="Logistics dashboard"
+        title="Logistics Dashboard"
         description="Current reservation, pickup, return, and inventory activity."
         action={
-          <Link className="button button-dark" to="/board/scan">
-            <QrCode size={16} /> Open desk scanner
-          </Link>
+          <Button asChild variant="default" size="sm" className="gap-2">
+            <Link to="/board/scan">
+              <QrCode className="w-4 h-4" />
+              <span>Open Desk Scanner</span>
+            </Link>
+          </Button>
         }
       />
-      <div className="metrics-grid">
-        {metrics.map((metric) => (
-          <article className="metric-card" key={metric.label}>
-            <span className={`metric-icon ${metric.tone}`}>{metric.icon}</span>
-            <span className="metric-label">{metric.label}</span>
-            <strong>{metric.value}</strong>
-            <span className="metric-foot">Tunis local time</span>
-          </article>
-        ))}
+
+      {/* Metric Cards Grid: Section 19 */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <Metric
+          label="Pickups Today"
+          value={data?.pickupsToday ?? "—"}
+          description="Handover scheduled today"
+          icon={ArrowDownToLine}
+        />
+        <Metric
+          label="Returns Today"
+          value={data?.returnsToday ?? "—"}
+          description="Equipment expected back"
+          icon={Check}
+          variant="success"
+        />
+        <Metric
+          label="Currently Borrowed"
+          value={data?.currentlyBorrowed ?? "—"}
+          description="Out with members"
+          icon={Package}
+          variant="secondary"
+        />
+        <Metric
+          label="Past Return Time"
+          value={data?.overdue ?? "—"}
+          description="Overdue check-ins"
+          icon={Clock3}
+          variant={data?.overdue ? "danger" : "default"}
+        />
       </div>
-      <div className="dashboard-grid">
-        <section className="card schedule-card">
-          <div className="card-heading">
-            <div>
-              <span className="eyebrow">UP NEXT</span>
-              <h2>Today’s handovers</h2>
+
+      {/* Operational Schedules Side by Side */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Next Pickups */}
+        <section className="rounded-xl border border-border bg-card p-5 shadow-xs space-y-4">
+          <div className="flex items-center justify-between pb-3 border-b border-border/70">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center">
+                <ArrowDownToLine className="w-4 h-4" />
+              </div>
+              <div>
+                <h3 className="font-bold text-sm text-foreground">Next Scheduled Pickups</h3>
+                <p className="text-[11px] text-muted-foreground">Members collecting equipment</p>
+              </div>
             </div>
-            <Link className="text-link" to="/board/calendar">
-              Open calendar <ArrowRight size={14} />
+            <Link
+              to="/board/reservations"
+              className="text-xs font-semibold text-primary hover:underline"
+            >
+              View queue →
             </Link>
           </div>
+
           {data?.nextPickups?.length ? (
-            <div className="up-next-list">
+            <div className="space-y-3">
               {data.nextPickups.map((r) => (
-                <div className="up-next-row" key={r.id}>
-                  <div className="time-block">
-                    <b>{fmtTime(r.pickupAt)}</b>
-                    <small>Pickup</small>
+                <div
+                  key={r.id}
+                  className="p-3 rounded-lg border border-border bg-surface-subtle space-y-1.5"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-xs text-foreground">{r.borrower.name}</span>
+                    <StatusBadge status={r.derivedStatus as DomainStatus} />
                   </div>
-                  <span className="timeline-line" />
-                  <div className="up-next-details">
-                    <strong>{r.borrower.name}</strong>
-                    <span>
-                      {r.items.map((item) => `${item.quantity} × ${item.name}`).join(" · ")}
-                    </span>
-                  </div>
-                  <StatusPill status={r.status} />
+                  <p className="text-xs text-muted-foreground truncate">
+                    {r.items.map((i) => `${i.quantity}× ${i.name}`).join(", ")}
+                  </p>
+                  <p className="text-[11px] text-muted-foreground font-mono">
+                    {fmtWindow(r.pickupAt, r.returnAt)}
+                  </p>
                 </div>
               ))}
             </div>
           ) : (
-            <EmptyState
-              icon={<CalendarDays />}
-              title="No upcoming pickups"
-              body="Approved pickups will appear here."
-            />
+            <p className="text-xs text-muted-foreground py-4 text-center">
+              No upcoming pickups scheduled.
+            </p>
           )}
         </section>
-        <section className="card action-card">
-          <span className="eyebrow">QUICK ACTIONS</span>
-          <h2>Board operations</h2>
-          <div className="quick-action-list">
-            <Link to="/board/reservations">
-              <span className="quick-icon green">
-                <ClipboardList />
-              </span>
-              <span>
-                <strong>Review reservations</strong>
-                <small>Approve requests and assign assets</small>
-              </span>
-              <ArrowRight />
-            </Link>
-            <Link to="/board/scan">
-              <span className="quick-icon blue">
-                <QrCode />
-              </span>
-              <span>
-                <strong>Scan a handover</strong>
-                <small>Check equipment in or out</small>
-              </span>
-              <ArrowRight />
-            </Link>
-            <Link to="/board/inventory">
-              <span className="quick-icon violet">
-                <Wrench />
-              </span>
-              <span>
-                <strong>Manage inventory</strong>
-                <small>Add equipment and print QR labels</small>
-              </span>
-              <ArrowRight />
+
+        {/* Next Returns */}
+        <section className="rounded-xl border border-border bg-card p-5 shadow-xs space-y-4">
+          <div className="flex items-center justify-between pb-3 border-b border-border/70">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg bg-[#e6f6ed] text-[#00843d] flex items-center justify-center">
+                <Check className="w-4 h-4" />
+              </div>
+              <div>
+                <h3 className="font-bold text-sm text-foreground">Expected Returns</h3>
+                <p className="text-[11px] text-muted-foreground">Due back at the desk</p>
+              </div>
+            </div>
+            <Link to="/board/scan" className="text-xs font-semibold text-primary hover:underline">
+              Scan returns →
             </Link>
           </div>
+
+          {data?.nextReturns?.length ? (
+            <div className="space-y-3">
+              {data.nextReturns.map((r) => (
+                <div
+                  key={r.id}
+                  className="p-3 rounded-lg border border-border bg-surface-subtle space-y-1.5"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-xs text-foreground">{r.borrower.name}</span>
+                    <StatusBadge status={r.derivedStatus as DomainStatus} />
+                  </div>
+                  <p className="text-xs text-muted-foreground truncate">
+                    {r.items.map((i) => `${i.quantity}× ${i.name}`).join(", ")}
+                  </p>
+                  <p className="text-[11px] text-muted-foreground font-mono">
+                    Return by: {fmtDay(r.returnAt)} · {fmtTime(r.returnAt)}
+                  </p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground py-4 text-center">
+              No equipment returns due.
+            </p>
+          )}
         </section>
       </div>
-      <div className="board-note">
-        <ShieldCheck size={16} />
-        <span>Each collection and return scan is recorded in the activity log.</span>
-      </div>
-    </>
+    </div>
   );
 }
 
@@ -1211,9 +1465,10 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
   const [reservations, setReservations] = useState<Reservation[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("ALL");
-  const [assigningId, setAssigningId] = useState("");
+  const [assigningReservation, setAssigningReservation] = useState<Reservation | null>(null);
   const [candidates, setCandidates] = useState<AllocationCandidate[]>([]);
   const [selectedAssets, setSelectedAssets] = useState<Record<string, string[]>>({});
+
   const refresh = useCallback(
     () =>
       api<Reservation[]>("/api/v1/board/reservations")
@@ -1222,9 +1477,11 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
         .finally(() => setLoading(false)),
     [setNotice]
   );
+
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
   const openAllocation = async (reservation: Reservation) => {
     try {
       const detail = await api<Reservation & { allocationCandidates: AllocationCandidate[] }>(
@@ -1240,11 +1497,12 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
       );
       setCandidates(detail.allocationCandidates);
       setSelectedAssets(defaults);
-      setAssigningId(reservation.id);
+      setAssigningReservation(reservation);
     } catch (e) {
       setNotice(e instanceof Error ? e.message : "Could not load available assets.");
     }
   };
+
   const act = async (id: string, action: "approve" | "decline") => {
     try {
       if (action === "approve") {
@@ -1252,7 +1510,7 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
           `/api/v1/board/reservations/${id}/approve`,
           post({ assignments: selectedAssets })
         );
-        setAssigningId("");
+        setAssigningReservation(null);
       } else {
         await api(`/api/v1/board/reservations/${id}/decline`, post());
       }
@@ -1264,263 +1522,381 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
       setNotice(e instanceof Error ? e.message : "Could not update reservation.");
     }
   };
+
   const shown = reservations.filter((r) => filter === "ALL" || r.status === filter);
+
   return (
-    <>
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-6">
       <PageHeading
         eyebrow="BOARD · RESERVATIONS"
         title="Reservation requests"
-        description="Review the requested window and assign actual assets before approving."
+        description="Review the requested window and assign actual physical assets before approving."
         action={
-          <Link className="button button-quiet" to="/board/calendar">
-            <CalendarDays size={16} /> Open calendar
-          </Link>
+          <Button asChild variant="outline" size="sm" className="gap-2">
+            <Link to="/board/calendar">
+              <CalendarDays className="w-4 h-4" />
+              <span>Open Calendar</span>
+            </Link>
+          </Button>
         }
       />
-      <div className="queue-toolbar">
-        <div className="segmented queue-filter">
-          {["ALL", "PENDING", "APPROVED", "COMPLETED"].map((status) => (
-            <button
-              className={filter === status ? "selected" : ""}
-              onClick={() => setFilter(status)}
-              key={status}
+
+      {/* Filter Tabs */}
+      <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
+        {["ALL", "PENDING", "APPROVED", "COMPLETED"].map((status) => (
+          <button
+            key={status}
+            type="button"
+            onClick={() => setFilter(status)}
+            className={cn(
+              "min-h-10 px-3.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all flex items-center gap-2 border active:scale-95 focus-visible:ring-2 focus-visible:ring-primary",
+              filter === status
+                ? "bg-primary text-primary-foreground border-primary shadow-xs"
+                : "bg-card border-border/80 text-muted-foreground hover:text-foreground"
+            )}
+          >
+            <span>{status === "ALL" ? "All Requests" : titleCase(status)}</span>
+            <span
+              className={cn(
+                "px-1.5 py-0.2 rounded-full text-[10px]",
+                filter === status ? "bg-white/20 text-white" : "bg-muted text-muted-foreground"
+              )}
             >
-              {status === "ALL" ? "All" : titleCase(status)}{" "}
-              <small>
-                {status === "ALL"
-                  ? reservations.length
-                  : reservations.filter((r) => r.status === status).length}
-              </small>
-            </button>
-          ))}
-        </div>
-        <span className="subtle">
-          <Filter size={14} /> Sorted by handover time
-        </span>
+              {status === "ALL"
+                ? reservations.length
+                : reservations.filter((r) => r.status === status).length}
+            </span>
+          </button>
+        ))}
       </div>
+
       {loading ? (
-        <div className="loading-panel">
-          <span className="spinner" /> Loading requests…
-        </div>
+        <LoadingState message="Loading reservation requests…" />
       ) : shown.length ? (
-        <div className="reservation-list board-queue">
+        <div className="space-y-3">
           {shown.map((r) => (
-            <article className="reservation-card" key={r.id}>
-              <div className="reservation-date">
-                <span>{DateTime.fromISO(r.pickupAt).setZone(TZ).toFormat("LLL")}</span>
-                <b>{DateTime.fromISO(r.pickupAt).setZone(TZ).toFormat("dd")}</b>
-                <small>{DateTime.fromISO(r.pickupAt).setZone(TZ).toFormat("ccc")}</small>
-              </div>
-              <div className="reservation-main">
-                <div className="reservation-title-row">
-                  <h3>{r.borrower.name}</h3>
-                  <StatusPill status={r.derivedStatus} />
-                </div>
-                <p>
-                  Requested by <strong>{r.requestedBy.name}</strong> <i>·</i>{" "}
-                  {fmtWindow(r.pickupAt, r.returnAt)}
-                </p>
-                <div className="reservation-items">
-                  {r.items.map((i) => (
-                    <span key={i.lineId}>
-                      <Package size={13} />
-                      {i.quantity} × {i.name}
-                      {i.assignedAssets?.length
-                        ? ` · ${i.assignedAssets.map((a) => a.assetCode).join(", ")}`
-                        : ""}
+            <article
+              key={r.id}
+              className="rounded-xl border border-border bg-card p-4 sm:p-5 shadow-xs space-y-3"
+            >
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-border/60 pb-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-lg bg-primary/10 flex flex-col items-center justify-center text-primary font-bold text-xs shrink-0">
+                    <span>{DateTime.fromISO(r.pickupAt).setZone(TZ).toFormat("dd")}</span>
+                    <span className="text-[9px] uppercase font-semibold">
+                      {DateTime.fromISO(r.pickupAt).setZone(TZ).toFormat("LLL")}
                     </span>
-                  ))}
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-sm text-foreground">{r.borrower.name}</h3>
+                    <p className="text-xs text-muted-foreground">
+                      Requested by <strong className="text-foreground">{r.requestedBy.name}</strong>{" "}
+                      ({r.requestedBy.email})
+                    </p>
+                  </div>
                 </div>
-                {r.note && <div className="note-callout">“{r.note}”</div>}
+
+                <div className="flex items-center gap-2 self-start sm:self-center">
+                  <StatusBadge status={r.derivedStatus as DomainStatus} />
+                </div>
               </div>
-              <div className="reservation-side">
-                {r.status === "PENDING" ? (
-                  <>
-                    <button
-                      className="button button-primary"
-                      onClick={() => void openAllocation(r)}
-                    >
-                      <PackageCheck size={15} /> Assign assets
-                    </button>
-                    <button
-                      className="button button-quiet danger-text"
-                      onClick={() => act(r.id, "decline")}
-                    >
-                      Decline
-                    </button>
-                  </>
-                ) : (
-                  <span className="subtle compact-count">
-                    {r.collectedCount}/{r.totalQuantity} collected
+
+              <div className="flex flex-wrap items-center justify-between gap-4 text-xs text-muted-foreground">
+                <div className="flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-primary" />
+                  <span className="font-medium text-foreground">
+                    {fmtWindow(r.pickupAt, r.returnAt)}
                   </span>
+                </div>
+                {r.note && (
+                  <p className="text-xs text-foreground bg-surface-subtle px-2.5 py-1 rounded-md border border-border">
+                    Note: "{r.note}"
+                  </p>
                 )}
               </div>
-              {assigningId === r.id && r.status === "PENDING" && (
-                <div className="allocation-panel">
-                  <div className="allocation-heading">
-                    <div>
-                      <span className="eyebrow">ASSET ALLOCATION</span>
-                      <strong>Choose the physical units</strong>
-                    </div>
-                    <button
-                      className="icon-button"
-                      aria-label="Close asset allocation"
-                      onClick={() => setAssigningId("")}
+
+              <div className="flex flex-wrap gap-2 pt-1">
+                {r.items.map((item) => (
+                  <span
+                    key={item.lineId}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-surface-subtle border border-border text-xs text-foreground"
+                  >
+                    <Package className="w-3.5 h-3.5 text-muted-foreground" />
+                    <span>
+                      {item.quantity} × {item.name}
+                    </span>
+                    {item.assignedAssets && item.assignedAssets.length > 0 && (
+                      <span className="font-mono text-[10px] text-primary font-semibold">
+                        ({item.assignedAssets.map((a) => a.assetCode).join(", ")})
+                      </span>
+                    )}
+                  </span>
+                ))}
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-border/50">
+                {r.status === "PENDING" && (
+                  <>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => act(r.id, "decline")}
+                      className="text-xs text-destructive hover:bg-destructive/10"
                     >
-                      <X size={16} />
-                    </button>
-                  </div>
-                  {r.items.map((item) => {
-                    const line = candidates.find((candidate) => candidate.lineId === item.lineId);
-                    const selected = selectedAssets[item.lineId] ?? [];
-                    return (
-                      <div className="allocation-line" key={item.lineId}>
-                        <div className="allocation-line-title">
-                          <strong>{item.name}</strong>
-                          <small>
-                            Choose {item.quantity} of {line?.assets.length ?? 0} available
-                          </small>
-                        </div>
-                        <div className="allocation-options">
-                          {(line?.assets ?? []).map((asset) => {
-                            const checked = selected.includes(asset.id);
-                            return (
-                              <label
-                                className={`allocation-option ${checked ? "chosen" : ""}`}
-                                key={asset.id}
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={checked}
-                                  disabled={!checked && selected.length >= item.quantity}
-                                  onChange={() =>
-                                    setSelectedAssets((previous) => ({
-                                      ...previous,
-                                      [item.lineId]: checked
-                                        ? selected.filter((id) => id !== asset.id)
-                                        : [...selected, asset.id],
-                                    }))
-                                  }
-                                />
-                                <span>
-                                  <strong>{asset.assetCode}</strong>
-                                  <small>{asset.serialNumber ?? "No serial number"}</small>
-                                </span>
-                                <StatusPill status={asset.state} />
-                              </label>
-                            );
-                          })}
-                          {!line?.assets.length && (
-                            <p className="empty-inline">
-                              No assets are available for this requested time.
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                  <div className="allocation-footer">
-                    <span>Confirming reserves these exact assets for this time window.</span>
-                    <button
-                      className="button button-primary"
-                      onClick={() => void act(r.id, "approve")}
-                      disabled={r.items.some(
-                        (item) => (selectedAssets[item.lineId] ?? []).length !== item.quantity
-                      )}
+                      Decline
+                    </Button>
+                    <Button
+                      variant="default"
+                      size="sm"
+                      onClick={() => openAllocation(r)}
+                      className="text-xs gap-1.5"
                     >
-                      <Check size={15} /> Confirm allocation
-                    </button>
-                  </div>
-                </div>
-              )}
+                      <Check className="w-3.5 h-3.5" />
+                      <span>Assign assets</span>
+                    </Button>
+                  </>
+                )}
+              </div>
             </article>
           ))}
         </div>
       ) : (
         <EmptyState
-          icon={<ClipboardList />}
-          title="Nothing in this view"
-          body="Reservations that match this filter will appear here."
+          icon={ClipboardList}
+          title="No requests found"
+          description="There are currently no reservations matching this filter."
         />
       )}
-    </>
+
+      {/* Asset Allocation Dialog: Matches E2E test selectors & accessible dialog */}
+      <Dialog
+        open={Boolean(assigningReservation)}
+        onOpenChange={() => setAssigningReservation(null)}
+      >
+        <DialogContent className="max-w-lg p-6 bg-card border-border sm:rounded-2xl space-y-4">
+          <DialogHeader>
+            <DialogTitle>Assign assets</DialogTitle>
+            <DialogDescription>
+              Choose the physical units to allocate for {assigningReservation?.borrower.name}.
+            </DialogDescription>
+          </DialogHeader>
+
+          {assigningReservation && (
+            <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-1">
+              {assigningReservation.items.map((item) => {
+                const lineCandidates =
+                  candidates.find((c) => c.lineId === item.lineId)?.assets ?? [];
+                const currentAssigned = selectedAssets[item.lineId] ?? [];
+
+                return (
+                  <div
+                    key={item.lineId}
+                    className="p-3.5 rounded-xl border border-border bg-surface-subtle space-y-2"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-xs text-foreground">
+                        {item.quantity} × {item.name}
+                      </span>
+                      <span className="text-[11px] text-muted-foreground">
+                        Selected {currentAssigned.length} of {item.quantity}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 pt-1">
+                      {lineCandidates.map((asset) => {
+                        const isChecked = currentAssigned.includes(asset.id);
+                        return (
+                          <label
+                            key={asset.id}
+                            className={cn(
+                              "allocation-option flex items-center gap-2 p-2 rounded-lg border text-xs font-mono cursor-pointer transition-colors",
+                              isChecked
+                                ? "bg-primary/10 border-primary text-primary font-bold"
+                                : "bg-card border-input text-foreground hover:bg-muted"
+                            )}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={(e) => {
+                                const next = e.target.checked
+                                  ? [...currentAssigned, asset.id]
+                                  : currentAssigned.filter((id) => id !== asset.id);
+                                setSelectedAssets({ ...selectedAssets, [item.lineId]: next });
+                              }}
+                              className="rounded text-primary focus:ring-primary"
+                            />
+                            <span>{asset.assetCode}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="flex items-center justify-end gap-2 pt-2 border-t border-border">
+            <Button variant="outline" size="sm" onClick={() => setAssigningReservation(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="default"
+              size="sm"
+              onClick={() => assigningReservation && act(assigningReservation.id, "approve")}
+            >
+              Confirm allocation
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }
 
 function BoardCalendar() {
-  const [error, setError] = useState("");
-  const load = async (info: { start: Date; end: Date }): Promise<EventInput[]> => {
-    try {
-      const result = await api<
-        Array<{
-          id: string;
-          title: string;
-          start: string;
-          end: string;
-          status: string;
-          borrowerName: string;
-        }>
-      >(
-        `/api/v1/board/calendar?start=${encodeURIComponent(info.start.toISOString())}&end=${encodeURIComponent(info.end.toISOString())}`
-      );
-      const mapped = result.map((event) => ({
-        id: event.id,
-        title: event.title,
-        start: event.start,
-        end: event.end,
-        extendedProps: { status: event.status, borrowerName: event.borrowerName },
-      }));
-      setError("");
-      return mapped;
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not load calendar.");
-      return [];
-    }
+  const [events, setEvents] = useState<EventInput[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedEvent, setSelectedEvent] = useState<EventInput | null>(null);
+
+  useEffect(() => {
+    api<Reservation[]>("/api/v1/board/reservations")
+      .then((reservations) => {
+        // Section 20 Calendar Event State Colors:
+        // APPROVED → IEEE Blue (#00629B)
+        // BORROWED / ACTIVE → INSAT Violet (#981D97)
+        // RETURNING / due today → IEEE Cyan (#00B5E2)
+        // OVERDUE → Red (#BA0C2F)
+        const todayStr = DateTime.now().setZone(TZ).toISODate();
+        const calEvents: EventInput[] = reservations.map((r) => {
+          const isOverdue = r.derivedStatus === "OVERDUE";
+          const isReturningToday =
+            DateTime.fromISO(r.returnAt).setZone(TZ).toISODate() === todayStr;
+          const isBorrowed = ["ACTIVE", "BORROWED"].includes(r.status);
+          const isApproved = r.status === "APPROVED";
+
+          let bgColor = "#00629B"; // default IEEE Blue
+          if (isOverdue)
+            bgColor = "#BA0C2F"; // Red
+          else if (isBorrowed)
+            bgColor = "#981D97"; // INSAT Violet
+          else if (isReturningToday)
+            bgColor = "#00B5E2"; // IEEE Cyan
+          else if (isApproved) bgColor = "#00629B"; // IEEE Blue
+
+          const itemCodes = r.items
+            .map((i) =>
+              `${i.name} ${i.assignedAssets?.map((a) => a.assetCode).join(" ") || ""}`.trim()
+            )
+            .join(", ");
+
+          return {
+            id: r.id,
+            title: `${r.borrower.name} (${itemCodes})`,
+            start: r.pickupAt,
+            end: r.returnAt,
+            backgroundColor: bgColor,
+            borderColor: "transparent",
+            textColor: "#FFFFFF",
+            extendedProps: {
+              reservation: r,
+              borrower: r.borrower.name,
+              items: itemCodes,
+              status: r.derivedStatus,
+            },
+          };
+        });
+        setEvents(calEvents);
+      })
+      .catch(() => setEvents([]))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleEventClick = (info: EventClickArg) => {
+    setSelectedEvent(info.event.extendedProps);
   };
+
   return (
-    <>
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-6">
       <PageHeading
-        eyebrow="BOARD · CALENDAR"
-        title="Reservation calendar"
-        description="Approved asset reservations shown in Africa/Tunis time. Select month, week, or day."
-        action={
-          <span className="timezone-badge">
-            <span className="status-dot" /> Africa/Tunis · UTC+1
-          </span>
-        }
+        eyebrow="BOARD · SCHEDULE"
+        title="Reservation Calendar"
+        description="Temporal view of all approved, active, and pending equipment loans."
       />
-      {error && <InlineError message={error} />}
-      <section className="card calendar-card">
-        <FullCalendar
-          plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin, luxonPlugin]}
-          initialView="dayGridMonth"
-          timeZone={TZ}
-          locale="en-GB"
-          headerToolbar={{
-            left: "prev,next today",
-            center: "title",
-            right: "dayGridMonth,timeGridWeek,timeGridDay",
-          }}
-          buttonText={{ today: "Today", month: "Month", week: "Week", day: "Day" }}
-          events={load}
-          eventTimeFormat={{ hour: "2-digit", minute: "2-digit", hour12: false }}
-          height="auto"
-          nowIndicator
-          weekends
-        />
-      </section>
-      <div className="calendar-legend">
-        <span>
-          <i className="legend-dot approved" /> Approved / reserved
-        </span>
-        <span>
-          <i className="legend-dot borrowed" /> Checked out
-        </span>
-        <span>
-          <i className="legend-dot overdue" /> Past return time
-        </span>
+
+      {/* Calendar Legend: Section 20 */}
+      <div className="flex flex-wrap items-center gap-3 text-xs">
+        <span className="text-muted-foreground font-medium">Event Legend:</span>
+        <div className="flex items-center gap-1.5">
+          <span className="w-3 h-3 rounded-full bg-[#00629B]" />
+          <span>Approved</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="w-3 h-3 rounded-full bg-[#981D97]" />
+          <span>Borrowed</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="w-3 h-3 rounded-full bg-[#00B5E2]" />
+          <span>Due Today</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="w-3 h-3 rounded-full bg-[#BA0C2F]" />
+          <span>Overdue</span>
+        </div>
       </div>
-    </>
+
+      <div className="p-4 bg-card border border-border rounded-xl shadow-xs">
+        {loading ? (
+          <LoadingState message="Loading calendar schedule…" />
+        ) : (
+          <FullCalendar
+            plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin, luxonPlugin]}
+            initialView="timeGridWeek"
+            timeZone={TZ}
+            headerToolbar={{
+              left: "prev,next today",
+              center: "title",
+              right: "dayGridMonth,timeGridWeek,timeGridDay",
+            }}
+            events={events}
+            eventClick={handleEventClick}
+            height="auto"
+          />
+        )}
+      </div>
+
+      {/* Event Details Dialog */}
+      <Dialog open={Boolean(selectedEvent)} onOpenChange={() => setSelectedEvent(null)}>
+        <DialogContent className="max-w-md p-6 bg-card border-border sm:rounded-2xl space-y-3">
+          <DialogHeader>
+            <DialogTitle>{selectedEvent?.borrower}</DialogTitle>
+            <DialogDescription>Reservation Schedule Details</DialogDescription>
+          </DialogHeader>
+          {selectedEvent && (
+            <div className="space-y-3 text-xs text-foreground">
+              <div>
+                <span className="text-muted-foreground block font-medium">Status</span>
+                <StatusBadge status={selectedEvent.status as DomainStatus} className="mt-1" />
+              </div>
+              <div>
+                <span className="text-muted-foreground block font-medium">Equipment Assigned</span>
+                <p className="font-semibold text-sm mt-0.5">{selectedEvent.items}</p>
+              </div>
+              <div>
+                <span className="text-muted-foreground block font-medium">Window</span>
+                <p className="mt-0.5">
+                  {fmtWindow(
+                    selectedEvent.reservation.pickupAt,
+                    selectedEvent.reservation.returnAt
+                  )}
+                </p>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }
 
@@ -1533,7 +1909,15 @@ function BoardInventory({ setNotice }: { setNotice: (message: string) => void })
   const [assetCodes, setAssetCodes] = useState<Record<string, string>>({});
   const [open, setOpen] = useState("");
   const [search, setSearch] = useState("");
-  const [printAssetId, setPrintAssetId] = useState("");
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [selectedSticker, setSelectedSticker] = useState<AssetStickerData | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<{
+    type: "equipment" | "asset";
+    id: string;
+    name: string;
+  } | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+
   const refresh = useCallback(
     () =>
       api<InventoryItem[]>("/api/v1/board/inventory")
@@ -1542,14 +1926,11 @@ function BoardInventory({ setNotice }: { setNotice: (message: string) => void })
         .finally(() => setLoading(false)),
     [setNotice]
   );
+
   useEffect(() => {
     void refresh();
   }, [refresh]);
-  useEffect(() => {
-    const clearPrintTarget = () => setPrintAssetId("");
-    window.addEventListener("afterprint", clearPrintTarget);
-    return () => window.removeEventListener("afterprint", clearPrintTarget);
-  }, []);
+
   const createEquipment = async (event: FormEvent) => {
     event.preventDefault();
     try {
@@ -1560,6 +1941,7 @@ function BoardInventory({ setNotice }: { setNotice: (message: string) => void })
       setName("");
       setCategory("");
       setDescription("");
+      setShowAddModal(false);
       setNotice("Equipment type added to inventory.");
       setOpen(item.id);
       refresh();
@@ -1567,6 +1949,7 @@ function BoardInventory({ setNotice }: { setNotice: (message: string) => void })
       setNotice(e instanceof Error ? e.message : "Could not add equipment.");
     }
   };
+
   const addAsset = async (event: FormEvent, item: InventoryItem) => {
     event.preventDefault();
     const assetCode = assetCodes[item.id]?.trim();
@@ -1580,352 +1963,347 @@ function BoardInventory({ setNotice }: { setNotice: (message: string) => void })
       setNotice(e instanceof Error ? e.message : "Could not add asset.");
     }
   };
+
   const toggleEquipment = async (item: InventoryItem) => {
     try {
       await api(`/api/v1/board/equipment/${item.id}`, patch({ active: !item.active }));
-      setNotice(
-        item.active ? "Equipment type hidden from new reservations." : "Equipment type reactivated."
-      );
+      setNotice(item.active ? "Equipment hidden from new reservations." : "Equipment reactivated.");
       refresh();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not update equipment.");
     }
   };
+
   const setAssetState = async (assetId: string, state: string) => {
     try {
       await api(`/api/v1/board/assets/${assetId}`, patch({ state }));
-      setNotice(`Asset status changed to ${titleCase(state.replaceAll("_", " "))}.`);
+      setNotice(`Asset status updated to ${titleCase(state)}.`);
       refresh();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not update asset state.");
     }
   };
+
+
   const filtered = inventory.filter(
     (item) =>
       item.name.toLowerCase().includes(search.toLowerCase()) ||
       item.category.toLowerCase().includes(search.toLowerCase())
   );
+
   return (
-    <>
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-6">
       <PageHeading
         eyebrow="BOARD · INVENTORY"
-        title="Equipment inventory"
-        description="Manage equipment types, individually tracked assets, and printable QR labels."
+        title="Equipment Inventory"
+        description="Manage equipment types, individually tracked physical assets, and printable QR labels."
         action={
-          <a className="button button-dark" href="#new-equipment">
-            <Plus size={16} /> Add equipment
-          </a>
+          <Button
+            variant="default"
+            size="sm"
+            onClick={() => setShowAddModal(true)}
+            className="gap-2"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Add Equipment</span>
+          </Button>
         }
       />
-      <div className="inventory-summary">
-        <span>
-          <Package size={17} /> <strong>{inventory.length}</strong> equipment types
-        </span>
-        <span>
-          <QrCode size={17} />{" "}
-          <strong>{inventory.reduce((s, item) => s + item.assets.length, 0)}</strong> tracked assets
-        </span>
-        <label className="search-box">
-          <Search size={16} />
-          <input
-            aria-label="Search inventory"
+
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <Badge variant="outline" className="px-3 py-1 text-xs font-semibold gap-1.5">
+            <Package className="w-3.5 h-3.5 text-primary" />
+            <span>{inventory.length} Types</span>
+          </Badge>
+          <Badge variant="outline" className="px-3 py-1 text-xs font-semibold gap-1.5">
+            <QrCode className="w-3.5 h-3.5 text-primary" />
+            <span>{inventory.reduce((s, i) => s + i.assets.length, 0)} Tracked Assets</span>
+          </Badge>
+        </div>
+
+        <div className="w-full sm:w-72">
+          <SearchInput
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Find equipment"
+            onClear={() => setSearch("")}
+            placeholder="Search inventory..."
           />
-        </label>
-      </div>
-      {loading ? (
-        <div className="loading-panel">
-          <span className="spinner" /> Loading inventory…
         </div>
+      </div>
+
+      {loading ? (
+        <LoadingState message="Loading inventory items…" />
       ) : (
-        <div className="inventory-list">
+        <div className="space-y-4">
           {filtered.map((item) => (
-            <article className="inventory-card" key={item.id}>
-              <div className="inventory-item-head">
-                <div className="inventory-symbol">
-                  <Cpu size={20} />
-                </div>
-                <div className="inventory-main">
-                  <div className="inventory-name-row">
-                    <h3>{item.name}</h3>
-                    <span className="category-tag static-tag">{item.category}</span>
+            <article
+              key={item.id}
+              className="rounded-xl border border-border bg-card p-4 sm:p-5 shadow-xs space-y-4"
+            >
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-lg bg-surface-subtle p-1 flex items-center justify-center border border-border overflow-hidden shrink-0">
+                    <img
+                      src={item.imageUrl || "/equipment/fallback.svg"}
+                      alt=""
+                      className="w-full h-full object-contain"
+                      onError={(e) => {
+                        e.currentTarget.src = "/equipment/fallback.svg";
+                      }}
+                    />
                   </div>
-                  <p>{item.description || "No description added."}</p>
-                </div>
-                <div className="inventory-count">
-                  <strong>
-                    {item.assets.filter((asset) => asset.state === "AVAILABLE").length}
-                  </strong>
-                  <small>available</small>
-                </div>
-                <button
-                  className="button button-quiet equipment-toggle"
-                  onClick={() => void toggleEquipment(item)}
-                >
-                  {item.active ? "Disable" : "Reactivate"}
-                </button>
-                <button
-                  className="icon-button"
-                  aria-label={`Manage ${item.name}`}
-                  onClick={() => setOpen(open === item.id ? "" : item.id)}
-                >
-                  {open === item.id ? <X size={17} /> : <Settings2 size={17} />}
-                </button>
-              </div>
-              {open === item.id && (
-                <div className="asset-panel">
-                  <div className="asset-panel-head">
-                    <strong>
-                      Individual assets <small>· {item.assets.length}</small>
-                    </strong>
-                    <form className="inline-add" onSubmit={(event) => addAsset(event, item)}>
-                      <input
-                        className="text-input"
-                        aria-label="New asset code"
-                        placeholder="Asset code, e.g. SB-014"
-                        value={assetCodes[item.id] ?? ""}
-                        onChange={(e) =>
-                          setAssetCodes({ ...assetCodes, [item.id]: e.target.value })
-                        }
-                      />
-                      <button
-                        className="button button-primary"
-                        disabled={!assetCodes[item.id]?.trim()}
-                      >
-                        <Plus size={15} /> Add asset
-                      </button>
-                    </form>
-                  </div>
-                  {item.assets.length ? (
-                    <div className="asset-grid">
-                      {item.assets.map((asset) => (
-                        <div
-                          className="asset-tile"
-                          key={asset.id}
-                          data-printing={printAssetId === asset.id}
-                        >
-                          <div className="asset-tile-top">
-                            <div>
-                              <strong>{asset.assetCode}</strong>
-                              <small>{asset.serialNumber ?? "No serial number"}</small>
-                            </div>
-                            {["AVAILABLE", "OUT_OF_SERVICE", "RETIRED"].includes(asset.state) ? (
-                              <select
-                                className="asset-state-select"
-                                aria-label={`Status for ${asset.assetCode}`}
-                                value={asset.state}
-                                disabled={asset.state === "RETIRED"}
-                                onChange={(event) =>
-                                  void setAssetState(asset.id, event.target.value)
-                                }
-                              >
-                                <option value="AVAILABLE">Available</option>
-                                <option value="OUT_OF_SERVICE">Out of service</option>
-                                <option value="RETIRED">Retired</option>
-                              </select>
-                            ) : (
-                              <StatusPill status={asset.state} />
-                            )}
-                          </div>
-                          <div className="qr-label">
-                            <QRCodeSVG value={asset.qrUrl} size={78} level="M" />
-                            <span>
-                              IEEE INSAT SB
-                              <br />
-                              <strong>{asset.assetCode}</strong>
-                            </span>
-                            <button
-                              className="icon-button print-button"
-                              title="Print QR label"
-                              onClick={() => {
-                                setPrintAssetId(asset.id);
-                                window.setTimeout(() => window.print(), 40);
-                              }}
-                            >
-                              <QrCode size={15} />
-                            </button>
-                          </div>
-                        </div>
-                      ))}
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-bold text-sm text-foreground">{item.name}</h3>
+                      <Badge variant="secondary" className="text-[10px]">
+                        {item.category}
+                      </Badge>
                     </div>
-                  ) : (
-                    <p className="empty-inline">
-                      No individual assets yet. Add an asset code to generate its unique QR label.
-                    </p>
-                  )}
+                    <p className="text-xs text-muted-foreground mt-0.5">{item.description}</p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 self-end sm:self-center">
+                  <div className="text-right mr-2">
+                    <div className="text-xs font-bold text-foreground">
+                      {item.assets.filter((a) => a.state === "AVAILABLE").length} /{" "}
+                      {item.assets.length}
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">Available</div>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => toggleEquipment(item)}
+                    className="text-xs"
+                  >
+                    {item.active ? "Disable" : "Reactivate"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setDeleteConfirm({ type: "equipment", id: item.id, name: item.name })}
+                    className="text-xs text-destructive border-destructive/30 hover:bg-destructive/10 hover:text-destructive gap-1"
+                    title="Permanently delete this equipment type"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete</span>
+                  </Button>
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={() => setOpen(open === item.id ? "" : item.id)}
+                    className="text-xs gap-1.5"
+                  >
+                    <Settings2 className="w-3.5 h-3.5" />
+                    <span>Assets ({item.assets.length})</span>
+                  </Button>
+                </div>
+              </div>
+
+              {open === item.id && (
+                <div className="pt-3 border-t border-border/60 space-y-3 animate-in fade-in duration-150">
+                  <form onSubmit={(e) => addAsset(e, item)} className="flex items-center gap-2">
+                    <Input
+                      placeholder="New Asset Code (e.g. PRJ-004)"
+                      value={assetCodes[item.id] ?? ""}
+                      onChange={(e) => setAssetCodes({ ...assetCodes, [item.id]: e.target.value })}
+                      className="text-xs font-mono max-w-xs"
+                    />
+                    <Button type="submit" variant="default" size="sm" className="text-xs">
+                      <Plus className="w-3.5 h-3.5 mr-1" /> Add Asset
+                    </Button>
+                  </form>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                    {item.assets.map((asset) => (
+                      <div
+                        key={asset.id}
+                        className="flex items-center justify-between p-2.5 rounded-lg border border-border bg-surface-subtle text-xs gap-2"
+                      >
+                        <div className="flex items-center gap-2 font-mono font-bold text-foreground min-w-0 truncate">
+                          <QrCode className="w-3.5 h-3.5 text-primary shrink-0" />
+                          <span className="truncate">{asset.assetCode}</span>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() =>
+                              setSelectedSticker({
+                                id: asset.id,
+                                assetCode: asset.assetCode,
+                                equipmentName: item.name,
+                                category: item.category,
+                                serialNumber: asset.serialNumber,
+                                qrUrl: asset.qrUrl,
+                              })
+                            }
+                            className="text-[11px] h-7 px-2 font-semibold text-primary border-primary/30 hover:bg-primary/5 gap-1"
+                            title="View and print printable QR sticker label"
+                          >
+                            <QrCode className="w-3 h-3" />
+                            <span>Sticker</span>
+                          </Button>
+
+                          <select
+                            value={asset.state}
+                            onChange={(e) => setAssetState(asset.id, e.target.value)}
+                            className="text-[11px] font-semibold bg-card border border-input rounded px-2 py-1"
+                          >
+                            <option value="AVAILABLE">Available</option>
+                            <option value="OUT_OF_SERVICE">Out of Service</option>
+                            <option value="RETIRED">Retired</option>
+                            {["BORROWED", "RESERVED"].includes(asset.state) && (
+                              <option value={asset.state} disabled>
+                                {titleCase(asset.state)}
+                              </option>
+                            )}
+                          </select>
+
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setDeleteConfirm({ type: "asset", id: asset.id, name: asset.assetCode })}
+                            className="text-[11px] h-7 px-2 text-destructive border-destructive/30 hover:bg-destructive/10 hover:text-destructive gap-1"
+                            title="Permanently delete this asset"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </article>
           ))}
         </div>
       )}
-      <form id="new-equipment" className="card create-equipment" onSubmit={createEquipment}>
-        <div>
-          <span className="eyebrow">NEW EQUIPMENT TYPE</span>
-          <h2>Add an equipment type</h2>
-          <p className="subtle">Then add individual assets to create their desk labels.</p>
-        </div>
-        <div className="new-equipment-fields">
-          <label>
-            <span>Name</span>
-            <input
-              className="text-input"
-              required
-              maxLength={160}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Soldering station"
-            />
-          </label>
-          <label>
-            <span>Category</span>
-            <input
-              className="text-input"
-              required
-              maxLength={80}
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
-              placeholder="e.g. Workshop"
-            />
-          </label>
-          <label>
-            <span>Description</span>
-            <input
-              className="text-input"
-              maxLength={1000}
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="Short note for members"
-            />
-          </label>
-          <button className="button button-dark">
-            <Plus size={15} /> Create type
-          </button>
-        </div>
-      </form>
-    </>
-  );
-}
 
-function BoardChapters({ setNotice }: { setNotice: (message: string) => void }) {
-  const [chapters, setChapters] = useState<
-    Array<{ id: string; name: string; shortCode: string; active: boolean }>
-  >([]);
-  const [name, setName] = useState("");
-  const [shortCode, setShortCode] = useState("");
-  const refresh = useCallback(
-    () =>
-      api<Array<{ id: string; name: string; shortCode: string; active: boolean }>>(
-        "/api/v1/board/chapters"
-      )
-        .then(setChapters)
-        .catch((error: Error) => setNotice(error.message)),
-    [setNotice]
-  );
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-  const create = async (event: FormEvent) => {
-    event.preventDefault();
-    try {
-      await api("/api/v1/board/chapters", post({ name, shortCode }));
-      setName("");
-      setShortCode("");
-      setNotice("Chapter added for future reservations.");
-      refresh();
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Could not add chapter.");
-    }
-  };
-  const toggle = async (chapter: (typeof chapters)[number]) => {
-    try {
-      await api(`/api/v1/board/chapters/${chapter.id}`, patch({ active: !chapter.active }));
-      setNotice(chapter.active ? "Chapter disabled for new reservations." : "Chapter reactivated.");
-      refresh();
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Could not update chapter.");
-    }
-  };
-  return (
-    <>
-      <PageHeading
-        eyebrow="BOARD · CHAPTERS"
-        title="Chapter borrowers"
-        description="Active chapters can request equipment as a group borrower. Past reservations keep their chapter history."
-      />
-      <div className="chapter-layout">
-        <section className="card chapter-directory">
-          <div className="card-heading">
-            <div>
-              <span className="eyebrow">ELIGIBLE BORROWERS</span>
-              <h2>{chapters.filter((chapter) => chapter.active).length} active chapters</h2>
-            </div>
-            <Users size={19} className="subtle" />
-          </div>
-          <div className="chapter-list">
-            {chapters.map((chapter) => (
-              <div className="chapter-row" key={chapter.id}>
-                <span className="chapter-mark">{chapter.shortCode.slice(0, 2)}</span>
-                <div>
-                  <strong>{chapter.name}</strong>
-                  <small>{chapter.shortCode}</small>
-                </div>
-                <StatusPill status={chapter.active ? "AVAILABLE" : "RETIRED"} />
-                <button className="button button-quiet" onClick={() => void toggle(chapter)}>
-                  {chapter.active ? "Disable" : "Reactivate"}
-                </button>
-              </div>
-            ))}
-            {!chapters.length && (
-              <EmptyState
-                icon={<Users />}
-                title="No chapters yet"
-                body="Add a chapter so members can make shared reservations."
+      {/* Add Equipment Modal */}
+      <Dialog open={showAddModal} onOpenChange={setShowAddModal}>
+        <DialogContent className="max-w-md p-6 bg-card border-border sm:rounded-2xl">
+          <DialogHeader>
+            <DialogTitle>Add Equipment Type</DialogTitle>
+            <DialogDescription>
+              Define a new category of equipment in the catalogue.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={createEquipment} className="space-y-4 pt-2">
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-foreground">Name</label>
+              <Input
+                required
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. HDMI Cable 5m"
               />
-            )}
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-foreground">Category</label>
+              <Input
+                required
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                placeholder="e.g. Cables & Adapters"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-foreground">Description</label>
+              <Input
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Specifications, details, requirements..."
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button type="button" variant="outline" onClick={() => setShowAddModal(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" variant="default">
+                Create Equipment
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Asset Printable QR Sticker Modal */}
+      <AssetQrStickerModal
+        asset={selectedSticker}
+        isOpen={Boolean(selectedSticker)}
+        onClose={() => setSelectedSticker(null)}
+      />
+
+      {/* Delete Confirmation Modal */}
+      <Dialog
+        open={Boolean(deleteConfirm)}
+        onOpenChange={(open) => {
+          if (!open && !deleteBusy) setDeleteConfirm(null);
+        }}
+      >
+        <DialogContent className="max-w-md p-6 bg-card border-border sm:rounded-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-destructive flex items-center gap-2">
+              <Trash2 className="w-5 h-5" />
+              <span>
+                Delete {deleteConfirm?.type === "equipment" ? "Equipment" : "Tracked Asset"}?
+              </span>
+            </DialogTitle>
+            <DialogDescription>
+              {deleteConfirm?.type === "equipment"
+                ? `Are you sure you want to permanently delete "${deleteConfirm?.name}" and all its physical assets? This cannot be undone.`
+                : `Are you sure you want to permanently delete asset "${deleteConfirm?.name}"? This cannot be undone.`}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2 pt-4">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setDeleteConfirm(null)}
+              disabled={deleteBusy}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={deleteBusy}
+              onClick={async () => {
+                if (!deleteConfirm) return;
+                setDeleteBusy(true);
+                try {
+                  if (deleteConfirm.type === "equipment") {
+                    await api(`/api/v1/board/equipment/${deleteConfirm.id}`, { method: "DELETE" });
+                    setNotice(`Equipment "${deleteConfirm.name}" permanently deleted.`);
+                  } else {
+                    await api(`/api/v1/board/assets/${deleteConfirm.id}`, { method: "DELETE" });
+                    setNotice(`Asset "${deleteConfirm.name}" permanently deleted.`);
+                  }
+                  setDeleteConfirm(null);
+                  refresh();
+                } catch (err) {
+                  setNotice(err instanceof Error ? err.message : "Deletion failed.");
+                } finally {
+                  setDeleteBusy(false);
+                }
+              }}
+            >
+              {deleteBusy ? "Deleting…" : "Delete Permanently"}
+            </Button>
           </div>
-        </section>
-        <form className="card chapter-create" onSubmit={create}>
-          <span className="eyebrow">ADD A BORROWER</span>
-          <h2>Register a chapter</h2>
-          <p className="subtle">
-            Use the chapter name and a short code the Board will recognize at handover.
-          </p>
-          <label className="field-label">
-            Chapter name
-            <input
-              className="text-input"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              maxLength={120}
-              required
-              placeholder="Robotics Club"
-            />
-          </label>
-          <label className="field-label">
-            Short code
-            <input
-              className="text-input"
-              value={shortCode}
-              onChange={(event) => setShortCode(event.target.value.toUpperCase())}
-              maxLength={24}
-              minLength={2}
-              pattern="[A-Za-z0-9-]+"
-              required
-              placeholder="ROBO"
-            />
-          </label>
-          <button className="button button-primary wide">
-            <Plus size={15} /> Add chapter
-          </button>
-        </form>
-      </div>
-    </>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }
 
+// Section 21, 22, 23: Dedicated QR Scanner Implementation
 function BoardScan({
   initialToken,
   setNotice,
@@ -1935,6 +2313,7 @@ function BoardScan({
 }) {
   const [token, setToken] = useState(initialToken);
   const [busy, setBusy] = useState(false);
+  const [scanError, setScanError] = useState<{ title: string; message: string } | null>(null);
   const [result, setResult] = useState<{
     operation: string;
     assetName: string;
@@ -1945,11 +2324,13 @@ function BoardScan({
   const video = useRef<HTMLVideoElement>(null);
   const controls = useRef<{ stop: () => void } | null>(null);
   const reader = useRef<BrowserQRCodeReader | null>(null);
+
   const stop = () => {
     controls.current?.stop();
     controls.current = null;
   };
   useEffect(() => () => stop(), []);
+
   const beginCamera = async () => {
     if (!video.current) return;
     try {
@@ -1967,14 +2348,16 @@ function BoardScan({
       );
     } catch (e) {
       setNotice(
-        e instanceof Error ? e.message : "Camera is unavailable. Use the asset token below instead."
+        e instanceof Error ? e.message : "Camera is unavailable. Use manual token entry below."
       );
     }
   };
+
   const scan = async (event?: FormEvent) => {
     event?.preventDefault();
     setBusy(true);
     setResult(null);
+    setScanError(null);
     const value = token.match(/[a-f0-9]{64}/i)?.[0] ?? token.trim();
     try {
       const scanned = await api<typeof result>("/api/v1/board/scan", {
@@ -1988,274 +2371,747 @@ function BoardScan({
           : "Equipment checked out."
       );
     } catch (e) {
-      setNotice(e instanceof Error ? e.message : "Scan could not be processed.");
+      const msg = e instanceof Error ? e.message : "Scan could not be processed.";
+      setScanError({
+        title: msg.includes("cooldown") ? "Scan cooldown active" : "Handover rejected",
+        message: msg,
+      });
     } finally {
       setBusy(false);
     }
   };
+
   return (
-    <>
-      <PageHeading
-        eyebrow="BOARD · HANDOVER"
-        title="Equipment scanner"
-        description="Scan the asset when it leaves the desk and again when it comes back."
-        action={
-          <span className="timezone-badge">
-            <ShieldCheck size={15} /> Board-only operation
-          </span>
-        }
-      />
-      <div className="scanner-layout">
-        <section className="card scanner-card">
-          <div className="scanner-heading">
-            <span className="scanner-icon">
-              <QrCode size={21} />
-            </span>
-            <div>
-              <span className="eyebrow">CAMERA SCANNER</span>
-              <h2>Point at an asset label</h2>
-              <p>Keep the QR code inside the frame. Camera access stays in this browser.</p>
-            </div>
+    <div className="max-w-2xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-6">
+      {/* Top Header */}
+      <div className="flex items-center justify-between pb-4 border-b border-border/70">
+        <div>
+          <div className="text-[11px] font-bold uppercase tracking-wider text-primary mb-1">
+            BOARD · HANDOVER
           </div>
-          <div className="camera-frame">
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">Scan equipment</h1>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Operational scanner for equipment checkouts and returns.
+          </p>
+        </div>
+        <Button asChild variant="outline" size="sm" className="gap-1.5">
+          <Link to="/board">
+            <ArrowLeft className="w-4 h-4" />
+            <span>Dashboard</span>
+          </Link>
+        </Button>
+      </div>
+
+      {/* Section 21: Scanner Visual Identity (Base Navy #002855, Viewfinder Cyan #00B5E2) */}
+      <div className="rounded-2xl bg-[#002855] text-white p-6 shadow-elevation space-y-5 border border-[#003B7A]">
+        {/* Camera Viewport with Dominant Viewfinder */}
+        <div className="relative aspect-video w-full rounded-xl bg-black/80 overflow-hidden flex items-center justify-center border-2 border-[#00B5E2]/40">
+          <video
+            ref={video}
+            muted
+            playsInline
+            className="w-full h-full object-cover"
+            aria-label="QR scanner preview"
+          />
+
+          {/* Cyan Scanner Frame Reticle */}
+          <div className="absolute inset-8 sm:inset-12 pointer-events-none flex flex-col justify-between">
+            <div className="flex justify-between">
+              <span className="w-6 h-6 border-t-2 border-l-2 border-[#00B5E2]" />
+              <span className="w-6 h-6 border-t-2 border-r-2 border-[#00B5E2]" />
+            </div>
             {!controls.current && (
-              <div className="camera-placeholder">
-                <div className="camera-corners">
-                  <i />
-                  <i />
-                  <i />
-                  <i />
-                </div>
-                <span className="camera-placeholder-icon">
-                  <QrCode size={31} />
-                </span>
-                <p>Camera preview appears here</p>
-                <small>Allow camera access when your browser asks.</small>
+              <div className="text-center space-y-1">
+                <QrCode className="w-10 h-10 text-[#00B5E2] mx-auto animate-pulse" />
+                <p className="text-xs text-white/90 font-medium">Keep QR code inside frame</p>
               </div>
             )}
-            <video
-              ref={video}
-              muted
-              playsInline
-              className="scanner-video"
-              aria-label="QR scanner preview"
-            />
+            <div className="flex justify-between">
+              <span className="w-6 h-6 border-b-2 border-l-2 border-[#00B5E2]" />
+              <span className="w-6 h-6 border-b-2 border-r-2 border-[#00B5E2]" />
+            </div>
           </div>
-          <div className="scanner-actions">
-            <button
-              className="button button-primary"
-              onClick={controls.current ? stop : beginCamera}
-            >
-              {controls.current ? (
-                <>
-                  <X size={16} /> Stop camera
-                </>
+        </div>
+
+        {/* Camera Controls */}
+        <div className="flex items-center justify-center gap-3">
+          <Button
+            variant="scanner"
+            size="sm"
+            onClick={controls.current ? stop : beginCamera}
+            className="gap-2 px-5 min-h-[44px]"
+          >
+            <QrCode className="w-4 h-4" />
+            <span>{controls.current ? "Stop Camera" : "Start Camera"}</span>
+          </Button>
+        </div>
+
+        {/* Manual Token Fallback */}
+        <form onSubmit={scan} className="flex gap-2 pt-2 border-t border-white/15">
+          <Input
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            placeholder="Paste 64-char QR token or label URL..."
+            className="font-mono text-xs flex-1 bg-white/10 text-white placeholder:text-white/50 border-white/20 focus-visible:ring-[#00B5E2]"
+          />
+          <Button
+            type="submit"
+            variant="scanner"
+            size="sm"
+            disabled={busy || !token.trim()}
+            className="shrink-0"
+          >
+            {busy ? "Processing…" : "Record Handover"}
+          </Button>
+        </form>
+
+        {/* Section 22: Scanner Success State */}
+        {result && (
+          <div className="p-4 rounded-xl border border-emerald-400/40 bg-emerald-950/80 text-white space-y-2 animate-in fade-in duration-200 shadow-sm">
+            <div className="flex items-center gap-2 font-bold text-sm text-emerald-300">
+              <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+              <span>✓ {result.operation === "RETURNED" ? "Returned" : "Checked out"}</span>
+            </div>
+            <div className="text-xs space-y-0.5 pl-7">
+              <p className="font-semibold text-white">
+                {result.assetName} #{result.assetCode}
+              </p>
+              {result.operation === "RETURNED" ? (
+                <p className="text-emerald-300">is available again</p>
               ) : (
                 <>
-                  <QrCode size={16} /> Start camera
+                  {result.borrowerName && <p className="text-white/80">{result.borrowerName}</p>}
+                  {result.returnAt && (
+                    <p className="text-emerald-300">
+                      Return: {fmtDay(result.returnAt)} · {fmtTime(result.returnAt)}
+                    </p>
+                  )}
                 </>
               )}
-            </button>
-            <span>or enter a label token</span>
+            </div>
           </div>
-          <form className="token-entry" onSubmit={scan}>
-            <input
-              className="text-input mono-input"
-              aria-label="QR asset token"
-              placeholder="Paste QR URL or token"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-            />
-            <button className="button button-dark" disabled={busy || !token.trim()}>
-              {busy ? "Recording…" : "Record handover"}
-              <ArrowRight size={15} />
-            </button>
-          </form>
-          {result && (
-            <div className="scan-result">
-              <span className="scan-result-icon">
-                <Check size={18} />
-              </span>
-              <div>
-                <strong>
-                  {result.operation === "RETURNED" ? "Returned to the desk" : "Checked out"} ·{" "}
-                  {result.assetCode}
-                </strong>
-                <p>
-                  {result.assetName}
-                  {result.borrowerName ? ` · ${result.borrowerName}` : ""}
-                  {result.returnAt
-                    ? ` · Due ${fmtWindow(new Date().toISOString(), result.returnAt)}`
-                    : ""}
-                </p>
+        )}
+
+        {/* Section 23: Reusable Scanner Error State */}
+        {scanError && (
+          <div className="p-4 rounded-xl border border-rose-400/40 bg-rose-950/80 text-white space-y-2 animate-in fade-in duration-200 shadow-sm">
+            <div className="flex items-center gap-2 font-bold text-sm text-rose-300">
+              <XCircle className="w-5 h-5 text-rose-400 shrink-0" />
+              <span>{scanError.title}</span>
+            </div>
+            <p className="text-xs text-white/90 pl-7">{scanError.message}</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BoardChapters({ setNotice }: { setNotice: (message: string) => void }) {
+  const [chapters, setChapters] = useState<Array<{ id: string; name: string; shortCode: string; active: boolean }>>([]);
+  const [name, setName] = useState("");
+  const [shortCode, setShortCode] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+
+  const refresh = useCallback(() => {
+    return api<typeof chapters>("/api/v1/board/chapters")
+      .then(setChapters)
+      .catch(() => setChapters([]))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const addChapter = async (e: FormEvent) => {
+    e.preventDefault();
+    try {
+      await api("/api/v1/board/chapters", post({ name, shortCode }));
+      setName("");
+      setShortCode("");
+      setNotice(`Chapter ${name} created.`);
+      refresh();
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "Could not create chapter.");
+    }
+  };
+
+  const toggleChapter = async (ch: { id: string; name: string; active: boolean }) => {
+    try {
+      await api(`/api/v1/board/chapters/${ch.id}`, patch({ active: !ch.active }));
+      setNotice(ch.active ? `${ch.name} deactivated.` : `${ch.name} reactivated.`);
+      refresh();
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "Could not update chapter.");
+    }
+  };
+
+  return (
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-6">
+      <PageHeading
+        eyebrow="BOARD · CHAPTERS"
+        title="Chapter Borrowers"
+        description="Technical chapters, affinity groups, and student branches authorized for group reservations."
+      />
+
+      <form
+        onSubmit={addChapter}
+        className="flex gap-2 p-4 rounded-xl border border-border bg-card shadow-xs"
+      >
+        <Input
+          placeholder="Chapter Name (e.g. Computer Society Chapter)"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          required
+          className="text-xs flex-1"
+        />
+        <Input
+          placeholder="Short Code (e.g. CS)"
+          value={shortCode}
+          onChange={(e) => setShortCode(e.target.value)}
+          required
+          className="text-xs w-32 font-mono uppercase"
+        />
+        <Button type="submit" variant="default" size="sm" className="text-xs shrink-0">
+          <Plus className="w-3.5 h-3.5 mr-1" /> Add Chapter
+        </Button>
+      </form>
+
+      {loading ? (
+        <LoadingState message="Loading chapters…" />
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {chapters.map((ch) => (
+            <div
+              key={ch.id}
+              className="p-4 rounded-xl border border-border bg-card shadow-xs flex items-center justify-between gap-2"
+            >
+              <div className="min-w-0">
+                <h3 className={cn("font-bold text-sm", ch.active ? "text-foreground" : "text-muted-foreground line-through")}>
+                  {ch.name}
+                </h3>
+                <span className="font-mono text-xs text-primary font-bold">{ch.shortCode}</span>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => toggleChapter(ch)}
+                  className="text-[11px] h-7 px-2"
+                >
+                  {ch.active ? "Disable" : "Enable"}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setDeleteTarget(ch)}
+                  className="text-[11px] h-7 px-2 text-destructive border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
+                  title="Permanently delete this chapter"
+                >
+                  <Trash2 className="w-3 h-3" />
+                </Button>
               </div>
             </div>
-          )}
-        </section>
-        <aside className="card scan-help">
-          <span className="eyebrow">AT THE DESK</span>
-          <h2>One code, two moments.</h2>
-          <div className="scan-step">
-            <span>01</span>
-            <div>
-              <strong>Collection</strong>
-              <p>
-                Scan an approved asset after checking its condition. The reservation window must
-                have started.
-              </p>
-            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Delete Chapter Modal */}
+      <Dialog
+        open={Boolean(deleteTarget)}
+        onOpenChange={(open) => {
+          if (!open && !deleteBusy) setDeleteTarget(null);
+        }}
+      >
+        <DialogContent className="max-w-md p-6 bg-card border-border sm:rounded-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-destructive flex items-center gap-2">
+              <Trash2 className="w-5 h-5" />
+              <span>Delete Chapter?</span>
+            </DialogTitle>
+            <DialogDescription>
+              Are you sure you want to permanently delete chapter &ldquo;{deleteTarget?.name}&rdquo;? This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2 pt-4">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setDeleteTarget(null)}
+              disabled={deleteBusy}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={deleteBusy}
+              onClick={async () => {
+                if (!deleteTarget) return;
+                setDeleteBusy(true);
+                try {
+                  await api(`/api/v1/board/chapters/${deleteTarget.id}`, { method: "DELETE" });
+                  setNotice(`Chapter "${deleteTarget.name}" deleted.`);
+                  setDeleteTarget(null);
+                  refresh();
+                } catch (err) {
+                  setNotice(err instanceof Error ? err.message : "Could not delete chapter.");
+                } finally {
+                  setDeleteBusy(false);
+                }
+              }}
+            >
+              {deleteBusy ? "Deleting…" : "Delete Permanently"}
+            </Button>
           </div>
-          <div className="scan-step">
-            <span>02</span>
-            <div>
-              <strong>Return</strong>
-              <p>Scan the same asset as it comes back. A return is recorded immediately.</p>
-            </div>
-          </div>
-          <div className="secure-note">
-            <ShieldCheck size={16} />
-            <span>
-              Every scan is tied to your Board account and written to the append-only activity log.
-            </span>
-          </div>
-        </aside>
-      </div>
-    </>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }
 
 function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
-  const [users, setUsers] = useState<
-    Array<{ id: string; name: string; email: string; role: Role; emailVerified: boolean }>
-  >([]);
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [role, setRole] = useState<"BOARD" | "SUPERADMIN">("BOARD");
-  const refresh = useCallback(
-    () =>
-      api<typeof users>("/api/v1/board/users")
-        .then(setUsers)
-        .catch((e: Error) => setNotice(e.message)),
-    [setNotice]
-  );
+  const [users, setUsers] = useState<User[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [resetTarget, setResetTarget] = useState<User | null>(null);
+
+  // Add form state
+  const [newName, setNewName] = useState("");
+  const [newEmail, setNewEmail] = useState("");
+  const [newRole, setNewRole] = useState<"BOARD" | "SUPERADMIN">("BOARD");
+  const [newPassword, setNewPassword] = useState("");
+  const [showPass, setShowPass] = useState(false);
+  const [copiedPass, setCopiedPass] = useState(false);
+  const [addBusy, setAddBusy] = useState(false);
+  const [createdCreds, setCreatedCreds] = useState<{
+    name: string;
+    email: string;
+    pass: string;
+    role: string;
+  } | null>(null);
+  const [copiedCreatedPass, setCopiedCreatedPass] = useState(false);
+
+  // Reset password form state
+  const [resetPassword, setResetPassword] = useState("");
+  const [showResetPass, setShowResetPass] = useState(false);
+  const [copiedResetPass, setCopiedResetPass] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
+
+  const refresh = () =>
+    api<User[]>("/api/v1/board/users")
+      .then(setUsers)
+      .catch(() => setUsers([]))
+      .finally(() => setLoading(false));
+
   useEffect(() => {
     void refresh();
-  }, [refresh]);
-  const create = async (event: FormEvent) => {
-    event.preventDefault();
+  }, []);
+
+  const openAddModal = () => {
+    setNewName("");
+    setNewEmail("");
+    setNewRole("BOARD");
+    setNewPassword(generateSecurePassword(16));
+    setShowPass(false);
+    setCopiedPass(false);
+    setShowAddModal(true);
+  };
+
+  const openResetModal = (u: User) => {
+    setResetTarget(u);
+    setResetPassword(generateSecurePassword(16));
+    setShowResetPass(false);
+    setCopiedResetPass(false);
+  };
+
+  const setRole = async (userId: string, role: Role) => {
     try {
-      await api("/api/v1/board/users", post({ name, email, role }));
-      setName("");
-      setEmail("");
-      setNotice("Access invitation is ready. The member can sign in by email.");
+      await api(`/api/v1/board/users/${userId}/role`, patch({ role }));
+      setNotice("User role updated.");
       refresh();
     } catch (e) {
-      setNotice(e instanceof Error ? e.message : "Could not create account.");
+      setNotice(e instanceof Error ? e.message : "Could not update user role.");
     }
   };
-  const changeRole = async (id: string, next: Role) => {
+
+  const createUser = async (e: FormEvent) => {
+    e.preventDefault();
+    setAddBusy(true);
     try {
-      await api(`/api/v1/board/users/${id}/role`, patch({ role: next }));
+      await api(
+        "/api/v1/board/users",
+        post({
+          name: newName.trim(),
+          email: newEmail.trim().toLowerCase(),
+          role: newRole,
+          password: newPassword,
+        })
+      );
+      setNotice(`Board account created for ${newName}.`);
+      setCreatedCreds({
+        name: newName.trim(),
+        email: newEmail.trim().toLowerCase(),
+        pass: newPassword,
+        role: newRole,
+      });
+      setShowAddModal(false);
       refresh();
-      setNotice("Account role updated.");
-    } catch (e) {
-      setNotice(e instanceof Error ? e.message : "Could not update role.");
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "Could not create account.");
+    } finally {
+      setAddBusy(false);
     }
   };
+
+  const doResetPassword = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!resetTarget) return;
+    setResetBusy(true);
+    try {
+      await api(`/api/v1/board/users/${resetTarget.id}/password`, {
+        method: "PUT",
+        body: JSON.stringify({ password: resetPassword }),
+      });
+      setNotice(`Password reset for ${resetTarget.name}.`);
+      setResetTarget(null);
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "Could not reset password.");
+    } finally {
+      setResetBusy(false);
+    }
+  };
+
   return (
-    <>
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-6">
       <PageHeading
-        eyebrow="SUPERADMIN · ACCESS CONTROL"
-        title="Accounts and roles"
-        description="Create Board accounts and grant access to the Student Branch equipment desk."
+        eyebrow="SUPERADMIN · SECURITY"
+        title="User Accounts & Role Clearances"
+        description="Server-enforced role assignments. Board and Superadmin accounts sign in using their autogenerated secure credentials."
+        action={
+          <Button variant="default" size="sm" onClick={openAddModal} className="gap-2">
+            <Plus className="w-4 h-4" />
+            <span>Add Board Member</span>
+          </Button>
+        }
       />
-      <form className="card account-create" onSubmit={create}>
-        <span className="eyebrow">ADD BOARD ACCESS</span>
-        <div className="account-form-row">
-          <input
-            className="text-input"
-            required
-            placeholder="Full name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
-          <input
-            className="text-input"
-            required
-            type="email"
-            placeholder="Email address"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
-          <select
-            className="text-input"
-            value={role}
-            onChange={(e) => setRole(e.target.value as "BOARD" | "SUPERADMIN")}
-          >
-            <option value="BOARD">Board</option>
-            <option value="SUPERADMIN">Superadmin</option>
-          </select>
-          <button className="button button-primary">
-            <Plus size={15} /> Add account
-          </button>
-        </div>
-        <small className="subtle">
-          Members receive a single-use email sign-in link when they request access.
-        </small>
-      </form>
-      <section className="card accounts-card">
-        <div className="card-heading">
-          <div>
-            <span className="eyebrow">ROLE DIRECTORY</span>
-            <h2>{users.length} accounts</h2>
-          </div>
-          <ShieldCheck size={20} className="subtle" />
-        </div>
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead>
+
+      {loading ? (
+        <LoadingState message="Loading user accounts…" />
+      ) : (
+        <div className="rounded-xl border border-border bg-card overflow-hidden shadow-xs">
+          <table className="w-full text-xs text-left">
+            <thead className="bg-surface-subtle border-b border-border text-muted-foreground uppercase text-[10px] font-semibold">
               <tr>
-                <th>Member</th>
-                <th>Account</th>
-                <th>Email status</th>
-                <th>Role</th>
+                <th className="p-3">User</th>
+                <th className="p-3 hidden sm:table-cell">Email</th>
+                <th className="p-3">Role</th>
+                <th className="p-3">Actions</th>
               </tr>
             </thead>
-            <tbody>
-              {users.map((person) => (
-                <tr key={person.id}>
-                  <td>
-                    <div className="table-person">
-                      <span className="avatar avatar-small">{person.name.slice(0, 1)}</span>
-                      <strong>{person.name}</strong>
+            <tbody className="divide-y divide-border/60">
+              {users.map((u) => (
+                <tr key={u.id} className="hover:bg-surface-subtle/50 transition-colors">
+                  <td className="p-3 font-semibold text-foreground">
+                    <div>{u.name}</div>
+                    <div className="text-[11px] font-mono text-muted-foreground sm:hidden">
+                      {u.email}
                     </div>
                   </td>
-                  <td>{person.email}</td>
-                  <td>
-                    <span
-                      className={`verification ${person.emailVerified ? "verified" : "pending"}`}
-                    >
-                      {person.emailVerified ? "Verified" : "Not signed in"}
-                    </span>
+                  <td className="p-3 font-mono text-muted-foreground hidden sm:table-cell">
+                    {u.email}
                   </td>
-                  <td>
+                  <td className="p-3">
                     <select
-                      className="role-select"
-                      value={person.role}
-                      onChange={(e) => changeRole(person.id, e.target.value as Role)}
+                      value={u.role}
+                      onChange={(e) => setRole(u.id, e.target.value as Role)}
+                      className="bg-card border border-input rounded-md px-2.5 py-1 font-semibold text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                     >
                       <option value="USER">Member</option>
-                      <option value="BOARD">Board</option>
+                      <option value="BOARD">Board Staff</option>
                       <option value="SUPERADMIN">Superadmin</option>
                     </select>
+                  </td>
+                  <td className="p-3">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => openResetModal(u)}
+                      className="text-[11px] h-7 px-2.5 gap-1 text-primary border-primary/30 hover:bg-primary/5"
+                    >
+                      <ShieldCheck className="w-3 h-3" />
+                      <span>Set Password</span>
+                    </Button>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-      </section>
-    </>
+      )}
+
+      {/* Add Board Member Modal */}
+      <Dialog open={showAddModal} onOpenChange={setShowAddModal}>
+        <DialogContent className="max-w-md p-6 bg-card border-border sm:rounded-2xl">
+          <DialogHeader>
+            <DialogTitle>Add Board Member</DialogTitle>
+            <DialogDescription>
+              Create a new Board or Superadmin account. A secure password is automatically generated.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={createUser} className="space-y-4 pt-2">
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-foreground">Full Name</label>
+              <Input
+                required
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="e.g. Rami Ben Ali"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-foreground">Email Address</label>
+              <Input
+                required
+                type="email"
+                value={newEmail}
+                onChange={(e) => setNewEmail(e.target.value)}
+                placeholder="e.g. member@insat.ieee.tn"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-foreground">Role</label>
+              <select
+                value={newRole}
+                onChange={(e) => setNewRole(e.target.value as "BOARD" | "SUPERADMIN")}
+                className="w-full bg-card border border-input rounded-md px-3 py-2 font-semibold text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              >
+                <option value="BOARD">Board Staff</option>
+                <option value="SUPERADMIN">Superadmin</option>
+              </select>
+            </div>
+
+            {/* Autogenerated Secure Password Box */}
+            <div className="space-y-1.5 p-3 rounded-xl bg-surface-subtle border border-border">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold text-foreground">
+                  Autogenerated Secure Password
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNewPassword(generateSecurePassword(16));
+                    setCopiedPass(false);
+                  }}
+                  className="text-[11px] text-primary hover:underline flex items-center gap-1 font-semibold"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  <span>Regenerate</span>
+                </button>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1">
+                  <Input
+                    readOnly
+                    type={showPass ? "text" : "password"}
+                    value={newPassword}
+                    className="font-mono text-xs pr-9 bg-card select-all font-semibold tracking-wider text-foreground"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPass(!showPass)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    {showPass ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(newPassword);
+                    setCopiedPass(true);
+                    setTimeout(() => setCopiedPass(false), 2000);
+                  }}
+                  className="text-xs shrink-0 gap-1.5 h-9"
+                >
+                  {copiedPass ? (
+                    <Check className="w-3.5 h-3.5 text-emerald-600" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5" />
+                  )}
+                  <span>{copiedPass ? "Copied" : "Copy"}</span>
+                </Button>
+              </div>
+              <p className="text-[10px] text-muted-foreground">
+                16-character high-entropy passphrase with uppercase, lowercase, numbers, and symbols.
+              </p>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button type="button" variant="outline" onClick={() => setShowAddModal(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" variant="default" disabled={addBusy}>
+                {addBusy ? "Creating…" : "Create Board Member"}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Created Credentials Modal (Success) */}
+      <Dialog
+        open={Boolean(createdCreds)}
+        onOpenChange={(open) => {
+          if (!open) setCreatedCreds(null);
+        }}
+      >
+        <DialogContent className="max-w-md p-6 bg-card border-border sm:rounded-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-emerald-600 flex items-center gap-2">
+              <CheckCircle2 className="w-5 h-5" />
+              <span>Board Account Provisioned</span>
+            </DialogTitle>
+            <DialogDescription>
+              Share these sign-in credentials securely with <strong>{createdCreds?.name}</strong>:
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 pt-2">
+            <div className="p-3 rounded-lg bg-surface-subtle border border-border space-y-2 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground font-semibold">Email:</span>
+                <span className="font-mono font-bold text-foreground">{createdCreds?.email}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground font-semibold">Role:</span>
+                <span className="font-semibold text-foreground">
+                  {createdCreds?.role === "SUPERADMIN" ? "Superadmin" : "Board Staff"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between pt-1 border-t border-border/60">
+                <span className="text-muted-foreground font-semibold">Password:</span>
+                <span className="font-mono font-bold text-primary tracking-wider">
+                  {createdCreds?.pass}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  if (!createdCreds) return;
+                  const text = `IEEE INSAT SB Logistics Credentials:\nEmail: ${createdCreds.email}\nPassword: ${createdCreds.pass}`;
+                  void navigator.clipboard.writeText(text);
+                  setCopiedCreatedPass(true);
+                  setTimeout(() => setCopiedCreatedPass(false), 2000);
+                }}
+                className="gap-1.5"
+              >
+                {copiedCreatedPass ? (
+                  <Check className="w-3.5 h-3.5 text-emerald-600" />
+                ) : (
+                  <Copy className="w-3.5 h-3.5" />
+                )}
+                <span>{copiedCreatedPass ? "Copied All" : "Copy Credentials"}</span>
+              </Button>
+              <Button variant="default" size="sm" onClick={() => setCreatedCreds(null)}>
+                Done
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Reset Password Modal */}
+      <Dialog
+        open={Boolean(resetTarget)}
+        onOpenChange={(open) => {
+          if (!open) setResetTarget(null);
+        }}
+      >
+        <DialogContent className="max-w-md p-6 bg-card border-border sm:rounded-2xl">
+          <DialogHeader>
+            <DialogTitle>Set New Password</DialogTitle>
+            <DialogDescription>
+              Set a new autogenerated secure password for <strong>{resetTarget?.name}</strong>. Existing sessions will be invalidated.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={doResetPassword} className="space-y-4 pt-2">
+            {/* Autogenerated Secure Password Box */}
+            <div className="space-y-1.5 p-3 rounded-xl bg-surface-subtle border border-border">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold text-foreground">
+                  Autogenerated Secure Password
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setResetPassword(generateSecurePassword(16));
+                    setCopiedResetPass(false);
+                  }}
+                  className="text-[11px] text-primary hover:underline flex items-center gap-1 font-semibold"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  <span>Regenerate</span>
+                </button>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1">
+                  <Input
+                    readOnly
+                    type={showResetPass ? "text" : "password"}
+                    value={resetPassword}
+                    className="font-mono text-xs pr-9 bg-card select-all font-semibold tracking-wider text-foreground"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowResetPass(!showResetPass)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    {showResetPass ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(resetPassword);
+                    setCopiedResetPass(true);
+                    setTimeout(() => setCopiedResetPass(false), 2000);
+                  }}
+                  className="text-xs shrink-0 gap-1.5 h-9"
+                >
+                  {copiedResetPass ? (
+                    <Check className="w-3.5 h-3.5 text-emerald-600" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5" />
+                  )}
+                  <span>{copiedResetPass ? "Copied" : "Copy"}</span>
+                </Button>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button type="button" variant="outline" onClick={() => setResetTarget(null)}>
+                Cancel
+              </Button>
+              <Button type="submit" variant="default" disabled={resetBusy}>
+                {resetBusy ? "Saving…" : "Set Password"}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }
 
@@ -2272,92 +3128,60 @@ function AuditLog() {
     }>
   >([]);
   const [error, setError] = useState("");
+
   useEffect(() => {
     api<typeof events>("/api/v1/board/audit")
       .then(setEvents)
       .catch((e: Error) => setError(e.message));
   }, []);
-  return (
-    <>
-      <PageHeading
-        eyebrow="BOARD · ACTIVITY LOG"
-        title="Recorded activity"
-        description="Reservation, inventory, and handover actions in chronological order."
-      />
-      <section className="card audit-card">
-        <div className="card-heading">
-          <div>
-            <span className="eyebrow">RECENT ACTIVITY</span>
-            <h2>{events.length} recorded events</h2>
-          </div>
-          <span className="immutable-chip">
-            <ShieldCheck size={14} /> Immutable log
-          </span>
-        </div>
-        {error ? (
-          <InlineError message={error} />
-        ) : events.length ? (
-          <div className="audit-list">
-            {events.map((event) => (
-              <div className="audit-row" key={event.id}>
-                <span className="audit-dot">
-                  <Activity size={14} />
-                </span>
-                <div className="audit-event">
-                  <strong>{titleCase(event.action.replaceAll("_", " "))}</strong>
-                  <span>
-                    {event.actorName} · {event.entityType.toLowerCase()}{" "}
-                    <code>{event.entityId.slice(0, 14)}</code>
-                  </span>
-                </div>
-                <time>
-                  {DateTime.fromMillis(event.createdAt).setZone(TZ).toFormat("dd LLL · HH:mm")}
-                </time>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <EmptyState
-            icon={<FileClock />}
-            title="No activity recorded yet"
-            body="Board decisions and inventory handovers will appear here."
-          />
-        )}
-      </section>
-    </>
-  );
-}
 
-function EmptyState({
-  icon,
-  title,
-  body,
-  action,
-}: {
-  icon: ReactNode;
-  title: string;
-  body: string;
-  action?: ReactNode;
-}) {
   return (
-    <div className="empty-state">
-      <span className="empty-icon">{icon}</span>
-      <h3>{title}</h3>
-      <p>{body}</p>
-      {action}
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-6">
+      <PageHeading
+        eyebrow="BOARD · AUDIT"
+        title="Recorded Activity Log"
+        description="Immutable chronological record of reservations, approvals, and physical handovers."
+      />
+
+      {error ? (
+        <ErrorState title="Could not load audit log" description={error} />
+      ) : events.length ? (
+        <div className="rounded-xl border border-border bg-card overflow-hidden shadow-xs divide-y divide-border/60">
+          {events.map((event) => (
+            <div
+              key={event.id}
+              className="p-3 sm:p-4 flex items-center justify-between gap-3 text-xs hover:bg-surface-subtle/50 transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center shrink-0">
+                  <Activity className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="font-bold text-foreground">
+                    {titleCase(event.action.replaceAll("_", " "))}
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">
+                    {event.actorName} · {event.entityType.toLowerCase()}{" "}
+                    <code className="font-mono">{event.entityId.slice(0, 12)}</code>
+                  </div>
+                </div>
+              </div>
+
+              <div className="text-right text-[11px] text-muted-foreground whitespace-nowrap font-mono">
+                {DateTime.fromMillis(event.createdAt).setZone(TZ).toFormat("dd LLL · HH:mm")}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <EmptyState
+          icon={FileClock}
+          title="No activity recorded yet"
+          description="Board actions and equipment handovers will be recorded here."
+        />
+      )}
     </div>
   );
-}
-function InlineError({ message }: { message: string }) {
-  return (
-    <div className="inline-error">
-      <CircleHelp size={16} />
-      {message}
-    </div>
-  );
-}
-function titleCase(value: string) {
-  return value.toLowerCase().replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
 export default function App() {

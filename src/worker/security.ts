@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import type { Env } from "./env";
-import { trustedAuthOrigin } from "./auth";
+import { isAllowedOrigin } from "./auth";
 
 export class DomainError extends Error {
   constructor(
@@ -19,7 +19,7 @@ export function jsonError(c: Context, status: number, code: string, message: str
 export async function sameOrigin(c: Context<{ Bindings: Env }>, next: () => Promise<void>) {
   if (["GET", "HEAD", "OPTIONS"].includes(c.req.method)) return next();
   const origin = c.req.header("Origin");
-  if (!origin || origin !== trustedAuthOrigin(c.env, c.req.url)) {
+  if (!origin || !isAllowedOrigin(origin, c.env, c.req.url)) {
     return jsonError(c, 403, "FORBIDDEN", "Request origin is not allowed.");
   }
   await next();

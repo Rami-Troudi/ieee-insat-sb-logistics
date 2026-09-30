@@ -12,7 +12,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { requestId } from "hono/request-id";
 import { secureHeaders } from "hono/secure-headers";
-import { and, asc, desc, eq as eq2 } from "drizzle-orm";
+import { and, asc, desc, eq as eq2, inArray } from "drizzle-orm";
 import { z } from "zod";
 
 // src/worker/database.ts
@@ -371,36 +371,101 @@ function escapeHtml(value) {
 }
 
 // src/worker/auth.ts
-function trustedAuthOrigin(env, requestUrl) {
+function isAllowedOrigin(origin, env, requestUrl) {
+  let trusted;
+  try {
+    trusted = trustedAuthOrigin(env, requestUrl);
+  } catch {
+    return false;
+  }
+  if (origin === trusted) return true;
+  try {
+    const originUrl = new URL(origin);
+    const trustedUrl = new URL(trusted);
+    const localHostnames = ["localhost", "127.0.0.1"];
+    const isOriginLocal = localHostnames.includes(originUrl.hostname);
+    const isTrustedLocal = localHostnames.includes(trustedUrl.hostname);
+    if (originUrl.hostname.endsWith(".vercel.app") && (trustedUrl.hostname.endsWith(".vercel.app") || Boolean(env.APP_ORIGIN?.includes(".vercel.app")))) {
+      return true;
+    }
+    if (isOriginLocal && isTrustedLocal && originUrl.protocol === trustedUrl.protocol) {
+      const allowedPorts = /* @__PURE__ */ new Set([
+        originUrl.port,
+        trustedUrl.port,
+        "5173",
+        "5174",
+        "5175",
+        "5188",
+        "8787"
+      ]);
+      if (allowedPorts.has(originUrl.port) && allowedPorts.has(trustedUrl.port)) {
+        return true;
+      }
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+function trustedAuthOrigin(env, requestUrl, originHeader) {
   const requestOrigin = new URL(requestUrl);
   const configuredHosts = new Set(
     [env.VERCEL_URL, env.VERCEL_PROJECT_PRODUCTION_URL].filter((host) => Boolean(host)).map((host) => host.replace(/^https?:\/\//, ""))
   );
   const local = ["localhost", "127.0.0.1"].includes(requestOrigin.hostname);
+  if (originHeader && isAllowedOrigin(originHeader, env, requestUrl)) {
+    return new URL(originHeader).origin;
+  }
   if (env.APP_ORIGIN) {
     const appOrigin = new URL(env.APP_ORIGIN);
     if (appOrigin.pathname !== "/" || appOrigin.search || appOrigin.hash || appOrigin.username || appOrigin.password) {
       throw new Error("APP_ORIGIN must be an origin without a path.");
     }
     if (appOrigin.protocol !== "https:" && !local) throw new Error("APP_ORIGIN must use HTTPS.");
-    if (!local && requestOrigin.origin !== appOrigin.origin)
+    if (!local && requestOrigin.origin !== appOrigin.origin) {
+      if (requestOrigin.hostname.endsWith(".vercel.app") && appOrigin.hostname.endsWith(".vercel.app")) {
+        return appOrigin.origin;
+      }
       throw new Error("Untrusted application origin.");
+    }
     if (local && (env.ENVIRONMENT === "development" || env.ENVIRONMENT === "test") && ["localhost", "127.0.0.1"].includes(appOrigin.hostname)) {
       return appOrigin.origin;
     }
     return local ? requestOrigin.origin : appOrigin.origin;
   }
   if (local) return requestOrigin.origin;
-  if (!configuredHosts.has(requestOrigin.host)) throw new Error("Untrusted deployment origin.");
+  if (!configuredHosts.has(requestOrigin.host) && !requestOrigin.hostname.endsWith(".vercel.app")) {
+    throw new Error("Untrusted deployment origin.");
+  }
   return requestOrigin.origin;
 }
 function createAuth(env, origin) {
+  let isLocal = false;
+  try {
+    const u = new URL(origin);
+    isLocal = ["localhost", "127.0.0.1"].includes(u.hostname);
+  } catch {
+    isLocal = false;
+  }
+  const trustedOrigins = [origin];
+  if (isLocal) {
+    trustedOrigins.push(
+      "http://localhost:5173",
+      "http://127.0.0.1:5173",
+      "http://localhost:5174",
+      "http://127.0.0.1:5174",
+      "http://localhost:5188",
+      "http://127.0.0.1:5188",
+      "http://localhost:8787",
+      "http://127.0.0.1:8787"
+    );
+  }
   return betterAuth({
     appName: "IEEE INSAT SB Equipment Reservations",
     baseURL: origin,
     secret: env.BETTER_AUTH_SECRET,
     database: drizzleAdapter(env.DB, { provider: "sqlite", schema: schema_exports.authSchema }),
-    trustedOrigins: [origin],
+    trustedOrigins,
     user: {
       additionalFields: {
         role: {
@@ -431,7 +496,11 @@ function createAuth(env, origin) {
       max: env.AUTH_RATE_LIMIT_PER_MINUTE,
       storage: "database"
     },
-    emailAndPassword: { enabled: false },
+    emailAndPassword: {
+      enabled: true,
+      minPasswordLength: 12,
+      maxPasswordLength: 128
+    },
     plugins: [
       magicLink({
         expiresIn: 10 * 60,
@@ -449,11 +518,14 @@ function createAuth(env, origin) {
   });
 }
 
+// src/worker/index.ts
+import { hashPassword } from "better-auth/crypto";
+
 // src/worker/identity.ts
 import { createMiddleware } from "hono/factory";
 import { eq } from "drizzle-orm";
 async function resolveIdentity(c) {
-  const origin = trustedAuthOrigin(c.env, c.req.url);
+  const origin = trustedAuthOrigin(c.env, c.req.url, c.req.header("Origin"));
   const session = await createAuth(c.env, origin).api.getSession({ headers: c.req.raw.headers });
   const userId = session?.user?.id;
   if (!userId) return null;
@@ -514,7 +586,7 @@ function jsonError(c, status, code, message) {
 async function sameOrigin(c, next) {
   if (["GET", "HEAD", "OPTIONS"].includes(c.req.method)) return next();
   const origin = c.req.header("Origin");
-  if (!origin || origin !== trustedAuthOrigin(c.env, c.req.url)) {
+  if (!origin || !isAllowedOrigin(origin, c.env, c.req.url)) {
     return jsonError(c, 403, "FORBIDDEN", "Request origin is not allowed.");
   }
   await next();
@@ -1447,7 +1519,130 @@ app.all("/api/auth/*", async (c) => {
   if (await isRateLimited(c.env, `auth:${requestIp(c)}`, c.env.AUTH_RATE_LIMIT_PER_MINUTE)) {
     return jsonError(c, 429, "RATE_LIMITED", "Too many sign-in attempts. Try again shortly.");
   }
-  return createAuth(c.env, trustedAuthOrigin(c.env, c.req.url)).handler(c.req.raw);
+  return createAuth(c.env, trustedAuthOrigin(c.env, c.req.url, c.req.header("Origin"))).handler(
+    c.req.raw
+  );
+});
+app.post("/api/v1/auth/borrower", async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!body || typeof body.email !== "string" || !/^\S+@\S+\.\S+$/.test(body.email.trim()) || typeof body.name !== "string" || body.name.trim().length < 2) {
+    return jsonError(c, 400, "VALIDATION", "Valid member details are required.");
+  }
+  const email = body.email.trim().toLowerCase();
+  const name = body.name.trim();
+  const now = /* @__PURE__ */ new Date();
+  const existing = await c.env.DB.select().from(schema_exports.authUsers).where(eq2(schema_exports.authUsers.email, email)).limit(1);
+  let userId;
+  let user;
+  if (existing.length > 0) {
+    userId = existing[0].id;
+    user = existing[0];
+    await c.env.DB.update(schema_exports.authUsers).set({ name, updatedAt: now }).where(eq2(schema_exports.authUsers.id, userId));
+  } else {
+    userId = crypto.randomUUID();
+    const [newUser] = await c.env.DB.insert(schema_exports.authUsers).values({
+      id: userId,
+      name,
+      email,
+      emailVerified: true,
+      role: "USER",
+      createdAt: now,
+      updatedAt: now
+    }).returning();
+    user = newUser;
+  }
+  const token = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
+  const sessionId = "sess_" + crypto.randomUUID();
+  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 6e4);
+  await c.env.DB.insert(schema_exports.authSessions).values({
+    id: sessionId,
+    expiresAt,
+    token,
+    createdAt: now,
+    updatedAt: now,
+    ipAddress: requestIp(c),
+    userAgent: c.req.header("User-Agent") ?? null,
+    userId
+  });
+  const isHttps = c.req.url.startsWith("https:");
+  const secure = isHttps ? "; Secure" : "";
+  const response = c.json({ ok: true, user });
+  response.headers.append(
+    "Set-Cookie",
+    `better-auth.session_token=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${secure}`
+  );
+  return response;
+});
+app.post("/api/v1/auth/board-login", async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!body || !body.email || !body.password) {
+    return jsonError(c, 400, "VALIDATION", "Staff email and password are required.");
+  }
+  const email = body.email.trim().toLowerCase();
+  const auth = createAuth(c.env, trustedAuthOrigin(c.env, c.req.url, c.req.header("Origin")));
+  const res = await auth.api.signInEmail({
+    body: { email, password: body.password },
+    headers: c.req.raw.headers,
+    asResponse: true
+  }).catch(() => null);
+  if (!res || !res.ok) {
+    return jsonError(c, 401, "UNAUTHENTICATED", "Invalid email or password.");
+  }
+  const [user] = await c.env.DB.select().from(schema_exports.authUsers).where(eq2(schema_exports.authUsers.email, email)).limit(1);
+  if (!user || user.role !== "BOARD" && user.role !== "SUPERADMIN") {
+    return jsonError(c, 403, "FORBIDDEN", "This account does not have Board staff access.");
+  }
+  const response = c.json({ ok: true, user });
+  for (const cookie of res.headers.getSetCookie()) {
+    response.headers.append("Set-Cookie", cookie);
+  }
+  return response;
+});
+app.post("/api/v1/auth/sign-out", async (c) => {
+  const origin = trustedAuthOrigin(c.env, c.req.url, c.req.header("Origin"));
+  const auth = createAuth(c.env, origin);
+  let currentUserId = null;
+  try {
+    const user = await resolveIdentity(c);
+    if (user?.id) currentUserId = user.id;
+  } catch {
+  }
+  try {
+    await auth.api.signOut({
+      headers: c.req.raw.headers,
+      asResponse: true
+    });
+  } catch {
+  }
+  const cookieHeader = c.req.header("Cookie") || "";
+  const match = cookieHeader.match(/(?:__Secure-)?better-auth\.session_token=([^;]+)/);
+  if (match) {
+    const rawToken = decodeURIComponent(match[1]).split(".")[0];
+    try {
+      await c.env.DB.delete(schema_exports.authSessions).where(eq2(schema_exports.authSessions.token, rawToken));
+    } catch {
+    }
+  }
+  if (currentUserId) {
+    try {
+      await c.env.DB.delete(schema_exports.authSessions).where(eq2(schema_exports.authSessions.userId, currentUserId));
+    } catch {
+    }
+  }
+  const response = c.json({ ok: true });
+  const isHttps = c.req.url.startsWith("https:");
+  const secure = isHttps ? "; Secure" : "";
+  const clearCookieAttrs = [
+    `better-auth.session_token=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT${secure}`,
+    `better-auth.session_data=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT${secure}`,
+    `better-auth.dont_remember=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT${secure}`,
+    `__Secure-better-auth.session_token=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Secure`,
+    `__Secure-better-auth.session_data=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Secure`
+  ];
+  for (const cookie of clearCookieAttrs) {
+    response.headers.append("Set-Cookie", cookie);
+  }
+  return response;
 });
 app.get("/api/v1/me", async (c) => {
   const user = await resolveIdentity(c);
@@ -1755,6 +1950,40 @@ app.patch("/api/v1/board/equipment/:id", async (c) => {
   });
   return c.json({ ok: true });
 });
+app.delete("/api/v1/board/equipment/:id", requireBoard, async (c) => {
+  const id2 = c.req.param("id");
+  const activeAssets = await c.env.DB.select({ id: schema_exports.assets.id, state: schema_exports.assets.state }).from(schema_exports.assets).where(
+    and(
+      eq2(schema_exports.assets.equipmentItemId, id2),
+      inArray(schema_exports.assets.state, ["BORROWED", "RESERVED"])
+    )
+  ).limit(1);
+  if (activeAssets.length > 0)
+    return jsonError(
+      c,
+      409,
+      "RESERVATION_CONFLICT",
+      "Cannot delete equipment while some of its assets are currently borrowed or reserved."
+    );
+  await c.env.DB.delete(schema_exports.assets).where(eq2(schema_exports.assets.equipmentItemId, id2));
+  const result = await c.env.DB.delete(schema_exports.equipmentItems).where(
+    eq2(schema_exports.equipmentItems.id, id2)
+  );
+  if (!result.rowsAffected) return jsonError(c, 404, "NOT_FOUND", "Equipment not found.");
+  await c.env.CLIENT.execute({
+    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+    args: [
+      randomId("audit"),
+      c.get("actor").id,
+      "EQUIPMENT",
+      id2,
+      "EQUIPMENT_DELETED",
+      Date.now(),
+      "{}"
+    ]
+  });
+  return c.json({ ok: true });
+});
 app.post("/api/v1/board/equipment/:id/assets", async (c) => {
   const parsed = z.object({
     assetCode: z.string().trim().min(1).max(80),
@@ -1840,6 +2069,32 @@ app.patch("/api/v1/board/assets/:id", async (c) => {
   });
   return c.json({ ok: true });
 });
+app.delete("/api/v1/board/assets/:id", requireBoard, async (c) => {
+  const id2 = c.req.param("id");
+  const asset = await c.env.DB.select({ state: schema_exports.assets.state }).from(schema_exports.assets).where(eq2(schema_exports.assets.id, id2)).limit(1);
+  if (!asset[0]) return jsonError(c, 404, "NOT_FOUND", "Asset not found.");
+  if (asset[0].state === "BORROWED" || asset[0].state === "RESERVED")
+    return jsonError(
+      c,
+      409,
+      "RESERVATION_CONFLICT",
+      "Cannot delete an asset that is currently borrowed or reserved."
+    );
+  await c.env.DB.delete(schema_exports.assets).where(eq2(schema_exports.assets.id, id2));
+  await c.env.CLIENT.execute({
+    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+    args: [
+      randomId("audit"),
+      c.get("actor").id,
+      "ASSET",
+      id2,
+      "ASSET_DELETED",
+      Date.now(),
+      "{}"
+    ]
+  });
+  return c.json({ ok: true });
+});
 app.get("/api/v1/board/chapters", async (c) => {
   const chapters2 = await c.env.DB.select().from(schema_exports.chapters).orderBy(asc(schema_exports.chapters.name));
   return c.json(chapters2);
@@ -1870,6 +2125,32 @@ app.patch("/api/v1/board/chapters/:id", async (c) => {
   if (!result.rowsAffected) return jsonError(c, 404, "NOT_FOUND", "Chapter not found.");
   return c.json({ ok: true });
 });
+app.delete("/api/v1/board/chapters/:id", requireBoard, async (c) => {
+  const id2 = c.req.param("id");
+  const reservations2 = await c.env.DB.select({ id: schema_exports.reservations.id }).from(schema_exports.reservations).where(eq2(schema_exports.reservations.chapterId, id2)).limit(1);
+  if (reservations2.length > 0)
+    return jsonError(
+      c,
+      409,
+      "RESERVATION_CONFLICT",
+      "Cannot delete a chapter that has reservations. Deactivate it instead."
+    );
+  const result = await c.env.DB.delete(schema_exports.chapters).where(eq2(schema_exports.chapters.id, id2));
+  if (!result.rowsAffected) return jsonError(c, 404, "NOT_FOUND", "Chapter not found.");
+  await c.env.CLIENT.execute({
+    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+    args: [
+      randomId("audit"),
+      c.get("actor").id,
+      "CHAPTER",
+      id2,
+      "CHAPTER_DELETED",
+      Date.now(),
+      "{}"
+    ]
+  });
+  return c.json({ ok: true });
+});
 app.get("/api/v1/board/users", requireSuperadmin, async (c) => {
   const users = await c.env.DB.select({
     id: schema_exports.authUsers.id,
@@ -1885,19 +2166,42 @@ app.post("/api/v1/board/users", requireSuperadmin, async (c) => {
   const parsed = z.object({
     name: z.string().trim().min(1).max(120),
     email: z.string().trim().email().max(320),
-    role: z.enum(["BOARD", "SUPERADMIN"]).default("BOARD")
+    role: z.enum(["BOARD", "SUPERADMIN"]).default("BOARD"),
+    password: z.string().min(12).max(128)
   }).strict().safeParse(await c.req.json().catch(() => null));
   if (!parsed.success)
-    return jsonError(c, 400, "VALIDATION", "Enter a name, email, and valid Board role.");
+    return jsonError(
+      c,
+      400,
+      "VALIDATION",
+      parsed.error.issues[0]?.message ?? "Enter a name, email, password (min 12 chars), and role."
+    );
+  const existing = await c.env.DB.select({ id: schema_exports.authUsers.id }).from(schema_exports.authUsers).where(eq2(schema_exports.authUsers.email, parsed.data.email.toLowerCase())).limit(1);
+  if (existing.length > 0)
+    return jsonError(c, 409, "RESERVATION_CONFLICT", "An account with that email already exists.");
+  const passwordHash = await hashPassword(parsed.data.password);
   const userId = randomId("user");
   const timestamp = Date.now();
   await c.env.CLIENT.execute({
-    sql: "INSERT INTO user(id,name,email,emailVerified,role,createdAt,updatedAt) VALUES(?,?,?,0,?,?,?)",
+    sql: "INSERT INTO user(id,name,email,emailVerified,role,createdAt,updatedAt) VALUES(?,?,?,1,?,?,?)",
     args: [
       userId,
       parsed.data.name,
       parsed.data.email.toLowerCase(),
       parsed.data.role,
+      timestamp,
+      timestamp
+    ]
+  });
+  await c.env.CLIENT.execute({
+    sql: "INSERT INTO account(id,accountId,providerId,userId,password,createdAt,updatedAt) VALUES(?,?,?,?,?,?,?)",
+    args: [
+      randomId("account"),
+      userId,
+      // accountId must equal userId for credential provider
+      "credential",
+      userId,
+      passwordHash,
       timestamp,
       timestamp
     ]
@@ -1909,7 +2213,7 @@ app.post("/api/v1/board/users", requireSuperadmin, async (c) => {
       c.get("actor").id,
       "USER",
       userId,
-      "ROLE_CHANGED",
+      "USER_CREATED",
       timestamp,
       JSON.stringify({ role: parsed.data.role, email: parsed.data.email.toLowerCase() })
     ]
@@ -1920,10 +2224,57 @@ app.post("/api/v1/board/users", requireSuperadmin, async (c) => {
       name: parsed.data.name,
       email: parsed.data.email.toLowerCase(),
       role: parsed.data.role,
-      emailVerified: false
+      emailVerified: true
     },
     201
   );
+});
+app.put("/api/v1/board/users/:id/password", requireSuperadmin, async (c) => {
+  const parsed = z.object({ password: z.string().min(12).max(128) }).strict().safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success)
+    return jsonError(c, 400, "VALIDATION", "Password must be at least 12 characters.");
+  const targetId = c.req.param("id");
+  const user = await c.env.DB.select({ id: schema_exports.authUsers.id, email: schema_exports.authUsers.email }).from(schema_exports.authUsers).where(eq2(schema_exports.authUsers.id, targetId)).limit(1);
+  if (!user[0]) return jsonError(c, 404, "NOT_FOUND", "Account not found.");
+  const passwordHash = await hashPassword(parsed.data.password);
+  const acct = await c.env.CLIENT.execute({
+    sql: "SELECT id FROM account WHERE userId=? AND providerId='credential' LIMIT 1",
+    args: [targetId]
+  });
+  if (acct.rows.length > 0) {
+    await c.env.CLIENT.execute({
+      sql: "UPDATE account SET password=?,updatedAt=? WHERE userId=? AND providerId='credential'",
+      args: [passwordHash, Date.now(), targetId]
+    });
+  } else {
+    await c.env.CLIENT.execute({
+      sql: "INSERT INTO account(id,accountId,providerId,userId,password,createdAt,updatedAt) VALUES(?,?,?,?,?,?,?)",
+      args: [
+        randomId("account"),
+        targetId,
+        // accountId must equal userId for credential provider
+        "credential",
+        targetId,
+        passwordHash,
+        Date.now(),
+        Date.now()
+      ]
+    });
+  }
+  await c.env.DB.delete(schema_exports.authSessions).where(eq2(schema_exports.authSessions.userId, targetId));
+  await c.env.CLIENT.execute({
+    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+    args: [
+      randomId("audit"),
+      c.get("actor").id,
+      "USER",
+      targetId,
+      "PASSWORD_RESET",
+      Date.now(),
+      "{}"
+    ]
+  });
+  return c.json({ ok: true });
 });
 app.patch("/api/v1/board/users/:id/role", requireSuperadmin, async (c) => {
   const parsed = z.object({ role: z.enum(["USER", "BOARD", "SUPERADMIN"]) }).strict().safeParse(await c.req.json().catch(() => null));
@@ -1986,7 +2337,13 @@ async function createRuntimeEnv(source = process.env) {
   const vercelEnvironment = source.VERCEL_ENV;
   const environment = source.NODE_ENV === "test" ? "test" : vercelEnvironment === "production" ? "production" : vercelEnvironment === "preview" ? "preview" : "development";
   if (environment === "production" && !source.APP_ORIGIN) {
-    throw new Error("APP_ORIGIN must be set to the separate IEEE INSAT SB application origin.");
+    if (source.VERCEL_PROJECT_PRODUCTION_URL) {
+      source.APP_ORIGIN = `https://${source.VERCEL_PROJECT_PRODUCTION_URL}`;
+    } else if (source.VERCEL_URL) {
+      source.APP_ORIGIN = `https://${source.VERCEL_URL}`;
+    } else {
+      throw new Error("APP_ORIGIN must be set to the separate IEEE INSAT SB application origin.");
+    }
   }
   const { CLIENT, DB } = database(url, authToken);
   await CLIENT.execute("PRAGMA foreign_keys = ON");
@@ -2009,11 +2366,14 @@ async function createRuntimeEnv(source = process.env) {
 // src/worker/serverless.ts
 var handler = getRequestListener((incomingRequest) => {
   const host = incomingRequest.headers.get("x-forwarded-host") || incomingRequest.headers.get("host") || "localhost";
-  const proto = incomingRequest.headers.get("x-forwarded-proto") || "https";
+  const proto = incomingRequest.headers.get("x-forwarded-proto") || (host.includes("localhost") ? "http" : "https");
   const requestUrl = new URL(incomingRequest.url ?? "/", `${proto}://${host}`);
   const rewrittenPath = requestUrl.searchParams.get("__api_path");
   requestUrl.searchParams.delete("__api_path");
   if (rewrittenPath !== null) requestUrl.pathname = `/api/${rewrittenPath}`;
+  if (!["localhost", "127.0.0.1"].includes(requestUrl.hostname)) {
+    requestUrl.protocol = "https:";
+  }
   const headers = new Headers(incomingRequest.headers);
   const clientIp = incomingRequest.headers.get("x-vercel-forwarded-for") ?? incomingRequest.headers.get("x-forwarded-for");
   headers.set("CF-Connecting-IP", clientIp?.split(",", 1)[0]?.trim() || "unknown");

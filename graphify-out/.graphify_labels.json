@@ -7,7 +7,7 @@
   "5": "eslint-plugin-react-refresh",
   "6": "@fullcalendar/core",
   "7": "class-variance-authority",
-  "8": "@fullcalendar/daygrid",
+  "8": "clsx",
   "9": "@fullcalendar/interaction",
   "10": "@fullcalendar/luxon3",
   "11": "@fullcalendar/react",
@@ -76,7 +76,7 @@
   "145": "migrate.mjs",
   "147": "drizzle.config.ts",
   "155": "eslint-plugin-react-hooks",
-  "157": "env.ts",
-  "158": "index.ts",
+  "157": "index.ts",
+  "158": "domain.ts",
   "159": "[...path].js"
 }

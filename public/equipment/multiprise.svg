@@ -1,0 +1,136 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" role="img" aria-label="Surge protected multi-outlet power strip">
+  <defs>
+    <linearGradient id="mp-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f8fafc" />
+      <stop offset="50%" stop-color="#f1f5f9" />
+      <stop offset="100%" stop-color="#e2e8f0" />
+    </linearGradient>
+    <linearGradient id="mp-body" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="60%" stop-color="#f8fafc" />
+      <stop offset="100%" stop-color="#e2e8f0" />
+    </linearGradient>
+    <linearGradient id="mp-switch" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f87171" />
+      <stop offset="40%" stop-color="#ef4444" />
+      <stop offset="100%" stop-color="#b91c1c" />
+    </linearGradient>
+    <radialGradient id="mp-neon" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#fca5a5" stop-opacity="0.9" />
+      <stop offset="40%" stop-color="#ef4444" stop-opacity="0.5" />
+      <stop offset="100%" stop-color="#ef4444" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="mp-cord" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#2563eb" />
+      <stop offset="50%" stop-color="#1d4ed8" />
+      <stop offset="100%" stop-color="#1e3a8a" />
+    </linearGradient>
+    <linearGradient id="mp-brass" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#fde047" />
+      <stop offset="60%" stop-color="#ca8a04" />
+      <stop offset="100%" stop-color="#854d0e" />
+    </linearGradient>
+    <filter id="mp-shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#0f172a" flood-opacity="0.16" />
+    </filter>
+  </defs>
+
+  <!-- Canvas Background -->
+  <rect width="800" height="600" rx="32" fill="url(#mp-bg)" />
+
+  <!-- Technical Circuit Pattern in Background -->
+  <g stroke="#3b82f6" stroke-width="1.5" opacity="0.1" fill="none">
+    <path d="M100 120 h120 l40 40 h150" />
+    <circle cx="100" cy="120" r="4" fill="#3b82f6" />
+    <path d="M680 480 h-100 l-30 -30 h-120" />
+    <circle cx="680" cy="480" r="4" fill="#3b82f6" />
+  </g>
+
+  <!-- Ambient Shadow -->
+  <ellipse cx="400" cy="440" rx="330" ry="40" fill="#334155" opacity="0.18" />
+
+  <!-- Braided Electric Blue Power Cord (Flexible Curve) -->
+  <path d="M120 480 C110 390 140 320 200 270 C240 235 280 230 330 220" stroke="url(#mp-cord)" stroke-width="22" stroke-linecap="round" fill="none" />
+  <!-- Cable Strain Relief -->
+  <g transform="translate(325 210) rotate(-14)">
+    <rect x="0" y="0" width="30" height="26" rx="5" fill="#475569" />
+    <line x1="8" y1="0" x2="8" y2="26" stroke="#1e293b" stroke-width="2" />
+    <line x1="16" y1="0" x2="16" y2="26" stroke="#1e293b" stroke-width="2" />
+    <line x1="24" y1="0" x2="24" y2="26" stroke="#1e293b" stroke-width="2" />
+  </g>
+
+  <!-- Main Power Strip Enclosure (Angled Perspective) -->
+  <g transform="translate(410 325) rotate(-14)" filter="url(#mp-shadow)">
+    <!-- Base Plate -->
+    <rect x="-260" y="-70" width="530" height="140" rx="28" fill="#cbd5e1" />
+    <!-- Main Top Housing -->
+    <rect x="-258" y="-75" width="526" height="135" rx="26" fill="url(#mp-body)" stroke="#cbd5e1" stroke-width="3" />
+
+    <!-- Illuminated Rocker Master Power Switch -->
+    <g transform="translate(-205 -8)">
+      <!-- Switch Bezel Frame -->
+      <rect x="-24" y="-36" width="48" height="72" rx="10" fill="#1e293b" stroke="#334155" stroke-width="2" />
+      <!-- Neon Switch Glow -->
+      <ellipse cx="0" cy="-6" rx="32" ry="36" fill="url(#mp-neon)" />
+      <!-- Rocker Button (Pressed ON state) -->
+      <rect x="-18" y="-30" width="36" height="60" rx="7" fill="url(#mp-switch)" stroke="#fca5a5" stroke-width="1.5" />
+      <!-- Power ON Indicator Symbol -->
+      <line x1="0" y1="-20" x2="0" y2="-6" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" />
+      <circle cx="0" cy="14" r="5" stroke="#ffffff" stroke-width="3" fill="none" opacity="0.75" />
+    </g>
+
+    <!-- Surge Protection Status LEDs -->
+    <g transform="translate(-150 -44)">
+      <!-- Protected LED (Green) -->
+      <circle cx="0" cy="0" r="5" fill="#22c55e" stroke="#86efac" stroke-width="1.5" />
+      <text x="10" y="3.5" font-family="sans-serif" font-size="8" font-weight="bold" fill="#64748b">SURGE PROTECTED</text>
+      <!-- Grounded LED (Blue) -->
+      <circle cx="0" cy="18" r="5" fill="#3b82f6" stroke="#93c5fd" stroke-width="1.5" />
+      <text x="10" y="21.5" font-family="sans-serif" font-size="8" font-weight="bold" fill="#64748b">GROUNDED</text>
+    </g>
+
+    <!-- 4 Angled French/European Sockets (45° Diagonal) -->
+    <!-- Socket 1 -->
+    <g transform="translate(-60 0)">
+      <circle cx="0" cy="0" r="42" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="2.5" />
+      <circle cx="0" cy="0" r="36" fill="#e2e8f0" />
+      <!-- Socket Holes (45 deg) -->
+      <circle cx="-13" cy="-13" r="6" fill="#0f172a" />
+      <circle cx="13" cy="13" r="6" fill="#0f172a" />
+      <!-- Ground Pin -->
+      <circle cx="-13" cy="13" r="5" fill="url(#mp-brass)" stroke="#78350f" stroke-width="1" />
+    </g>
+
+    <!-- Socket 2 -->
+    <g transform="translate(40 0)">
+      <circle cx="0" cy="0" r="42" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="2.5" />
+      <circle cx="0" cy="0" r="36" fill="#e2e8f0" />
+      <circle cx="-13" cy="-13" r="6" fill="#0f172a" />
+      <circle cx="13" cy="13" r="6" fill="#0f172a" />
+      <circle cx="-13" cy="13" r="5" fill="url(#mp-brass)" stroke="#78350f" stroke-width="1" />
+    </g>
+
+    <!-- Socket 3 -->
+    <g transform="translate(140 0)">
+      <circle cx="0" cy="0" r="42" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="2.5" />
+      <circle cx="0" cy="0" r="36" fill="#e2e8f0" />
+      <circle cx="-13" cy="-13" r="6" fill="#0f172a" />
+      <circle cx="13" cy="13" r="6" fill="#0f172a" />
+      <circle cx="-13" cy="13" r="5" fill="url(#mp-brass)" stroke="#78350f" stroke-width="1" />
+    </g>
+
+    <!-- Smart Fast-Charging Station (Dual USB-C PD + USB-A QuickCharge) -->
+    <g transform="translate(225 0)">
+      <rect x="-18" y="-48" width="36" height="96" rx="8" fill="#1e293b" />
+      <!-- USB-C Port 1 -->
+      <rect x="-10" y="-38" width="20" height="8" rx="4" fill="#0f172a" stroke="#38bdf8" stroke-width="1.5" />
+      <text x="0" y="-24" font-family="sans-serif" font-size="7" font-weight="900" fill="#38bdf8" text-anchor="middle">PD 45W</text>
+      <!-- USB-C Port 2 -->
+      <rect x="-10" y="-14" width="20" height="8" rx="4" fill="#0f172a" stroke="#38bdf8" stroke-width="1.5" />
+      <!-- USB-A Port -->
+      <rect x="-11" y="10" width="22" height="12" rx="3" fill="#0f172a" stroke="#f59e0b" stroke-width="1.5" />
+      <rect x="-8" y="14" width="16" height="4" fill="#3b82f6" />
+      <text x="0" y="36" font-family="sans-serif" font-size="7" font-weight="bold" fill="#94a3b8" text-anchor="middle">QC 3.0</text>
+    </g>
+  </g>
+</svg>

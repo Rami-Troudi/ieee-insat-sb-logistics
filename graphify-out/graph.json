@@ -101,11 +101,37 @@
       "_callable_class": true,
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "appdatabase",
       "source_file": "src/worker/database.ts",
       "source_location": "L11"
+    },
+    {
+      "id": "src_worker_domain_sqlexecutor",
+      "label": "SqlExecutor",
+      "_callable": true,
+      "_callable_class": true,
+      "_origin": "ast",
+      "community": 157,
+      "community_name": "index.ts",
+      "file_type": "code",
+      "norm_label": "sqlexecutor",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L15"
+    },
+    {
+      "id": "src_worker_env_currentuser",
+      "label": "CurrentUser",
+      "_callable": true,
+      "_callable_class": true,
+      "_origin": "ast",
+      "community": 157,
+      "community_name": "index.ts",
+      "file_type": "code",
+      "norm_label": "currentuser",
+      "source_file": "src/worker/env.ts",
+      "source_location": "L6"
     },
     {
       "id": "src_worker_env_env",
@@ -114,7 +140,7 @@
       "_callable_class": true,
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "env",
       "source_file": "src/worker/env.ts",
@@ -127,7 +153,7 @@
       "_callable_class": true,
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "runtimeenvironment",
       "source_file": "src/worker/env.ts",
@@ -140,7 +166,7 @@
       "_callable_class": true,
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "userrole",
       "source_file": "src/worker/env.ts",
@@ -153,154 +179,11 @@
       "_callable_class": true,
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "appcontext",
       "source_file": "src/worker/identity.ts",
       "source_location": "L8"
-    },
-    {
-      "id": "src_worker_domain_availableasset",
-      "label": "AvailableAsset",
-      "_callable": true,
-      "_callable_class": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "availableasset",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L83"
-    },
-    {
-      "id": "src_worker_domain_catalogueitem",
-      "label": "CatalogueItem",
-      "_callable": true,
-      "_callable_class": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "catalogueitem",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L116"
-    },
-    {
-      "id": "src_worker_domain_createreservationinput",
-      "label": "CreateReservationInput",
-      "_callable": true,
-      "_callable_class": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "createreservationinput",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L316"
-    },
-    {
-      "id": "src_worker_domain_reservationdto",
-      "label": "ReservationDTO",
-      "_callable": true,
-      "_callable_class": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "reservationdto",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L168"
-    },
-    {
-      "id": "src_worker_domain_reservationlinerow",
-      "label": "ReservationLineRow",
-      "_callable": true,
-      "_callable_class": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "reservationlinerow",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L157"
-    },
-    {
-      "id": "src_worker_domain_reservationrow",
-      "label": "ReservationRow",
-      "_callable": true,
-      "_callable_class": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "reservationrow",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L140"
-    },
-    {
-      "id": "src_worker_domain_scanresult",
-      "label": "ScanResult",
-      "_callable": true,
-      "_callable_class": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "scanresult",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L796"
-    },
-    {
-      "id": "src_worker_domain_sqlarg",
-      "label": "SqlArg",
-      "_callable": true,
-      "_callable_class": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "sqlarg",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L16"
-    },
-    {
-      "id": "src_worker_domain_sqlexecutor",
-      "label": "SqlExecutor",
-      "_callable": true,
-      "_callable_class": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "sqlexecutor",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L15"
-    },
-    {
-      "id": "src_worker_domain_writetransaction",
-      "label": "WriteTransaction",
-      "_callable": true,
-      "_callable_class": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "writetransaction",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L14"
-    },
-    {
-      "id": "src_worker_env_currentuser",
-      "label": "CurrentUser",
-      "_callable": true,
-      "_callable_class": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "currentuser",
-      "source_file": "src/worker/env.ts",
-      "source_location": "L6"
     },
     {
       "id": "src_worker_index_variables",
@@ -308,7 +191,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 158,
+      "community": 157,
       "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "variables",
@@ -321,12 +204,129 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 158,
+      "community": 157,
       "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "domainerror",
       "source_file": "src/worker/security.ts",
       "source_location": "L5"
+    },
+    {
+      "id": "src_worker_domain_availableasset",
+      "label": "AvailableAsset",
+      "_callable": true,
+      "_callable_class": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "availableasset",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L83"
+    },
+    {
+      "id": "src_worker_domain_catalogueitem",
+      "label": "CatalogueItem",
+      "_callable": true,
+      "_callable_class": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "catalogueitem",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L116"
+    },
+    {
+      "id": "src_worker_domain_createreservationinput",
+      "label": "CreateReservationInput",
+      "_callable": true,
+      "_callable_class": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "createreservationinput",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L316"
+    },
+    {
+      "id": "src_worker_domain_reservationdto",
+      "label": "ReservationDTO",
+      "_callable": true,
+      "_callable_class": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "reservationdto",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L168"
+    },
+    {
+      "id": "src_worker_domain_reservationlinerow",
+      "label": "ReservationLineRow",
+      "_callable": true,
+      "_callable_class": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "reservationlinerow",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L157"
+    },
+    {
+      "id": "src_worker_domain_reservationrow",
+      "label": "ReservationRow",
+      "_callable": true,
+      "_callable_class": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "reservationrow",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L140"
+    },
+    {
+      "id": "src_worker_domain_scanresult",
+      "label": "ScanResult",
+      "_callable": true,
+      "_callable_class": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "scanresult",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L796"
+    },
+    {
+      "id": "src_worker_domain_sqlarg",
+      "label": "SqlArg",
+      "_callable": true,
+      "_callable_class": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "sqlarg",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L16"
+    },
+    {
+      "id": "src_worker_domain_writetransaction",
+      "label": "WriteTransaction",
+      "_callable": true,
+      "_callable_class": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "writetransaction",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L14"
     },
     {
       "id": "e2e_reservations_spec_signin",
@@ -350,7 +350,7 @@
       "file_type": "code",
       "norm_label": "accessgate()",
       "source_file": "src/app/App.tsx",
-      "source_location": "L402"
+      "source_location": "L409"
     },
     {
       "id": "src_app_app_accounts",
@@ -362,7 +362,7 @@
       "file_type": "code",
       "norm_label": "accounts()",
       "source_file": "src/app/App.tsx",
-      "source_location": "L2127"
+      "source_location": "L2197"
     },
     {
       "id": "src_app_app_api",
@@ -386,7 +386,7 @@
       "file_type": "code",
       "norm_label": "app()",
       "source_file": "src/app/App.tsx",
-      "source_location": "L2363"
+      "source_location": "L2433"
     },
     {
       "id": "src_app_app_appframe",
@@ -410,7 +410,7 @@
       "file_type": "code",
       "norm_label": "auditlog()",
       "source_file": "src/app/App.tsx",
-      "source_location": "L2262"
+      "source_location": "L2332"
     },
     {
       "id": "src_app_app_boardcalendar",
@@ -422,7 +422,7 @@
       "file_type": "code",
       "norm_label": "boardcalendar()",
       "source_file": "src/app/App.tsx",
-      "source_location": "L1450"
+      "source_location": "L1520"
     },
     {
       "id": "src_app_app_boardchapters",
@@ -434,7 +434,7 @@
       "file_type": "code",
       "norm_label": "boardchapters()",
       "source_file": "src/app/App.tsx",
-      "source_location": "L1812"
+      "source_location": "L1882"
     },
     {
       "id": "src_app_app_boarddashboard",
@@ -446,7 +446,7 @@
       "file_type": "code",
       "norm_label": "boarddashboard()",
       "source_file": "src/app/App.tsx",
-      "source_location": "L1075"
+      "source_location": "L1145"
     },
     {
       "id": "src_app_app_boardinventory",
@@ -458,7 +458,7 @@
       "file_type": "code",
       "norm_label": "boardinventory()",
       "source_file": "src/app/App.tsx",
-      "source_location": "L1527"
+      "source_location": "L1597"
     },
     {
       "id": "src_app_app_boardreservations",
@@ -470,7 +470,7 @@
       "file_type": "code",
       "norm_label": "boardreservations()",
       "source_file": "src/app/App.tsx",
-      "source_location": "L1210"
+      "source_location": "L1280"
     },
     {
       "id": "src_app_app_boardscan",
@@ -482,7 +482,7 @@
       "file_type": "code",
       "norm_label": "boardscan()",
       "source_file": "src/app/App.tsx",
-      "source_location": "L1929"
+      "source_location": "L1999"
     },
     {
       "id": "src_app_app_catalogue",
@@ -494,7 +494,7 @@
       "file_type": "code",
       "norm_label": "catalogue()",
       "source_file": "src/app/App.tsx",
-      "source_location": "L563"
+      "source_location": "L637"
     },
     {
       "id": "src_app_app_dateinput",
@@ -518,7 +518,7 @@
       "file_type": "code",
       "norm_label": "datewindow()",
       "source_file": "src/app/App.tsx",
-      "source_location": "L511"
+      "source_location": "L585"
     },
     {
       "id": "src_app_app_emptystate",
@@ -530,7 +530,7 @@
       "file_type": "code",
       "norm_label": "emptystate()",
       "source_file": "src/app/App.tsx",
-      "source_location": "L2331"
+      "source_location": "L2401"
     },
     {
       "id": "src_app_app_fmtday",
@@ -590,7 +590,7 @@
       "file_type": "code",
       "norm_label": "inlineerror()",
       "source_file": "src/app/App.tsx",
-      "source_location": "L2351"
+      "source_location": "L2421"
     },
     {
       "id": "src_app_app_isofrominput",
@@ -614,7 +614,7 @@
       "file_type": "code",
       "norm_label": "myreservations()",
       "source_file": "src/app/App.tsx",
-      "source_location": "L968"
+      "source_location": "L1038"
     },
     {
       "id": "src_app_app_navitem",
@@ -626,7 +626,7 @@
       "file_type": "code",
       "norm_label": "navitem()",
       "source_file": "src/app/App.tsx",
-      "source_location": "L309"
+      "source_location": "L321"
     },
     {
       "id": "src_app_app_pageheading",
@@ -638,7 +638,7 @@
       "file_type": "code",
       "norm_label": "pageheading()",
       "source_file": "src/app/App.tsx",
-      "source_location": "L379"
+      "source_location": "L386"
     },
     {
       "id": "src_app_app_pagerouter",
@@ -650,7 +650,7 @@
       "file_type": "code",
       "norm_label": "pagerouter()",
       "source_file": "src/app/App.tsx",
-      "source_location": "L328"
+      "source_location": "L340"
     },
     {
       "id": "src_app_app_patch",
@@ -686,7 +686,7 @@
       "file_type": "code",
       "norm_label": "rolelabel()",
       "source_file": "src/app/App.tsx",
-      "source_location": "L305"
+      "source_location": "L317"
     },
     {
       "id": "src_app_app_selectionpage",
@@ -698,7 +698,7 @@
       "file_type": "code",
       "norm_label": "selectionpage()",
       "source_file": "src/app/App.tsx",
-      "source_location": "L744"
+      "source_location": "L794"
     },
     {
       "id": "src_app_app_statuspill",
@@ -710,7 +710,7 @@
       "file_type": "code",
       "norm_label": "statuspill()",
       "source_file": "src/app/App.tsx",
-      "source_location": "L954"
+      "source_location": "L1024"
     },
     {
       "id": "src_app_app_titlecase",
@@ -722,7 +722,7 @@
       "file_type": "code",
       "norm_label": "titlecase()",
       "source_file": "src/app/App.tsx",
-      "source_location": "L2359"
+      "source_location": "L2429"
     },
     {
       "id": "src_app_app_usenotice",
@@ -742,7 +742,7 @@
       "_callable": true,
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "request()",
       "source_file": "src/test/api.test.ts",
@@ -754,7 +754,7 @@
       "_callable": true,
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "seeduser()",
       "source_file": "src/test/api.test.ts",
@@ -766,7 +766,7 @@
       "_callable": true,
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "sendjson()",
       "source_file": "src/test/api.test.ts",
@@ -778,11 +778,23 @@
       "_callable": true,
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "createauth()",
       "source_file": "src/worker/auth.ts",
       "source_location": "L44"
+    },
+    {
+      "id": "src_worker_auth_trustedauthorigin",
+      "label": "trustedAuthOrigin()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 157,
+      "community_name": "index.ts",
+      "file_type": "code",
+      "norm_label": "trustedauthorigin()",
+      "source_file": "src/worker/auth.ts",
+      "source_location": "L8"
     },
     {
       "id": "src_worker_database_createdatabase",
@@ -790,7 +802,7 @@
       "_callable": true,
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "createdatabase()",
       "source_file": "src/worker/database.ts",
@@ -802,11 +814,23 @@
       "_callable": true,
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "createlibsqlclient()",
       "source_file": "src/worker/database.ts",
       "source_location": "L13"
+    },
+    {
+      "id": "src_worker_domain_randomid",
+      "label": "randomId()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 157,
+      "community_name": "index.ts",
+      "file_type": "code",
+      "norm_label": "randomid()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L1121"
     },
     {
       "id": "src_worker_email_escapehtml",
@@ -814,7 +838,7 @@
       "_callable": true,
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "escapehtml()",
       "source_file": "src/worker/email.ts",
@@ -826,7 +850,7 @@
       "_callable": true,
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "sendemail()",
       "source_file": "src/worker/email.ts",
@@ -838,11 +862,23 @@
       "_callable": true,
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "resolveidentity()",
       "source_file": "src/worker/identity.ts",
       "source_location": "L10"
+    },
+    {
+      "id": "src_worker_index_intervalfromquery",
+      "label": "intervalFromQuery()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 157,
+      "community_name": "index.ts",
+      "file_type": "code",
+      "norm_label": "intervalfromquery()",
+      "source_file": "src/worker/index.ts",
+      "source_location": "L110"
     },
     {
       "id": "src_worker_runtime_env_createruntimeenv",
@@ -850,7 +886,7 @@
       "_callable": true,
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "createruntimeenv()",
       "source_file": "src/worker/runtime-env.ts",
@@ -862,378 +898,18 @@
       "_callable": true,
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "database()",
       "source_file": "src/worker/runtime-env.ts",
       "source_location": "L11"
     },
     {
-      "id": "src_worker_auth_trustedauthorigin",
-      "label": "trustedAuthOrigin()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "trustedauthorigin()",
-      "source_file": "src/worker/auth.ts",
-      "source_location": "L8"
-    },
-    {
-      "id": "src_worker_domain_approvereservation",
-      "label": "approveReservation()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "approvereservation()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L444"
-    },
-    {
-      "id": "src_worker_domain_assignapprovedreservation",
-      "label": "assignApprovedReservation()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "assignapprovedreservation()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L653"
-    },
-    {
-      "id": "src_worker_domain_audit",
-      "label": "audit()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "audit()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L41"
-    },
-    {
-      "id": "src_worker_domain_boarddashboard",
-      "label": "boardDashboard()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "boarddashboard()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L1001"
-    },
-    {
-      "id": "src_worker_domain_calendarevents",
-      "label": "calendarEvents()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "calendarevents()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L1049"
-    },
-    {
-      "id": "src_worker_domain_cancelreservation",
-      "label": "cancelReservation()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "cancelreservation()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L590"
-    },
-    {
-      "id": "src_worker_domain_createqrtoken",
-      "label": "createQrToken()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "createqrtoken()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L1117"
-    },
-    {
-      "id": "src_worker_domain_createreservation",
-      "label": "createReservation()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "createreservation()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L338"
-    },
-    {
-      "id": "src_worker_domain_declinereservation",
-      "label": "declineReservation()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "declinereservation()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L559"
-    },
-    {
-      "id": "src_worker_domain_findavailableassets",
-      "label": "findAvailableAssets()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "findavailableassets()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L90"
-    },
-    {
-      "id": "src_worker_domain_formattunis",
-      "label": "formatTunis()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "formattunis()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L985"
-    },
-    {
-      "id": "src_worker_domain_getreservation",
-      "label": "getReservation()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "getreservation()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L198"
-    },
-    {
-      "id": "src_worker_domain_id",
-      "label": "id()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "id()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L8"
-    },
-    {
-      "id": "src_worker_domain_listboardaudit",
-      "label": "listBoardAudit()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "listboardaudit()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L1107"
-    },
-    {
-      "id": "src_worker_domain_listboardreservations",
-      "label": "listBoardReservations()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "listboardreservations()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L308"
-    },
-    {
-      "id": "src_worker_domain_listcatalogue",
-      "label": "listCatalogue()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "listcatalogue()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L125"
-    },
-    {
-      "id": "src_worker_domain_listreservations",
-      "label": "listReservations()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "listreservations()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L299"
-    },
-    {
-      "id": "src_worker_domain_notify",
-      "label": "notify()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "notify()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L55"
-    },
-    {
-      "id": "src_worker_domain_notifyboard",
-      "label": "notifyBoard()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "notifyboard()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L69"
-    },
-    {
-      "id": "src_worker_domain_one",
-      "label": "one()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "one()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L23"
-    },
-    {
-      "id": "src_worker_domain_opaquetoken",
-      "label": "opaqueToken()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "opaquetoken()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L9"
-    },
-    {
-      "id": "src_worker_domain_randomid",
-      "label": "randomId()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "randomid()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L1121"
-    },
-    {
-      "id": "src_worker_domain_reschedulereservation",
-      "label": "rescheduleReservation()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "reschedulereservation()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L732"
-    },
-    {
-      "id": "src_worker_domain_rows",
-      "label": "rows()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "rows()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L18"
-    },
-    {
-      "id": "src_worker_domain_scanasset",
-      "label": "scanAsset()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "scanasset()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L804"
-    },
-    {
-      "id": "src_worker_domain_tunisdayrange",
-      "label": "tunisDayRange()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "tunisdayrange()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L993"
-    },
-    {
-      "id": "src_worker_domain_validatewindow",
-      "label": "validateWindow()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "validatewindow()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L325"
-    },
-    {
-      "id": "src_worker_domain_write",
-      "label": "write()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "write()",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L27"
-    },
-    {
-      "id": "src_worker_index_intervalfromquery",
-      "label": "intervalFromQuery()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "intervalfromquery()",
-      "source_file": "src/worker/index.ts",
-      "source_location": "L110"
-    },
-    {
       "id": "src_worker_security_domainerror_constructor",
       "label": ".constructor()",
       "_callable": true,
       "_origin": "ast",
-      "community": 158,
+      "community": 157,
       "community_name": "index.ts",
       "file_type": "code",
       "norm_label": ".constructor()",
@@ -1245,7 +921,7 @@
       "label": "isRateLimited()",
       "_callable": true,
       "_origin": "ast",
-      "community": 158,
+      "community": 157,
       "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "isratelimited()",
@@ -1257,7 +933,7 @@
       "label": "jsonError()",
       "_callable": true,
       "_origin": "ast",
-      "community": 158,
+      "community": 157,
       "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "jsonerror()",
@@ -1269,7 +945,7 @@
       "label": "requestIp()",
       "_callable": true,
       "_origin": "ast",
-      "community": 158,
+      "community": 157,
       "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "requestip()",
@@ -1281,12 +957,336 @@
       "label": "sameOrigin()",
       "_callable": true,
       "_origin": "ast",
-      "community": 158,
+      "community": 157,
       "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "sameorigin()",
       "source_file": "src/worker/security.ts",
       "source_location": "L19"
+    },
+    {
+      "id": "src_worker_domain_approvereservation",
+      "label": "approveReservation()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "approvereservation()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L444"
+    },
+    {
+      "id": "src_worker_domain_assignapprovedreservation",
+      "label": "assignApprovedReservation()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "assignapprovedreservation()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L653"
+    },
+    {
+      "id": "src_worker_domain_audit",
+      "label": "audit()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "audit()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L41"
+    },
+    {
+      "id": "src_worker_domain_boarddashboard",
+      "label": "boardDashboard()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "boarddashboard()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L1001"
+    },
+    {
+      "id": "src_worker_domain_calendarevents",
+      "label": "calendarEvents()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "calendarevents()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L1049"
+    },
+    {
+      "id": "src_worker_domain_cancelreservation",
+      "label": "cancelReservation()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "cancelreservation()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L590"
+    },
+    {
+      "id": "src_worker_domain_createqrtoken",
+      "label": "createQrToken()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "createqrtoken()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L1117"
+    },
+    {
+      "id": "src_worker_domain_createreservation",
+      "label": "createReservation()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "createreservation()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L338"
+    },
+    {
+      "id": "src_worker_domain_declinereservation",
+      "label": "declineReservation()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "declinereservation()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L559"
+    },
+    {
+      "id": "src_worker_domain_findavailableassets",
+      "label": "findAvailableAssets()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "findavailableassets()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L90"
+    },
+    {
+      "id": "src_worker_domain_formattunis",
+      "label": "formatTunis()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "formattunis()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L985"
+    },
+    {
+      "id": "src_worker_domain_getreservation",
+      "label": "getReservation()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "getreservation()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L198"
+    },
+    {
+      "id": "src_worker_domain_id",
+      "label": "id()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "id()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L8"
+    },
+    {
+      "id": "src_worker_domain_listboardaudit",
+      "label": "listBoardAudit()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "listboardaudit()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L1107"
+    },
+    {
+      "id": "src_worker_domain_listboardreservations",
+      "label": "listBoardReservations()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "listboardreservations()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L308"
+    },
+    {
+      "id": "src_worker_domain_listcatalogue",
+      "label": "listCatalogue()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "listcatalogue()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L125"
+    },
+    {
+      "id": "src_worker_domain_listreservations",
+      "label": "listReservations()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "listreservations()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L299"
+    },
+    {
+      "id": "src_worker_domain_notify",
+      "label": "notify()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "notify()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L55"
+    },
+    {
+      "id": "src_worker_domain_notifyboard",
+      "label": "notifyBoard()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "notifyboard()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L69"
+    },
+    {
+      "id": "src_worker_domain_one",
+      "label": "one()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "one()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L23"
+    },
+    {
+      "id": "src_worker_domain_opaquetoken",
+      "label": "opaqueToken()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "opaquetoken()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L9"
+    },
+    {
+      "id": "src_worker_domain_reschedulereservation",
+      "label": "rescheduleReservation()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "reschedulereservation()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L732"
+    },
+    {
+      "id": "src_worker_domain_rows",
+      "label": "rows()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "rows()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L18"
+    },
+    {
+      "id": "src_worker_domain_scanasset",
+      "label": "scanAsset()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "scanasset()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L804"
+    },
+    {
+      "id": "src_worker_domain_tunisdayrange",
+      "label": "tunisDayRange()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "tunisdayrange()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L993"
+    },
+    {
+      "id": "src_worker_domain_validatewindow",
+      "label": "validateWindow()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "validatewindow()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L325"
+    },
+    {
+      "id": "src_worker_domain_write",
+      "label": "write()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "write()",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L27"
     },
     {
       "id": "api_path_approvereservation",
@@ -1298,7 +1298,7 @@
       "file_type": "code",
       "norm_label": "approvereservation()",
       "source_file": "api/[...path].js",
-      "source_location": "L827"
+      "source_location": "L831"
     },
     {
       "id": "api_path_assignapprovedreservation",
@@ -1310,7 +1310,7 @@
       "file_type": "code",
       "norm_label": "assignapprovedreservation()",
       "source_file": "api/[...path].js",
-      "source_location": "L1006"
+      "source_location": "L1010"
     },
     {
       "id": "api_path_audit",
@@ -1322,7 +1322,7 @@
       "file_type": "code",
       "norm_label": "audit()",
       "source_file": "api/[...path].js",
-      "source_location": "L566"
+      "source_location": "L570"
     },
     {
       "id": "api_path_boarddashboard",
@@ -1334,7 +1334,7 @@
       "file_type": "code",
       "norm_label": "boarddashboard()",
       "source_file": "api/[...path].js",
-      "source_location": "L1287"
+      "source_location": "L1291"
     },
     {
       "id": "api_path_calendarevents",
@@ -1346,7 +1346,7 @@
       "file_type": "code",
       "norm_label": "calendarevents()",
       "source_file": "api/[...path].js",
-      "source_location": "L1334"
+      "source_location": "L1338"
     },
     {
       "id": "api_path_cancelreservation",
@@ -1358,7 +1358,7 @@
       "file_type": "code",
       "norm_label": "cancelreservation()",
       "source_file": "api/[...path].js",
-      "source_location": "L956"
+      "source_location": "L960"
     },
     {
       "id": "api_path_constructor",
@@ -1370,7 +1370,7 @@
       "file_type": "code",
       "norm_label": "constructor()",
       "source_file": "api/[...path].js",
-      "source_location": "L505"
+      "source_location": "L509"
     },
     {
       "id": "api_path_createauth",
@@ -1418,7 +1418,7 @@
       "file_type": "code",
       "norm_label": "createqrtoken()",
       "source_file": "api/[...path].js",
-      "source_location": "L1380"
+      "source_location": "L1384"
     },
     {
       "id": "api_path_createreservation",
@@ -1430,7 +1430,7 @@
       "file_type": "code",
       "norm_label": "createreservation()",
       "source_file": "api/[...path].js",
-      "source_location": "L731"
+      "source_location": "L735"
     },
     {
       "id": "api_path_createruntimeenv",
@@ -1442,7 +1442,7 @@
       "file_type": "code",
       "norm_label": "createruntimeenv()",
       "source_file": "api/[...path].js",
-      "source_location": "L1974"
+      "source_location": "L1978"
     },
     {
       "id": "api_path_database",
@@ -1454,7 +1454,7 @@
       "file_type": "code",
       "norm_label": "database()",
       "source_file": "api/[...path].js",
-      "source_location": "L1964"
+      "source_location": "L1968"
     },
     {
       "id": "api_path_declinereservation",
@@ -1466,7 +1466,7 @@
       "file_type": "code",
       "norm_label": "declinereservation()",
       "source_file": "api/[...path].js",
-      "source_location": "L926"
+      "source_location": "L930"
     },
     {
       "id": "api_path_escapehtml",
@@ -1490,7 +1490,7 @@
       "file_type": "code",
       "norm_label": "findavailableassets()",
       "source_file": "api/[...path].js",
-      "source_location": "L585"
+      "source_location": "L589"
     },
     {
       "id": "api_path_formattunis",
@@ -1502,7 +1502,7 @@
       "file_type": "code",
       "norm_label": "formattunis()",
       "source_file": "api/[...path].js",
-      "source_location": "L1273"
+      "source_location": "L1277"
     },
     {
       "id": "api_path_getreservation",
@@ -1514,7 +1514,7 @@
       "file_type": "code",
       "norm_label": "getreservation()",
       "source_file": "api/[...path].js",
-      "source_location": "L617"
+      "source_location": "L621"
     },
     {
       "id": "api_path_intervalfromquery",
@@ -1526,7 +1526,7 @@
       "file_type": "code",
       "norm_label": "intervalfromquery()",
       "source_file": "api/[...path].js",
-      "source_location": "L1456"
+      "source_location": "L1460"
     },
     {
       "id": "api_path_isratelimited",
@@ -1538,7 +1538,7 @@
       "file_type": "code",
       "norm_label": "isratelimited()",
       "source_file": "api/[...path].js",
-      "source_location": "L522"
+      "source_location": "L526"
     },
     {
       "id": "api_path_jsonerror",
@@ -1550,7 +1550,7 @@
       "file_type": "code",
       "norm_label": "jsonerror()",
       "source_file": "api/[...path].js",
-      "source_location": "L511"
+      "source_location": "L515"
     },
     {
       "id": "api_path_listboardaudit",
@@ -1562,7 +1562,7 @@
       "file_type": "code",
       "norm_label": "listboardaudit()",
       "source_file": "api/[...path].js",
-      "source_location": "L1371"
+      "source_location": "L1375"
     },
     {
       "id": "api_path_listboardreservations",
@@ -1574,7 +1574,7 @@
       "file_type": "code",
       "norm_label": "listboardreservations()",
       "source_file": "api/[...path].js",
-      "source_location": "L712"
+      "source_location": "L716"
     },
     {
       "id": "api_path_listcatalogue",
@@ -1586,7 +1586,7 @@
       "file_type": "code",
       "norm_label": "listcatalogue()",
       "source_file": "api/[...path].js",
-      "source_location": "L605"
+      "source_location": "L609"
     },
     {
       "id": "api_path_listreservations",
@@ -1598,7 +1598,7 @@
       "file_type": "code",
       "norm_label": "listreservations()",
       "source_file": "api/[...path].js",
-      "source_location": "L704"
+      "source_location": "L708"
     },
     {
       "id": "api_path_notify",
@@ -1610,7 +1610,7 @@
       "file_type": "code",
       "norm_label": "notify()",
       "source_file": "api/[...path].js",
-      "source_location": "L572"
+      "source_location": "L576"
     },
     {
       "id": "api_path_notifyboard",
@@ -1622,7 +1622,7 @@
       "file_type": "code",
       "norm_label": "notifyboard()",
       "source_file": "api/[...path].js",
-      "source_location": "L578"
+      "source_location": "L582"
     },
     {
       "id": "api_path_one",
@@ -1634,7 +1634,7 @@
       "file_type": "code",
       "norm_label": "one()",
       "source_file": "api/[...path].js",
-      "source_location": "L550"
+      "source_location": "L554"
     },
     {
       "id": "api_path_randomid",
@@ -1646,7 +1646,7 @@
       "file_type": "code",
       "norm_label": "randomid()",
       "source_file": "api/[...path].js",
-      "source_location": "L1383"
+      "source_location": "L1387"
     },
     {
       "id": "api_path_requestip",
@@ -1658,7 +1658,7 @@
       "file_type": "code",
       "norm_label": "requestip()",
       "source_file": "api/[...path].js",
-      "source_location": "L536"
+      "source_location": "L540"
     },
     {
       "id": "api_path_reschedulereservation",
@@ -1670,7 +1670,7 @@
       "file_type": "code",
       "norm_label": "reschedulereservation()",
       "source_file": "api/[...path].js",
-      "source_location": "L1068"
+      "source_location": "L1072"
     },
     {
       "id": "api_path_resolveidentity",
@@ -1682,7 +1682,7 @@
       "file_type": "code",
       "norm_label": "resolveidentity()",
       "source_file": "api/[...path].js",
-      "source_location": "L455"
+      "source_location": "L459"
     },
     {
       "id": "api_path_rows",
@@ -1694,7 +1694,7 @@
       "file_type": "code",
       "norm_label": "rows()",
       "source_file": "api/[...path].js",
-      "source_location": "L546"
+      "source_location": "L550"
     },
     {
       "id": "api_path_sameorigin",
@@ -1706,7 +1706,7 @@
       "file_type": "code",
       "norm_label": "sameorigin()",
       "source_file": "api/[...path].js",
-      "source_location": "L514"
+      "source_location": "L518"
     },
     {
       "id": "api_path_scanasset",
@@ -1718,7 +1718,7 @@
       "file_type": "code",
       "norm_label": "scanasset()",
       "source_file": "api/[...path].js",
-      "source_location": "L1124"
+      "source_location": "L1128"
     },
     {
       "id": "api_path_sendemail",
@@ -1754,7 +1754,7 @@
       "file_type": "code",
       "norm_label": "tunisdayrange()",
       "source_file": "api/[...path].js",
-      "source_location": "L1280"
+      "source_location": "L1284"
     },
     {
       "id": "api_path_validatewindow",
@@ -1766,7 +1766,7 @@
       "file_type": "code",
       "norm_label": "validatewindow()",
       "source_file": "api/[...path].js",
-      "source_location": "L719"
+      "source_location": "L723"
     },
     {
       "id": "api_path_write",
@@ -1778,7 +1778,7 @@
       "file_type": "code",
       "norm_label": "write()",
       "source_file": "api/[...path].js",
-      "source_location": "L553"
+      "source_location": "L557"
     },
     {
       "id": "21st_design",
@@ -2213,7 +2213,7 @@
       "file_type": "code",
       "norm_label": "client",
       "source_file": "scripts/bootstrap-superadmin.mjs",
-      "source_location": "L14"
+      "source_location": "L15"
     },
     {
       "id": "scripts_bootstrap_superadmin_email",
@@ -2224,7 +2224,29 @@
       "file_type": "code",
       "norm_label": "email",
       "source_file": "scripts/bootstrap-superadmin.mjs",
-      "source_location": "L5"
+      "source_location": "L7"
+    },
+    {
+      "id": "scripts_bootstrap_superadmin_now",
+      "label": "now",
+      "_origin": "ast",
+      "community": 121,
+      "community_name": "bootstrap-superadmin.mjs",
+      "file_type": "code",
+      "norm_label": "now",
+      "source_file": "scripts/bootstrap-superadmin.mjs",
+      "source_location": "L18"
+    },
+    {
+      "id": "scripts_bootstrap_superadmin_password",
+      "label": "password",
+      "_origin": "ast",
+      "community": 121,
+      "community_name": "bootstrap-superadmin.mjs",
+      "file_type": "code",
+      "norm_label": "password",
+      "source_file": "scripts/bootstrap-superadmin.mjs",
+      "source_location": "L16"
     },
     {
       "id": "package_dependencies",
@@ -2249,15 +2271,15 @@
       "source_location": "L44"
     },
     {
-      "id": "package_dependencies_clsx",
-      "label": "clsx",
+      "id": "package_dependencies_fullcalendar_daygrid",
+      "label": "@fullcalendar/daygrid",
       "_origin": "ast",
       "community": 122,
       "community_name": "dependencies",
       "file_type": "code",
-      "norm_label": "clsx",
+      "norm_label": "@fullcalendar/daygrid",
       "source_file": "package.json",
-      "source_location": "L46"
+      "source_location": "L26"
     },
     {
       "id": "package_dependencies_react_router_dom",
@@ -2293,15 +2315,15 @@
       "source_location": "L44"
     },
     {
-      "id": "clsx",
-      "label": "clsx",
+      "id": "fullcalendar_daygrid",
+      "label": "@fullcalendar/daygrid",
       "_origin": "ast",
       "community": 122,
       "community_name": "dependencies",
       "file_type": "concept",
-      "norm_label": "clsx",
+      "norm_label": "@fullcalendar/daygrid",
       "source_file": "package.json",
-      "source_location": "L46"
+      "source_location": "L26"
     },
     {
       "id": "react_router_dom",
@@ -2880,7 +2902,7 @@
       "label": "api.test.ts",
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "api.test.ts",
       "source_file": "src/test/api.test.ts",
@@ -2891,7 +2913,7 @@
       "label": "auth.ts",
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "auth.ts",
       "source_file": "src/worker/auth.ts",
@@ -2902,7 +2924,7 @@
       "label": "database.ts",
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "database.ts",
       "source_file": "src/worker/database.ts",
@@ -2913,7 +2935,7 @@
       "label": "dev-server.ts",
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "dev-server.ts",
       "source_file": "src/worker/dev-server.ts",
@@ -2924,7 +2946,7 @@
       "label": "environment",
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "environment",
       "source_file": "src/worker/dev-server.ts",
@@ -2935,7 +2957,7 @@
       "label": "server",
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "server",
       "source_file": "src/worker/dev-server.ts",
@@ -2946,7 +2968,7 @@
       "label": "email.ts",
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "email.ts",
       "source_file": "src/worker/email.ts",
@@ -2957,7 +2979,7 @@
       "label": "env.ts",
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "env.ts",
       "source_file": "src/worker/env.ts",
@@ -2968,7 +2990,7 @@
       "label": "identity.ts",
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "identity.ts",
       "source_file": "src/worker/identity.ts",
@@ -2979,7 +3001,7 @@
       "label": "requireBoard",
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "requireboard",
       "source_file": "src/worker/identity.ts",
@@ -2990,7 +3012,7 @@
       "label": "requireSuperadmin",
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "requiresuperadmin",
       "source_file": "src/worker/identity.ts",
@@ -3001,83 +3023,17 @@
       "label": "requireUser",
       "_origin": "ast",
       "community": 157,
-      "community_name": "env.ts",
+      "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "requireuser",
       "source_file": "src/worker/identity.ts",
       "source_location": "L30"
     },
     {
-      "id": "src_worker_index_app",
-      "label": "app",
-      "_origin": "ast",
-      "community": 157,
-      "community_name": "env.ts",
-      "file_type": "code",
-      "norm_label": "app",
-      "source_file": "src/worker/index.ts",
-      "source_location": "L33"
-    },
-    {
-      "id": "src_worker_runtime_env",
-      "label": "runtime-env.ts",
-      "_origin": "ast",
-      "community": 157,
-      "community_name": "env.ts",
-      "file_type": "code",
-      "norm_label": "runtime-env.ts",
-      "source_file": "src/worker/runtime-env.ts",
-      "source_location": "L1"
-    },
-    {
-      "id": "src_worker_serverless",
-      "label": "serverless.ts",
-      "_origin": "ast",
-      "community": 157,
-      "community_name": "env.ts",
-      "file_type": "code",
-      "norm_label": "serverless.ts",
-      "source_file": "src/worker/serverless.ts",
-      "source_location": "L1"
-    },
-    {
-      "id": "src_worker_serverless_handler",
-      "label": "handler",
-      "_origin": "ast",
-      "community": 157,
-      "community_name": "env.ts",
-      "file_type": "code",
-      "norm_label": "handler",
-      "source_file": "src/worker/serverless.ts",
-      "source_location": "L5"
-    },
-    {
-      "id": "src_worker_domain",
-      "label": "domain.ts",
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "domain.ts",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L1"
-    },
-    {
-      "id": "src_worker_domain_display_time_zone",
-      "label": "DISPLAY_TIME_ZONE",
-      "_origin": "ast",
-      "community": 158,
-      "community_name": "index.ts",
-      "file_type": "code",
-      "norm_label": "display_time_zone",
-      "source_file": "src/worker/domain.ts",
-      "source_location": "L6"
-    },
-    {
       "id": "src_worker_index",
       "label": "index.ts",
       "_origin": "ast",
-      "community": 158,
+      "community": 157,
       "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "index.ts",
@@ -3085,10 +3041,21 @@
       "source_location": "L1"
     },
     {
+      "id": "src_worker_index_app",
+      "label": "app",
+      "_origin": "ast",
+      "community": 157,
+      "community_name": "index.ts",
+      "file_type": "code",
+      "norm_label": "app",
+      "source_file": "src/worker/index.ts",
+      "source_location": "L33"
+    },
+    {
       "id": "src_worker_index_assignmentsschema",
       "label": "assignmentsSchema",
       "_origin": "ast",
-      "community": 158,
+      "community": 157,
       "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "assignmentsschema",
@@ -3099,7 +3066,7 @@
       "id": "src_worker_index_createreservationschema",
       "label": "createReservationSchema",
       "_origin": "ast",
-      "community": 158,
+      "community": 157,
       "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "createreservationschema",
@@ -3110,7 +3077,7 @@
       "id": "src_worker_index_equipmentschema",
       "label": "equipmentSchema",
       "_origin": "ast",
-      "community": 158,
+      "community": 157,
       "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "equipmentschema",
@@ -3121,7 +3088,7 @@
       "id": "src_worker_index_millisiso",
       "label": "millisIso",
       "_origin": "ast",
-      "community": 158,
+      "community": 157,
       "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "millisiso",
@@ -3129,15 +3096,70 @@
       "source_location": "L34"
     },
     {
+      "id": "src_worker_runtime_env",
+      "label": "runtime-env.ts",
+      "_origin": "ast",
+      "community": 157,
+      "community_name": "index.ts",
+      "file_type": "code",
+      "norm_label": "runtime-env.ts",
+      "source_file": "src/worker/runtime-env.ts",
+      "source_location": "L1"
+    },
+    {
       "id": "src_worker_security",
       "label": "security.ts",
       "_origin": "ast",
-      "community": 158,
+      "community": 157,
       "community_name": "index.ts",
       "file_type": "code",
       "norm_label": "security.ts",
       "source_file": "src/worker/security.ts",
       "source_location": "L1"
+    },
+    {
+      "id": "src_worker_serverless",
+      "label": "serverless.ts",
+      "_origin": "ast",
+      "community": 157,
+      "community_name": "index.ts",
+      "file_type": "code",
+      "norm_label": "serverless.ts",
+      "source_file": "src/worker/serverless.ts",
+      "source_location": "L1"
+    },
+    {
+      "id": "src_worker_serverless_handler",
+      "label": "handler",
+      "_origin": "ast",
+      "community": 157,
+      "community_name": "index.ts",
+      "file_type": "code",
+      "norm_label": "handler",
+      "source_file": "src/worker/serverless.ts",
+      "source_location": "L5"
+    },
+    {
+      "id": "src_worker_domain",
+      "label": "domain.ts",
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "domain.ts",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L1"
+    },
+    {
+      "id": "src_worker_domain_display_time_zone",
+      "label": "DISPLAY_TIME_ZONE",
+      "_origin": "ast",
+      "community": 158,
+      "community_name": "domain.ts",
+      "file_type": "code",
+      "norm_label": "display_time_zone",
+      "source_file": "src/worker/domain.ts",
+      "source_location": "L6"
     },
     {
       "id": "api_path",
@@ -4438,26 +4460,26 @@
       "source_location": "L45"
     },
     {
-      "id": "package_dependencies_fullcalendar_daygrid",
-      "label": "@fullcalendar/daygrid",
+      "id": "package_dependencies_clsx",
+      "label": "clsx",
       "_origin": "ast",
       "community": 8,
-      "community_name": "@fullcalendar/daygrid",
+      "community_name": "clsx",
       "file_type": "code",
-      "norm_label": "@fullcalendar/daygrid",
+      "norm_label": "clsx",
       "source_file": "package.json",
-      "source_location": "L26"
+      "source_location": "L46"
     },
     {
-      "id": "fullcalendar_daygrid",
-      "label": "@fullcalendar/daygrid",
+      "id": "clsx",
+      "label": "clsx",
       "_origin": "ast",
       "community": 8,
-      "community_name": "@fullcalendar/daygrid",
+      "community_name": "clsx",
       "file_type": "concept",
-      "norm_label": "@fullcalendar/daygrid",
+      "norm_label": "clsx",
       "source_file": "package.json",
-      "source_location": "L26"
+      "source_location": "L46"
     },
     {
       "id": "src_test_setup",
@@ -4789,7 +4811,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L828",
+      "source_location": "L832",
       "weight": 1.0
     },
     {
@@ -4801,7 +4823,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L829",
+      "source_location": "L833",
       "weight": 1.0
     },
     {
@@ -4813,7 +4835,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L841",
+      "source_location": "L845",
       "weight": 1.0
     },
     {
@@ -4825,7 +4847,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L848",
+      "source_location": "L852",
       "weight": 1.0
     },
     {
@@ -4837,7 +4859,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L906",
+      "source_location": "L910",
       "weight": 1.0
     },
     {
@@ -4849,7 +4871,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L915",
+      "source_location": "L919",
       "weight": 1.0
     },
     {
@@ -4861,7 +4883,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L924",
+      "source_location": "L928",
       "weight": 1.0
     },
     {
@@ -4873,7 +4895,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L1007",
+      "source_location": "L1011",
       "weight": 1.0
     },
     {
@@ -4885,7 +4907,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L1014",
+      "source_location": "L1018",
       "weight": 1.0
     },
     {
@@ -4897,7 +4919,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L1062",
+      "source_location": "L1066",
       "weight": 1.0
     },
     {
@@ -4909,7 +4931,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L1289",
+      "source_location": "L1293",
       "weight": 1.0
     },
     {
@@ -4921,7 +4943,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L1291",
+      "source_location": "L1295",
       "weight": 1.0
     },
     {
@@ -4933,7 +4955,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L1310",
+      "source_location": "L1314",
       "weight": 1.0
     },
     {
@@ -4945,7 +4967,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L1327",
+      "source_location": "L1331",
       "weight": 1.0
     },
     {
@@ -4957,7 +4979,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L1338",
+      "source_location": "L1342",
       "weight": 1.0
     },
     {
@@ -4969,7 +4991,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L1347",
+      "source_location": "L1351",
       "weight": 1.0
     },
     {
@@ -4981,7 +5003,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L1004",
+      "source_location": "L1008",
       "weight": 1.0
     },
     {
@@ -4993,7 +5015,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L957",
+      "source_location": "L961",
       "weight": 1.0
     },
     {
@@ -5005,7 +5027,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L958",
+      "source_location": "L962",
       "weight": 1.0
     },
     {
@@ -5017,7 +5039,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L994",
+      "source_location": "L998",
       "weight": 1.0
     },
     {
@@ -5029,7 +5051,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L995",
+      "source_location": "L999",
       "weight": 1.0
     },
     {
@@ -5041,7 +5063,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L440",
+      "source_location": "L444",
       "weight": 1.0
     },
     {
@@ -5053,7 +5075,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L444",
+      "source_location": "L448",
       "weight": 1.0
     },
     {
@@ -5065,7 +5087,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L732",
+      "source_location": "L736",
       "weight": 1.0
     },
     {
@@ -5077,7 +5099,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L751",
+      "source_location": "L755",
       "weight": 1.0
     },
     {
@@ -5089,7 +5111,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L753",
+      "source_location": "L757",
       "weight": 1.0
     },
     {
@@ -5101,7 +5123,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L777",
+      "source_location": "L781",
       "weight": 1.0
     },
     {
@@ -5113,7 +5135,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L814",
+      "source_location": "L818",
       "weight": 1.0
     },
     {
@@ -5125,7 +5147,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L817",
+      "source_location": "L821",
       "weight": 1.0
     },
     {
@@ -5137,7 +5159,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L825",
+      "source_location": "L829",
       "weight": 1.0
     },
     {
@@ -5149,7 +5171,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L1991",
+      "source_location": "L1995",
       "weight": 1.0
     },
     {
@@ -5161,7 +5183,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L1969",
+      "source_location": "L1973",
       "weight": 1.0
     },
     {
@@ -5173,7 +5195,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L1970",
+      "source_location": "L1974",
       "weight": 1.0
     },
     {
@@ -5185,7 +5207,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L927",
+      "source_location": "L931",
       "weight": 1.0
     },
     {
@@ -5197,7 +5219,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L928",
+      "source_location": "L932",
       "weight": 1.0
     },
     {
@@ -5209,7 +5231,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L944",
+      "source_location": "L948",
       "weight": 1.0
     },
     {
@@ -5221,7 +5243,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L945",
+      "source_location": "L949",
       "weight": 1.0
     },
     {
@@ -5233,7 +5255,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L954",
+      "source_location": "L958",
       "weight": 1.0
     },
     {
@@ -5245,7 +5267,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L586",
+      "source_location": "L590",
       "weight": 1.0
     },
     {
@@ -5257,7 +5279,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L619",
+      "source_location": "L623",
       "weight": 1.0
     },
     {
@@ -5269,7 +5291,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L632",
+      "source_location": "L636",
       "weight": 1.0
     },
     {
@@ -5281,7 +5303,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L1372",
+      "source_location": "L1376",
       "weight": 1.0
     },
     {
@@ -5293,7 +5315,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L713",
+      "source_location": "L717",
       "weight": 1.0
     },
     {
@@ -5305,7 +5327,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L717",
+      "source_location": "L721",
       "weight": 1.0
     },
     {
@@ -5317,7 +5339,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L606",
+      "source_location": "L610",
       "weight": 1.0
     },
     {
@@ -5329,7 +5351,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L613",
+      "source_location": "L617",
       "weight": 1.0
     },
     {
@@ -5341,7 +5363,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L705",
+      "source_location": "L709",
       "weight": 1.0
     },
     {
@@ -5353,7 +5375,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L710",
+      "source_location": "L714",
       "weight": 1.0
     },
     {
@@ -5365,7 +5387,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L579",
+      "source_location": "L583",
       "weight": 1.0
     },
     {
@@ -5377,7 +5399,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L583",
+      "source_location": "L587",
       "weight": 1.0
     },
     {
@@ -5389,7 +5411,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L551",
+      "source_location": "L555",
       "weight": 1.0
     },
     {
@@ -5401,7 +5423,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L1069",
+      "source_location": "L1073",
       "weight": 1.0
     },
     {
@@ -5413,7 +5435,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L1070",
+      "source_location": "L1074",
       "weight": 1.0
     },
     {
@@ -5425,7 +5447,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L1071",
+      "source_location": "L1075",
       "weight": 1.0
     },
     {
@@ -5437,7 +5459,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L1106",
+      "source_location": "L1110",
       "weight": 1.0
     },
     {
@@ -5449,7 +5471,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L1113",
+      "source_location": "L1117",
       "weight": 1.0
     },
     {
@@ -5461,7 +5483,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L1122",
+      "source_location": "L1126",
       "weight": 1.0
     },
     {
@@ -5473,7 +5495,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L456",
+      "source_location": "L460",
       "weight": 1.0
     },
     {
@@ -5485,7 +5507,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L457",
+      "source_location": "L461",
       "weight": 1.0
     },
     {
@@ -5497,7 +5519,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L517",
+      "source_location": "L521",
       "weight": 1.0
     },
     {
@@ -5509,7 +5531,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L518",
+      "source_location": "L522",
       "weight": 1.0
     },
     {
@@ -5521,7 +5543,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L1129",
+      "source_location": "L1133",
       "weight": 1.0
     },
     {
@@ -5533,7 +5555,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L1130",
+      "source_location": "L1134",
       "weight": 1.0
     },
     {
@@ -5545,7 +5567,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L1194",
+      "source_location": "L1198",
       "weight": 1.0
     },
     {
@@ -5557,7 +5579,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L1197",
+      "source_location": "L1201",
       "weight": 1.0
     },
     {
@@ -5569,19 +5591,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "api/[...path].js",
-      "source_location": "L1229",
-      "weight": 1.0
-    },
-    {
-      "source": "src_app_app_accessgate",
-      "target": "src_app_app_api",
-      "relation": "calls",
-      "_origin": "ast",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "context": "call",
-      "source_file": "src/app/App.tsx",
-      "source_location": "L418",
+      "source_location": "L1233",
       "weight": 1.0
     },
     {
@@ -5593,7 +5603,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L420",
+      "source_location": "L429",
       "weight": 1.0
     },
     {
@@ -5605,7 +5615,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L439",
+      "source_location": "L466",
       "weight": 1.0
     },
     {
@@ -5617,7 +5627,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L2136",
+      "source_location": "L2206",
       "weight": 1.0
     },
     {
@@ -5629,7 +5639,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L2147",
+      "source_location": "L2217",
       "weight": 1.0
     },
     {
@@ -5641,7 +5651,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L2158",
+      "source_location": "L2228",
       "weight": 1.0
     },
     {
@@ -5653,7 +5663,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L139",
+      "source_location": "L145",
       "weight": 1.0
     },
     {
@@ -5665,7 +5675,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L146",
+      "source_location": "L156",
       "weight": 1.0
     },
     {
@@ -5677,7 +5687,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L232",
+      "source_location": "L244",
       "weight": 1.0
     },
     {
@@ -5689,7 +5699,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L2276",
+      "source_location": "L2346",
       "weight": 1.0
     },
     {
@@ -5701,7 +5711,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L2307",
+      "source_location": "L2377",
       "weight": 1.0
     },
     {
@@ -5713,7 +5723,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L1820",
+      "source_location": "L1890",
       "weight": 1.0
     },
     {
@@ -5725,7 +5735,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L1833",
+      "source_location": "L1903",
       "weight": 1.0
     },
     {
@@ -5737,7 +5747,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L1844",
+      "source_location": "L1914",
       "weight": 1.0
     },
     {
@@ -5749,7 +5759,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L1085",
+      "source_location": "L1155",
       "weight": 1.0
     },
     {
@@ -5761,7 +5771,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L1143",
+      "source_location": "L1213",
       "weight": 1.0
     },
     {
@@ -5773,7 +5783,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L1539",
+      "source_location": "L1609",
       "weight": 1.0
     },
     {
@@ -5785,7 +5795,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L1558",
+      "source_location": "L1628",
       "weight": 1.0
     },
     {
@@ -5797,7 +5807,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L1585",
+      "source_location": "L1655",
       "weight": 1.0
     },
     {
@@ -5809,7 +5819,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L1597",
+      "source_location": "L1667",
       "weight": 1.0
     },
     {
@@ -5821,7 +5831,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L1219",
+      "source_location": "L1289",
       "weight": 1.0
     },
     {
@@ -5833,7 +5843,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L1253",
+      "source_location": "L1323",
       "weight": 1.0
     },
     {
@@ -5845,7 +5855,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L1288",
+      "source_location": "L1358",
       "weight": 1.0
     },
     {
@@ -5857,7 +5867,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L1321",
+      "source_location": "L1391",
       "weight": 1.0
     },
     {
@@ -5869,7 +5879,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L1981",
+      "source_location": "L2051",
       "weight": 1.0
     },
     {
@@ -5881,7 +5891,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L2088",
+      "source_location": "L2158",
       "weight": 1.0
     },
     {
@@ -5893,7 +5903,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L574",
+      "source_location": "L646",
       "weight": 1.0
     },
     {
@@ -5905,7 +5915,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L575",
+      "source_location": "L647",
       "weight": 1.0
     },
     {
@@ -5917,7 +5927,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L583",
+      "source_location": "L654",
       "weight": 1.0
     },
     {
@@ -5929,7 +5939,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L585",
+      "source_location": "L656",
       "weight": 1.0
     },
     {
@@ -5958,18 +5968,6 @@
     },
     {
       "source": "src_app_app_myreservations",
-      "target": "src_app_app_fmtwindow",
-      "relation": "calls",
-      "_origin": "ast",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "context": "call",
-      "source_file": "src/app/App.tsx",
-      "source_location": "L1031",
-      "weight": 1.0
-    },
-    {
-      "source": "src_app_app_myreservations",
       "target": "src_app_app_api",
       "relation": "calls",
       "_origin": "ast",
@@ -5977,7 +5975,19 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L973",
+      "source_location": "L1043",
+      "weight": 1.0
+    },
+    {
+      "source": "src_app_app_myreservations",
+      "target": "src_app_app_fmtwindow",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "src/app/App.tsx",
+      "source_location": "L1101",
       "weight": 1.0
     },
     {
@@ -5989,7 +5999,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L762",
+      "source_location": "L812",
       "weight": 1.0
     },
     {
@@ -6001,7 +6011,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L763",
+      "source_location": "L813",
       "weight": 1.0
     },
     {
@@ -6013,7 +6023,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L768",
+      "source_location": "L819",
       "weight": 1.0
     },
     {
@@ -6025,7 +6035,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L769",
+      "source_location": "L820",
       "weight": 1.0
     },
     {
@@ -6037,7 +6047,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/app/App.tsx",
-      "source_location": "L789",
+      "source_location": "L840",
       "weight": 1.0
     },
     {
@@ -6049,7 +6059,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/worker/auth.ts",
-      "source_location": "L87",
+      "source_location": "L91",
       "weight": 1.0
     },
     {
@@ -6061,7 +6071,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "src/worker/auth.ts",
-      "source_location": "L91",
+      "source_location": "L95",
       "weight": 1.0
     },
     {
@@ -8623,7 +8633,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L1006",
+      "source_location": "L1010",
       "weight": 1.0
     },
     {
@@ -8634,7 +8644,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L1068",
+      "source_location": "L1072",
       "weight": 1.0
     },
     {
@@ -8645,7 +8655,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L1124",
+      "source_location": "L1128",
       "weight": 1.0
     },
     {
@@ -8656,7 +8666,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L1273",
+      "source_location": "L1277",
       "weight": 1.0
     },
     {
@@ -8667,7 +8677,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L1280",
+      "source_location": "L1284",
       "weight": 1.0
     },
     {
@@ -8678,7 +8688,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L1287",
+      "source_location": "L1291",
       "weight": 1.0
     },
     {
@@ -8689,7 +8699,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L1334",
+      "source_location": "L1338",
       "weight": 1.0
     },
     {
@@ -8700,7 +8710,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L1371",
+      "source_location": "L1375",
       "weight": 1.0
     },
     {
@@ -8711,7 +8721,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L1380",
+      "source_location": "L1384",
       "weight": 1.0
     },
     {
@@ -8722,7 +8732,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L1383",
+      "source_location": "L1387",
       "weight": 1.0
     },
     {
@@ -8733,7 +8743,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L1456",
+      "source_location": "L1460",
       "weight": 1.0
     },
     {
@@ -8744,7 +8754,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L1964",
+      "source_location": "L1968",
       "weight": 1.0
     },
     {
@@ -8755,7 +8765,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L1974",
+      "source_location": "L1978",
       "weight": 1.0
     },
     {
@@ -8832,7 +8842,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L455",
+      "source_location": "L459",
       "weight": 1.0
     },
     {
@@ -8843,7 +8853,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L505",
+      "source_location": "L509",
       "weight": 1.0
     },
     {
@@ -8854,7 +8864,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L511",
+      "source_location": "L515",
       "weight": 1.0
     },
     {
@@ -8865,7 +8875,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L522",
+      "source_location": "L526",
       "weight": 1.0
     },
     {
@@ -8876,7 +8886,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L536",
+      "source_location": "L540",
       "weight": 1.0
     },
     {
@@ -8887,7 +8897,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L546",
+      "source_location": "L550",
       "weight": 1.0
     },
     {
@@ -8898,7 +8908,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L550",
+      "source_location": "L554",
       "weight": 1.0
     },
     {
@@ -8909,7 +8919,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L553",
+      "source_location": "L557",
       "weight": 1.0
     },
     {
@@ -8920,7 +8930,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L566",
+      "source_location": "L570",
       "weight": 1.0
     },
     {
@@ -8931,7 +8941,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L572",
+      "source_location": "L576",
       "weight": 1.0
     },
     {
@@ -8942,7 +8952,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L578",
+      "source_location": "L582",
       "weight": 1.0
     },
     {
@@ -8953,7 +8963,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L585",
+      "source_location": "L589",
       "weight": 1.0
     },
     {
@@ -8964,7 +8974,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L605",
+      "source_location": "L609",
       "weight": 1.0
     },
     {
@@ -8975,7 +8985,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L617",
+      "source_location": "L621",
       "weight": 1.0
     },
     {
@@ -8986,7 +8996,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L704",
+      "source_location": "L708",
       "weight": 1.0
     },
     {
@@ -8997,7 +9007,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L712",
+      "source_location": "L716",
       "weight": 1.0
     },
     {
@@ -9008,7 +9018,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L719",
+      "source_location": "L723",
       "weight": 1.0
     },
     {
@@ -9019,7 +9029,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L731",
+      "source_location": "L735",
       "weight": 1.0
     },
     {
@@ -9030,7 +9040,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L827",
+      "source_location": "L831",
       "weight": 1.0
     },
     {
@@ -9041,7 +9051,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L926",
+      "source_location": "L930",
       "weight": 1.0
     },
     {
@@ -9052,7 +9062,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "api/[...path].js",
-      "source_location": "L956",
+      "source_location": "L960",
       "weight": 1.0
     },
     {
@@ -10108,7 +10118,29 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "scripts/bootstrap-superadmin.mjs",
-      "source_location": "L14",
+      "source_location": "L15",
+      "weight": 1.0
+    },
+    {
+      "source": "scripts_bootstrap_superadmin",
+      "target": "scripts_bootstrap_superadmin_password",
+      "relation": "contains",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "scripts/bootstrap-superadmin.mjs",
+      "source_location": "L16",
+      "weight": 1.0
+    },
+    {
+      "source": "scripts_bootstrap_superadmin",
+      "target": "scripts_bootstrap_superadmin_now",
+      "relation": "contains",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "scripts/bootstrap-superadmin.mjs",
+      "source_location": "L18",
       "weight": 1.0
     },
     {
@@ -10119,7 +10151,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "scripts/bootstrap-superadmin.mjs",
-      "source_location": "L5",
+      "source_location": "L7",
       "weight": 1.0
     },
     {
@@ -10223,6 +10255,17 @@
     },
     {
       "source": "src_app_app",
+      "target": "src_app_app_statuspill",
+      "relation": "contains",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/app/App.tsx",
+      "source_location": "L1024",
+      "weight": 1.0
+    },
+    {
+      "source": "src_app_app",
       "target": "src_app_app_dateinput",
       "relation": "contains",
       "_origin": "ast",
@@ -10230,6 +10273,17 @@
       "confidence_score": 1.0,
       "source_file": "src/app/App.tsx",
       "source_location": "L103",
+      "weight": 1.0
+    },
+    {
+      "source": "src_app_app",
+      "target": "src_app_app_myreservations",
+      "relation": "contains",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/app/App.tsx",
+      "source_location": "L1038",
       "weight": 1.0
     },
     {
@@ -10256,17 +10310,6 @@
     },
     {
       "source": "src_app_app",
-      "target": "src_app_app_boarddashboard",
-      "relation": "contains",
-      "_origin": "ast",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "src/app/App.tsx",
-      "source_location": "L1075",
-      "weight": 1.0
-    },
-    {
-      "source": "src_app_app",
       "target": "src_app_app_api",
       "relation": "contains",
       "_origin": "ast",
@@ -10278,6 +10321,17 @@
     },
     {
       "source": "src_app_app",
+      "target": "src_app_app_boarddashboard",
+      "relation": "contains",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/app/App.tsx",
+      "source_location": "L1145",
+      "weight": 1.0
+    },
+    {
+      "source": "src_app_app",
       "target": "src_app_app_post",
       "relation": "contains",
       "_origin": "ast",
@@ -10285,17 +10339,6 @@
       "confidence_score": 1.0,
       "source_file": "src/app/App.tsx",
       "source_location": "L120",
-      "weight": 1.0
-    },
-    {
-      "source": "src_app_app",
-      "target": "src_app_app_boardreservations",
-      "relation": "contains",
-      "_origin": "ast",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "src/app/App.tsx",
-      "source_location": "L1210",
       "weight": 1.0
     },
     {
@@ -10322,6 +10365,17 @@
     },
     {
       "source": "src_app_app",
+      "target": "src_app_app_boardreservations",
+      "relation": "contains",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/app/App.tsx",
+      "source_location": "L1280",
+      "weight": 1.0
+    },
+    {
+      "source": "src_app_app",
       "target": "src_app_app_appframe",
       "relation": "contains",
       "_origin": "ast",
@@ -10339,7 +10393,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/app/App.tsx",
-      "source_location": "L1450",
+      "source_location": "L1520",
       "weight": 1.0
     },
     {
@@ -10350,7 +10404,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/app/App.tsx",
-      "source_location": "L1527",
+      "source_location": "L1597",
       "weight": 1.0
     },
     {
@@ -10361,7 +10415,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/app/App.tsx",
-      "source_location": "L1812",
+      "source_location": "L1882",
       "weight": 1.0
     },
     {
@@ -10372,7 +10426,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/app/App.tsx",
-      "source_location": "L1929",
+      "source_location": "L1999",
       "weight": 1.0
     },
     {
@@ -10383,7 +10437,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/app/App.tsx",
-      "source_location": "L2127",
+      "source_location": "L2197",
       "weight": 1.0
     },
     {
@@ -10394,7 +10448,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/app/App.tsx",
-      "source_location": "L2262",
+      "source_location": "L2332",
       "weight": 1.0
     },
     {
@@ -10405,7 +10459,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/app/App.tsx",
-      "source_location": "L2331",
+      "source_location": "L2401",
       "weight": 1.0
     },
     {
@@ -10416,7 +10470,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/app/App.tsx",
-      "source_location": "L2351",
+      "source_location": "L2421",
       "weight": 1.0
     },
     {
@@ -10427,7 +10481,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/app/App.tsx",
-      "source_location": "L2359",
+      "source_location": "L2429",
       "weight": 1.0
     },
     {
@@ -10438,7 +10492,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/app/App.tsx",
-      "source_location": "L2363",
+      "source_location": "L2433",
       "weight": 1.0
     },
     {
@@ -10449,7 +10503,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/app/App.tsx",
-      "source_location": "L305",
+      "source_location": "L317",
       "weight": 1.0
     },
     {
@@ -10460,7 +10514,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/app/App.tsx",
-      "source_location": "L309",
+      "source_location": "L321",
       "weight": 1.0
     },
     {
@@ -10471,7 +10525,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/app/App.tsx",
-      "source_location": "L328",
+      "source_location": "L340",
       "weight": 1.0
     },
     {
@@ -10482,7 +10536,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/app/App.tsx",
-      "source_location": "L379",
+      "source_location": "L386",
       "weight": 1.0
     },
     {
@@ -10493,18 +10547,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/app/App.tsx",
-      "source_location": "L402",
-      "weight": 1.0
-    },
-    {
-      "source": "src_app_app",
-      "target": "src_app_app_datewindow",
-      "relation": "contains",
-      "_origin": "ast",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "src/app/App.tsx",
-      "source_location": "L511",
+      "source_location": "L409",
       "weight": 1.0
     },
     {
@@ -10542,13 +10585,13 @@
     },
     {
       "source": "src_app_app",
-      "target": "src_app_app_catalogue",
+      "target": "src_app_app_datewindow",
       "relation": "contains",
       "_origin": "ast",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/app/App.tsx",
-      "source_location": "L563",
+      "source_location": "L585",
       "weight": 1.0
     },
     {
@@ -10564,13 +10607,24 @@
     },
     {
       "source": "src_app_app",
+      "target": "src_app_app_catalogue",
+      "relation": "contains",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/app/App.tsx",
+      "source_location": "L637",
+      "weight": 1.0
+    },
+    {
+      "source": "src_app_app",
       "target": "src_app_app_selectionpage",
       "relation": "contains",
       "_origin": "ast",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/app/App.tsx",
-      "source_location": "L744",
+      "source_location": "L794",
       "weight": 1.0
     },
     {
@@ -10593,28 +10647,6 @@
       "confidence_score": 1.0,
       "source_file": "src/app/App.tsx",
       "source_location": "L94",
-      "weight": 1.0
-    },
-    {
-      "source": "src_app_app",
-      "target": "src_app_app_statuspill",
-      "relation": "contains",
-      "_origin": "ast",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "src/app/App.tsx",
-      "source_location": "L954",
-      "weight": 1.0
-    },
-    {
-      "source": "src_app_app",
-      "target": "src_app_app_myreservations",
-      "relation": "contains",
-      "_origin": "ast",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "src/app/App.tsx",
-      "source_location": "L968",
       "weight": 1.0
     },
     {
@@ -12021,7 +12053,7 @@
       "confidence_score": 0.85,
       "context": "argument",
       "source_file": "api/[...path].js",
-      "source_location": "L1417",
+      "source_location": "L1421",
       "weight": 1.0
     },
     {
@@ -12038,5 +12070,5 @@
     }
   ],
   "hyperedges": [],
-  "built_at_commit": "ddd45e3979cf274a8650781e0e01a4445f996c5c"
+  "built_at_commit": "01bdf1e276535f8203a85fe977505b354d7a4305"
 }

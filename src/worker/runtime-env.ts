@@ -43,7 +43,13 @@ export async function createRuntimeEnv(source: NodeJS.ProcessEnv = process.env):
           : "development";
 
   if (environment === "production" && !source.APP_ORIGIN) {
-    throw new Error("APP_ORIGIN must be set to the separate IEEE INSAT SB application origin.");
+    if (source.VERCEL_PROJECT_PRODUCTION_URL) {
+      source.APP_ORIGIN = `https://${source.VERCEL_PROJECT_PRODUCTION_URL}`;
+    } else if (source.VERCEL_URL) {
+      source.APP_ORIGIN = `https://${source.VERCEL_URL}`;
+    } else {
+      throw new Error("APP_ORIGIN must be set to the separate IEEE INSAT SB application origin.");
+    }
   }
 
   const { CLIENT, DB } = database(url, authToken);

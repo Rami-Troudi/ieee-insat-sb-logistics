@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" role="img" aria-label="Gigabit WiFi 6 enterprise dual-band router with quad antennas">
+  <defs>
+    <linearGradient id="rt-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f8fafc" />
+      <stop offset="50%" stop-color="#f1f5f9" />
+      <stop offset="100%" stop-color="#e2e8f0" />
+    </linearGradient>
+    <linearGradient id="rt-body" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1e293b" />
+      <stop offset="50%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#020617" />
+    </linearGradient>
+    <linearGradient id="rt-antenna" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#334155" />
+      <stop offset="50%" stop-color="#1e293b" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+    <linearGradient id="rt-cyan" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="100%" stop-color="#00b5e2" />
+    </linearGradient>
+    <filter id="rt-shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="20" stdDeviation="24" flood-color="#0284c7" flood-opacity="0.22" />
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="600" rx="32" fill="url(#rt-bg)" />
+
+  <!-- Radiating Wireless Signal Waves (WiFi 6 GHz Waves) -->
+  <g fill="none" stroke="#00b5e2" stroke-width="2.5" opacity="0.35">
+    <path d="M340 180 C375 140 425 140 460 180" />
+    <path d="M310 150 C365 95 435 95 490 150" stroke-width="3" opacity="0.45" />
+    <path d="M280 120 C355 50 445 50 520 120" stroke-width="3.5" opacity="0.25" />
+  </g>
+
+  <!-- Ambient Ground Shadow -->
+  <ellipse cx="400" cy="495" rx="300" ry="34" fill="#0f172a" opacity="0.25" />
+
+  <!-- 4 High-Gain External Antennas (Stealth Angles) -->
+  <!-- Antenna 1 (Far Left: -40°) -->
+  <g transform="translate(240 330) rotate(-38)">
+    <rect x="-10" y="-220" width="20" height="220" rx="8" fill="url(#rt-antenna)" stroke="#475569" stroke-width="2" />
+    <circle cx="0" cy="0" r="14" fill="#0f172a" stroke="#334155" stroke-width="3" />
+    <rect x="-6" y="-200" width="12" height="6" fill="#00b5e2" />
+  </g>
+
+  <!-- Antenna 2 (Inner Left: -12°) -->
+  <g transform="translate(340 310) rotate(-12)">
+    <rect x="-10" y="-235" width="20" height="235" rx="8" fill="url(#rt-antenna)" stroke="#475569" stroke-width="2" />
+    <circle cx="0" cy="0" r="14" fill="#0f172a" stroke="#334155" stroke-width="3" />
+    <rect x="-6" y="-215" width="12" height="6" fill="#00b5e2" />
+  </g>
+
+  <!-- Antenna 3 (Inner Right: +12°) -->
+  <g transform="translate(460 310) rotate(12)">
+    <rect x="-10" y="-235" width="20" height="235" rx="8" fill="url(#rt-antenna)" stroke="#475569" stroke-width="2" />
+    <circle cx="0" cy="0" r="14" fill="#0f172a" stroke="#334155" stroke-width="3" />
+    <rect x="-6" y="-215" width="12" height="6" fill="#00b5e2" />
+  </g>
+
+  <!-- Antenna 4 (Far Right: +40°) -->
+  <g transform="translate(560 330) rotate(38)">
+    <rect x="-10" y="-220" width="20" height="220" rx="8" fill="url(#rt-antenna)" stroke="#475569" stroke-width="2" />
+    <circle cx="0" cy="0" r="14" fill="#0f172a" stroke="#334155" stroke-width="3" />
+    <rect x="-6" y="-200" width="12" height="6" fill="#00b5e2" />
+  </g>
+
+  <!-- Main Router Chassis (Aggressive Geometric Stealth Design) -->
+  <g filter="url(#rt-shadow)">
+    <!-- Main Body Upper Deck -->
+    <path d="M160 380 L230 310 L570 310 L640 380 L610 450 L190 450 Z" fill="url(#rt-body)" stroke="#334155" stroke-width="3" />
+
+    <!-- Center Glossy Piano-Black Feature Inset Stripe -->
+    <polygon points="340,310 460,310 470,450 330,450" fill="#020617" stroke="#00b5e2" stroke-width="1.5" />
+
+    <!-- Geometric Honeycomb Heat Exhaust Ventilation Grilles -->
+    <g fill="#020617" opacity="0.8">
+      <rect x="220" y="340" width="90" height="8" rx="3" />
+      <rect x="210" y="355" width="100" height="8" rx="3" />
+      <rect x="200" y="370" width="110" height="8" rx="3" />
+      <rect x="490" y="340" width="90" height="8" rx="3" />
+      <rect x="490" y="355" width="100" height="8" rx="3" />
+      <rect x="490" y="370" width="110" height="8" rx="3" />
+    </g>
+
+    <!-- Front Beveled Chin -->
+    <path d="M190 450 L210 475 L590 475 L610 450 Z" fill="#090d16" stroke="#1e293b" stroke-width="2" />
+
+    <!-- Front Luminous Status LED Array (Vivid Cyan & Emerald Bars) -->
+    <g transform="translate(280 462)">
+      <!-- Power LED -->
+      <rect x="0" y="0" width="14" height="4" rx="2" fill="#22c55e" />
+      <circle cx="7" cy="-8" r="1.5" fill="#86efac" />
+      <!-- Internet / WAN LED -->
+      <rect x="30" y="0" width="14" height="4" rx="2" fill="#00b5e2" />
+      <!-- 2.4 GHz WiFi LED -->
+      <rect x="60" y="0" width="14" height="4" rx="2" fill="#00b5e2" />
+      <!-- 5 GHz WiFi LED -->
+      <rect x="90" y="0" width="14" height="4" rx="2" fill="#00b5e2" />
+      <!-- 6 GHz WiFi-6E LED -->
+      <rect x="120" y="0" width="14" height="4" rx="2" fill="#38bdf8" />
+      <!-- LAN Ports 1 - 4 -->
+      <rect x="150" y="0" width="14" height="4" rx="2" fill="#22c55e" />
+      <rect x="175" y="0" width="14" height="4" rx="2" fill="#22c55e" />
+      <rect x="200" y="0" width="14" height="4" rx="2" fill="#22c55e" />
+      <rect x="225" y="0" width="14" height="4" rx="2" fill="#64748b" opacity="0.4" />
+    </g>
+
+    <!-- WiFi 6 Emblem on Center Plate -->
+    <text x="400" y="370" font-family="sans-serif" font-size="14" font-weight="900" fill="#38bdf8" text-anchor="middle" letter-spacing="1">Wi-Fi 6</text>
+    <text x="400" y="388" font-family="sans-serif" font-size="8" font-weight="bold" fill="#94a3b8" text-anchor="middle">AX5400 GIGABIT</text>
+  </g>
+</svg>

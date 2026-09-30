@@ -24,9 +24,9 @@
     "semantic_hash": ""
   },
   "src/app/App.tsx": {
-    "mtime": 1790715585.9271355,
-    "seen": 1790715637.7252386,
-    "ast_hash": "053461eb43bb6f3ae721903a23f2b5ac",
+    "mtime": 1790716782.7014484,
+    "seen": 1790716785.2064476,
+    "ast_hash": "5fbd94474c0cbffc890b8496a7972518",
     "semantic_hash": ""
   },
   "src/main.tsx": {
@@ -78,9 +78,9 @@
     "semantic_hash": ""
   },
   "README.md": {
-    "mtime": 1790714121.0022595,
-    "seen": 1790715178.7220047,
-    "ast_hash": "9328fc3cddfeef5a29246a7c34964c38",
+    "mtime": 1790716540.4233859,
+    "seen": 1790716785.2073581,
+    "ast_hash": "0b64af6d5021d6b0953f6b0ffec858c1",
     "semantic_hash": ""
   },
   "index.html": {
@@ -96,15 +96,15 @@
     "semantic_hash": ""
   },
   "scripts/bootstrap-superadmin.mjs": {
-    "mtime": 1790714185.0256326,
-    "seen": 1790715178.7219129,
-    "ast_hash": "eacd7b33b53e7d21ec1b922665209a6d",
+    "mtime": 1790716440.5884402,
+    "seen": 1790716785.2063377,
+    "ast_hash": "ffcecc84476a436c46552b442fce6e08",
     "semantic_hash": ""
   },
   "src/worker/auth.ts": {
-    "mtime": 1790714526.9509978,
-    "seen": 1790715178.7219622,
-    "ast_hash": "478a4794cd40b8d30c283a597e610742",
+    "mtime": 1790716411.4570422,
+    "seen": 1790716785.2065816,
+    "ast_hash": "2e4b16fb5d2230f5b0ee72458c8ec745",
     "semantic_hash": ""
   },
   "src/worker/email.ts": {
@@ -174,9 +174,9 @@
     "semantic_hash": ""
   },
   "api/[...path].js": {
-    "mtime": 1790715653.9025223,
-    "seen": 1790715782.8141885,
-    "ast_hash": "78da1c4e8ec5bb92836382c8126518f4",
+    "mtime": 1790716703.4840567,
+    "seen": 1790716785.2060244,
+    "ast_hash": "9207ccf835a119cea6bd808e81868cdd",
     "semantic_hash": ""
   },
   "e2e/reservations.spec.ts": {
@@ -192,9 +192,9 @@
     "semantic_hash": ""
   },
   "scripts/seed-inventory.mjs": {
-    "mtime": 1790714185.0636327,
-    "seen": 1790715178.7219205,
-    "ast_hash": "cebd396a272d448bdd4e84e734238da9",
+    "mtime": 1790716736.534385,
+    "seen": 1790716785.206445,
+    "ast_hash": "679d1f44a1ee40d764a50d36ffdc28a6",
     "semantic_hash": ""
   },
   "src/test/api.test.ts": {
@@ -228,9 +228,9 @@
     "semantic_hash": ""
   },
   "docs/operations.md": {
-    "mtime": 1790714184.8106315,
-    "seen": 1790715178.7220066,
-    "ast_hash": "7db7b8de7a5e5b975dafa29510b9dda6",
+    "mtime": 1790716548.0432296,
+    "seen": 1790716785.2073603,
+    "ast_hash": "a12e92c197f7a3e33fb49bf4b1f1361d",
     "semantic_hash": ""
   },
   "public/equipment/adhesive.svg": {
@@ -333,6 +333,48 @@
     "mtime": 1790713886.6329834,
     "seen": 1790715178.7220411,
     "ast_hash": "c77205ee20a1fb7d51d7d39f90257d23",
+    "semantic_hash": ""
+  },
+  "public/equipment/hdmi.svg": {
+    "mtime": 1790716736.5273852,
+    "seen": 1790716785.2077804,
+    "ast_hash": "f2547c2e4a77ed3b4757ec8d09f7e368",
+    "semantic_hash": ""
+  },
+  "public/equipment/multiprise.svg": {
+    "mtime": 1790716736.5273852,
+    "seen": 1790716785.2078838,
+    "ast_hash": "530c057a62dea399d76f56b466affc9e",
+    "semantic_hash": ""
+  },
+  "public/equipment/pointeur.svg": {
+    "mtime": 1790716736.5273852,
+    "seen": 1790716785.2079945,
+    "ast_hash": "e1a36ebde88de56bf175f3c18fc29091",
+    "semantic_hash": ""
+  },
+  "public/equipment/projecteur.svg": {
+    "mtime": 1790716736.5273852,
+    "seen": 1790716785.2079966,
+    "ast_hash": "a777c90476cad478fe18e38fccc973e3",
+    "semantic_hash": ""
+  },
+  "public/equipment/rallonge.svg": {
+    "mtime": 1790716736.5233853,
+    "seen": 1790716785.2079985,
+    "ast_hash": "27e4ec5bfcc7341ac86efe63c0dfb6f2",
+    "semantic_hash": ""
+  },
+  "public/equipment/routeur.svg": {
+    "mtime": 1790716736.529385,
+    "seen": 1790716785.208057,
+    "ast_hash": "c2ca84d152e94a19f0590b66b795d37b",
+    "semantic_hash": ""
+  },
+  "public/equipment/television.svg": {
+    "mtime": 1790716736.5313852,
+    "seen": 1790716785.2082136,
+    "ast_hash": "7a84f260b8ed731d65c14b2a97dc1607",
     "semantic_hash": ""
   }
 }

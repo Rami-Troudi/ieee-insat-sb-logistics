@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" role="img" aria-label="Ultra high-speed 8K HDMI cable with gold-plated connectors">
+  <defs>
+    <linearGradient id="hd-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f8fafc" />
+      <stop offset="50%" stop-color="#f1f5f9" />
+      <stop offset="100%" stop-color="#e0f2fe" />
+    </linearGradient>
+    <linearGradient id="hd-gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#fef08a" />
+      <stop offset="35%" stop-color="#eab308" />
+      <stop offset="70%" stop-color="#ca8a04" />
+      <stop offset="100%" stop-color="#854d0e" />
+    </linearGradient>
+    <linearGradient id="hd-metal" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#475569" />
+      <stop offset="40%" stop-color="#1e293b" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+    <linearGradient id="hd-braid" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0284c7" />
+      <stop offset="35%" stop-color="#0369a1" />
+      <stop offset="70%" stop-color="#1e293b" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+    <filter id="hd-shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="18" stdDeviation="20" flood-color="#0284c7" flood-opacity="0.2" />
+    </filter>
+  </defs>
+
+  <!-- Background Canvas -->
+  <rect width="800" height="600" rx="32" fill="url(#hd-bg)" />
+
+  <!-- Diagonal Tech Accent Lines -->
+  <g stroke="#0284c7" stroke-width="1.5" opacity="0.1" fill="none">
+    <line x1="0" y1="200" x2="400" y2="600" />
+    <line x1="100" y1="100" x2="600" y2="600" />
+    <line x1="300" y1="0" x2="800" y2="500" />
+  </g>
+
+  <!-- Ambient Shadows -->
+  <ellipse cx="400" cy="490" rx="280" ry="34" fill="#0f172a" opacity="0.18" />
+  <ellipse cx="270" cy="380" rx="140" ry="24" fill="#0f172a" opacity="0.12" />
+
+  <!-- Dynamic S-Curving High-Density Braided Cable Loop -->
+  <g filter="url(#hd-shadow)">
+    <!-- Primary Loop -->
+    <path d="M180 340 C110 480 320 540 450 460 C580 380 620 220 540 180 C460 140 370 200 410 270 C440 330 520 340 600 320" stroke="url(#hd-braid)" stroke-width="26" stroke-linecap="round" fill="none" />
+    <!-- Braided Nylon Micro-Texture Overlay (Dashed Stitches) -->
+    <path d="M180 340 C110 480 320 540 450 460 C580 380 620 220 540 180 C460 140 370 200 410 270 C440 330 520 340 600 320" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-dasharray="4,8" fill="none" opacity="0.6" />
+  </g>
+
+  <!-- Connector Head 1 (Foreground Hero - Angled Right) -->
+  <g transform="translate(230 310) rotate(-40)" filter="url(#hd-shadow)">
+    <!-- Flexible Rubber Strain Relief Boot -->
+    <path d="M-60 -14 L-30 -11 L-30 11 L-60 14 Z" fill="#334155" />
+    <line x1="-52" y1="-13" x2="-52" y2="13" stroke="#1e293b" stroke-width="2" />
+    <line x1="-42" y1="-12" x2="-42" y2="12" stroke="#1e293b" stroke-width="2" />
+    <line x1="-34" y1="-11" x2="-34" y2="11" stroke="#1e293b" stroke-width="2" />
+
+    <!-- Premium Zinc Alloy Metal Hood -->
+    <rect x="-30" y="-18" width="70" height="36" rx="8" fill="url(#hd-metal)" stroke="#64748b" stroke-width="2" />
+    <!-- Electric Cyan Inset Accent Stripe -->
+    <rect x="-10" y="-18" width="6" height="36" fill="#00b5e2" />
+    <!-- Laser Etched Specs -->
+    <text x="18" y="-4" font-family="sans-serif" font-size="9" font-weight="900" fill="#ffffff" letter-spacing="1">HDMI</text>
+    <text x="18" y="8" font-family="sans-serif" font-size="7" font-weight="bold" fill="#38bdf8">8K · 60Hz</text>
+
+    <!-- 24K Gold Plated Male Connector Plug -->
+    <g transform="translate(40 0)">
+      <!-- Main Outer Gold Shell (Trapezoidal HDMI profile) -->
+      <path d="M0 -14 L42 -14 L42 -10 L48 -6 L48 6 L42 10 L42 14 L0 14 Z" fill="url(#hd-gold)" stroke="#a16207" stroke-width="1.5" />
+      <!-- Interior Black Pin Carrier -->
+      <rect x="10" y="-8" width="28" height="16" rx="2" fill="#0f172a" />
+      <!-- 19 Detailed Gold Contact Pins -->
+      <g fill="url(#hd-gold)">
+        <rect x="14" y="-6" width="18" height="2" rx="0.5" />
+        <rect x="14" y="-3" width="18" height="2" rx="0.5" />
+        <rect x="14" y="0" width="18" height="2" rx="0.5" />
+        <rect x="14" y="3" width="18" height="2" rx="0.5" />
+      </g>
+      <!-- Gold Specular Shine Line -->
+      <line x1="2" y1="-12" x2="40" y2="-12" stroke="#ffffff" stroke-width="1.5" opacity="0.75" />
+    </g>
+  </g>
+
+  <!-- Connector Head 2 (Top Right - Secondary Perspective) -->
+  <g transform="translate(620 290) rotate(145)" filter="url(#hd-shadow)">
+    <path d="M-50 -12 L-25 -9 L-25 9 L-50 12 Z" fill="#334155" />
+    <rect x="-25" y="-16" width="60" height="32" rx="7" fill="url(#hd-metal)" stroke="#64748b" stroke-width="1.5" />
+    <rect x="-6" y="-16" width="5" height="32" fill="#00b5e2" />
+    <text x="12" y="4" font-family="sans-serif" font-size="8" font-weight="bold" fill="#cbd5e1">ULTRA</text>
+
+    <!-- Gold Connector Plug 2 -->
+    <path d="M35 -12 L70 -12 L70 -8 L75 -4 L75 4 L70 8 L70 12 L35 12 Z" fill="url(#hd-gold)" stroke="#a16207" stroke-width="1.5" />
+    <rect x="42" y="-7" width="24" height="14" rx="2" fill="#0f172a" />
+  </g>
+</svg>

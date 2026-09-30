@@ -8,7 +8,7 @@ import { schema } from "./database";
 export type AppContext = Context<{ Bindings: Env; Variables: { actor: CurrentUser } }>;
 
 export async function resolveIdentity(c: AppContext): Promise<CurrentUser | null> {
-  const origin = trustedAuthOrigin(c.env, c.req.url);
+  const origin = trustedAuthOrigin(c.env, c.req.url, c.req.header("Origin"));
   const session = await createAuth(c.env, origin).api.getSession({ headers: c.req.raw.headers });
   const userId = session?.user?.id;
   if (!userId) return null;

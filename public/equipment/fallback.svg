@@ -1,4 +1,72 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" role="img" aria-label="Robotics equipment illustration">
-  <defs><linearGradient id="bg" x2="0" y2="1"><stop stop-color="#eff6ff"/><stop offset="1" stop-color="#e0e7ff"/></linearGradient></defs>
-  <rect width="800" height="600" rx="32" fill="url(#bg)"/><rect x="245" y="175" width="310" height="250" rx="34" fill="#1e3a5f"/><rect x="292" y="222" width="216" height="145" rx="18" fill="#0f172a"/><circle cx="400" cy="294" r="45" fill="#38bdf8"/><path d="M400 263v62M369 294h62" stroke="#e0f2fe" stroke-width="10" stroke-linecap="round"/><g fill="#facc15"><circle cx="275" cy="205" r="8"/><circle cx="525" cy="205" r="8"/><circle cx="275" cy="395" r="8"/><circle cx="525" cy="395" r="8"/></g>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" role="img" aria-label="Rugged technical equipment flight case">
+  <defs>
+    <linearGradient id="fb-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#eff6ff" />
+      <stop offset="50%" stop-color="#e0e7ff" />
+      <stop offset="100%" stop-color="#c7d2fe" />
+    </linearGradient>
+    <linearGradient id="fb-case" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#003875" />
+      <stop offset="50%" stop-color="#002855" />
+      <stop offset="100%" stop-color="#001733" />
+    </linearGradient>
+    <linearGradient id="fb-latch" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#fef08a" />
+      <stop offset="50%" stop-color="#eab308" />
+      <stop offset="100%" stop-color="#ca8a04" />
+    </linearGradient>
+    <filter id="fb-shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="22" stdDeviation="24" flood-color="#002855" flood-opacity="0.25" />
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="600" rx="32" fill="url(#fb-bg)" />
+
+  <!-- Ground Shadow -->
+  <ellipse cx="400" cy="490" rx="270" ry="34" fill="#002855" opacity="0.22" />
+
+  <!-- Heavy Duty Flight Case -->
+  <g filter="url(#fb-shadow)">
+    <!-- Main Shell -->
+    <rect x="180" y="170" width="440" height="300" rx="32" fill="url(#fb-case)" stroke="#001733" stroke-width="4" />
+
+    <!-- Protective Ribs / Corner Bumpers -->
+    <g fill="#001733">
+      <!-- Corners -->
+      <rect x="180" y="170" width="45" height="45" rx="14" />
+      <rect x="575" y="170" width="45" height="45" rx="14" />
+      <rect x="180" y="425" width="45" height="45" rx="14" />
+      <rect x="575" y="425" width="45" height="45" rx="14" />
+      <!-- Ribs -->
+      <rect x="290" y="170" width="22" height="300" rx="4" />
+      <rect x="390" y="170" width="22" height="300" rx="4" />
+      <rect x="490" y="170" width="22" height="300" rx="4" />
+    </g>
+
+    <!-- Center Aluminum Valance Seam Line -->
+    <rect x="176" y="310" width="448" height="18" fill="#94a3b8" stroke="#475569" stroke-width="2" />
+
+    <!-- Double Heavy Duty Gold Latches -->
+    <g transform="translate(260 304)">
+      <rect x="-18" y="-12" width="36" height="42" rx="6" fill="#334155" stroke="#1e293b" stroke-width="2" />
+      <rect x="-12" y="-6" width="24" height="30" rx="4" fill="url(#fb-latch)" stroke="#854d0e" stroke-width="1.5" />
+    </g>
+    <g transform="translate(540 304)">
+      <rect x="-18" y="-12" width="36" height="42" rx="6" fill="#334155" stroke="#1e293b" stroke-width="2" />
+      <rect x="-12" y="-6" width="24" height="30" rx="4" fill="url(#fb-latch)" stroke="#854d0e" stroke-width="1.5" />
+    </g>
+
+    <!-- Ergonomic Heavy Spring-Loaded Handle -->
+    <g transform="translate(400 460)">
+      <path d="M-60 0 C-60 35 60 35 60 0" stroke="#001733" stroke-width="22" stroke-linecap="round" fill="none" />
+      <path d="M-55 2 C-55 30 55 30 55 2" stroke="#475569" stroke-width="14" stroke-linecap="round" fill="none" />
+      <rect x="-35" y="14" width="70" height="20" rx="6" fill="#00b5e2" />
+    </g>
+
+    <!-- IEEE INSAT Equipment Brand Badge (Center Front) -->
+    <rect x="330" y="225" width="140" height="55" rx="10" fill="#0f172a" stroke="#00b5e2" stroke-width="2.5" />
+    <text x="400" y="248" font-family="sans-serif" font-size="12" font-weight="900" fill="#00b5e2" text-anchor="middle" letter-spacing="1">IEEE INSAT SB</text>
+    <text x="400" y="266" font-family="sans-serif" font-size="8" font-weight="bold" fill="#ffffff" text-anchor="middle">EQUIPMENT ASSET</text>
+  </g>
 </svg>

@@ -7,11 +7,14 @@ const handler = getRequestListener((incomingRequest) => {
     incomingRequest.headers.get("x-forwarded-host") ||
     incomingRequest.headers.get("host") ||
     "localhost";
-  const proto = incomingRequest.headers.get("x-forwarded-proto") || "https";
+  const proto = incomingRequest.headers.get("x-forwarded-proto") || (host.includes("localhost") ? "http" : "https");
   const requestUrl = new URL(incomingRequest.url ?? "/", `${proto}://${host}`);
   const rewrittenPath = requestUrl.searchParams.get("__api_path");
   requestUrl.searchParams.delete("__api_path");
   if (rewrittenPath !== null) requestUrl.pathname = `/api/${rewrittenPath}`;
+  if (!["localhost", "127.0.0.1"].includes(requestUrl.hostname)) {
+    requestUrl.protocol = "https:";
+  }
   const headers = new Headers(incomingRequest.headers);
   const clientIp =
     incomingRequest.headers.get("x-vercel-forwarded-for") ??

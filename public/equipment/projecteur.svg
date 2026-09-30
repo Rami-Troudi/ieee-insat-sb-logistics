@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" role="img" aria-label="Digital laser video projector with optical glass lens">
+  <defs>
+    <linearGradient id="prj-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f0f9ff" />
+      <stop offset="50%" stop-color="#e0f2fe" />
+      <stop offset="100%" stop-color="#bae6fd" />
+    </linearGradient>
+    <linearGradient id="prj-body" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="40%" stop-color="#f8fafc" />
+      <stop offset="100%" stop-color="#cbd5e1" />
+    </linearGradient>
+    <linearGradient id="prj-front" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1e293b" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+    <radialGradient id="prj-lens" cx="42%" cy="42%" r="58%">
+      <stop offset="0%" stop-color="#67e8f9" />
+      <stop offset="25%" stop-color="#00b5e2" />
+      <stop offset="60%" stop-color="#00629b" />
+      <stop offset="85%" stop-color="#981d97" />
+      <stop offset="100%" stop-color="#002855" />
+    </radialGradient>
+    <linearGradient id="prj-flare" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.6" />
+      <stop offset="30%" stop-color="#00b5e2" stop-opacity="0.3" />
+      <stop offset="100%" stop-color="#00629b" stop-opacity="0" />
+    </linearGradient>
+    <filter id="prj-shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="20" stdDeviation="22" flood-color="#002855" flood-opacity="0.25" />
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="600" rx="32" fill="url(#prj-bg)" />
+
+  <!-- Luminous Optical Projection Light Beam -->
+  <polygon points="340,320 800,120 800,520 340,320" fill="url(#prj-flare)" />
+
+  <!-- Ground Ambient Drop Shadow -->
+  <ellipse cx="390" cy="485" rx="290" ry="34" fill="#002855" opacity="0.22" />
+
+  <!-- Projector Elevation Feet -->
+  <rect x="200" y="440" width="34" height="22" rx="5" fill="#334155" stroke="#64748b" stroke-width="2" />
+  <rect x="520" y="440" width="34" height="22" rx="5" fill="#334155" stroke="#64748b" stroke-width="2" />
+
+  <!-- Main Chassis Assembly -->
+  <g filter="url(#prj-shadow)">
+    <!-- Main Projector Enclosure -->
+    <rect x="150" y="210" width="460" height="240" rx="26" fill="url(#prj-body)" stroke="#94a3b8" stroke-width="3" />
+
+    <!-- Front Bezel Plate (Dark Tech Contrast) -->
+    <rect x="170" y="230" width="420" height="195" rx="18" fill="url(#prj-front)" />
+
+    <!-- Precision Airflow Ventilation Slits (Left Side) -->
+    <g fill="#020617" opacity="0.85">
+      <rect x="185" y="260" width="6" height="130" rx="3" />
+      <rect x="197" y="260" width="6" height="130" rx="3" />
+      <rect x="209" y="260" width="6" height="130" rx="3" />
+      <rect x="221" y="260" width="6" height="130" rx="3" />
+      <rect x="233" y="260" width="6" height="130" rx="3" />
+      <rect x="245" y="260" width="6" height="130" rx="3" />
+    </g>
+
+    <!-- Professional Multi-Element Optical Glass Lens Assembly -->
+    <g transform="translate(340 325)">
+      <!-- Outer Metal Lens Barrel Ring -->
+      <circle cx="0" cy="0" r="76" fill="#334155" stroke="#64748b" stroke-width="4" />
+      <circle cx="0" cy="0" r="70" fill="#0f172a" />
+      <!-- Textured Ribbed Focus Ring -->
+      <circle cx="0" cy="0" r="66" fill="none" stroke="#475569" stroke-width="5" stroke-dasharray="6,4" />
+      <!-- Deep Blue / Sapphire Glass Lens Element -->
+      <circle cx="0" cy="0" r="58" fill="url(#prj-lens)" stroke="#38bdf8" stroke-width="3" />
+      <!-- Lens Aperture Reflections (Curved Specular Glints) -->
+      <ellipse cx="-16" cy="-18" rx="24" ry="12" transform="rotate(-30 -16 -18)" fill="#ffffff" opacity="0.45" />
+      <circle cx="18" cy="18" r="8" fill="#67e8f9" opacity="0.5" />
+      <!-- Inner Core Laser Aperture -->
+      <circle cx="0" cy="0" r="14" fill="#38bdf8" opacity="0.8" />
+      <circle cx="0" cy="0" r="6" fill="#ffffff" />
+    </g>
+
+    <!-- Front Sensor Array & Status Indicators (Right Side) -->
+    <g transform="translate(470 260)">
+      <!-- 4K Laser Cinema Badge -->
+      <rect x="0" y="0" width="95" height="30" rx="6" fill="#1e293b" stroke="#334155" stroke-width="1.5" />
+      <text x="47" y="16" font-family="sans-serif" font-size="10" font-weight="900" fill="#00b5e2" text-anchor="middle" letter-spacing="1">4K LASER</text>
+      <text x="47" y="26" font-family="sans-serif" font-size="7" font-weight="bold" fill="#94a3b8" text-anchor="middle">5000 ANSI LUMENS</text>
+
+      <!-- IR Remote Receiver Sensor Window -->
+      <circle cx="20" cy="55" r="9" fill="#020617" stroke="#334155" stroke-width="2" />
+      <circle cx="20" cy="55" r="4" fill="#ef4444" opacity="0.7" />
+      <text x="36" y="58" font-family="sans-serif" font-size="8" font-weight="bold" fill="#64748b">IR REMOTE</text>
+
+      <!-- Status LED Panel -->
+      <g transform="translate(10 85)">
+        <circle cx="0" cy="0" r="5" fill="#22c55e" stroke="#86efac" stroke-width="1.5" />
+        <text x="12" y="3.5" font-family="sans-serif" font-size="8" font-weight="bold" fill="#cbd5e1">POWER</text>
+        <circle cx="0" cy="20" r="5" fill="#38bdf8" stroke="#bae6fd" stroke-width="1.5" />
+        <text x="12" y="23.5" font-family="sans-serif" font-size="8" font-weight="bold" fill="#cbd5e1">LAMP READY</text>
+        <circle cx="0" cy="40" r="5" fill="#eab308" opacity="0.4" />
+        <text x="12" y="43.5" font-family="sans-serif" font-size="8" font-weight="bold" fill="#64748b">TEMP</text>
+      </g>
+    </g>
+
+    <!-- Top Surface Control Dial & Keystoning Adjustment -->
+    <g transform="translate(370 210)">
+      <rect x="-60" y="-12" width="120" height="12" rx="4" fill="#94a3b8" />
+      <circle cx="-30" cy="-6" r="10" fill="#334155" />
+      <circle cx="30" cy="-6" r="10" fill="#334155" />
+    </g>
+  </g>
+</svg>
