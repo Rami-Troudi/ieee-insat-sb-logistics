@@ -153,6 +153,7 @@ app.post("/api/v1/auth/borrower", async (c) => {
   }
   const email = body.email.trim().toLowerCase();
   const name = body.name.trim();
+  const phone = typeof body.phone === "string" ? body.phone.trim().slice(0, 50) || null : null;
   const now = new Date();
 
   const existing = await c.env.DB.select()
@@ -185,9 +186,9 @@ app.post("/api/v1/auth/borrower", async (c) => {
       );
     }
     await c.env.DB.update(schema.authUsers)
-      .set({ name, updatedAt: now })
+      .set({ name, phone, updatedAt: now })
       .where(eq(schema.authUsers.id, userId));
-    user = { ...existing[0], name, updatedAt: now };
+    user = { ...existing[0], name, phone, updatedAt: now };
   } else {
     userId = crypto.randomUUID();
     const [newUser] = await c.env.DB.insert(schema.authUsers)
@@ -195,6 +196,7 @@ app.post("/api/v1/auth/borrower", async (c) => {
         id: userId,
         name,
         email,
+        phone,
         emailVerified: true,
         role: "USER",
         createdAt: now,
@@ -581,6 +583,36 @@ app.use("/api/v1/board/*", requireBoard);
 app.get("/api/v1/board/dashboard", async (c) => c.json(await boardDashboard(c.env)));
 app.get("/api/v1/board/reservations", async (c) => c.json(await listBoardReservations(c.env)));
 
+app.get("/api/v1/board/reservations/:id/borrower", async (c) => {
+  const reservation = await getReservation(c.env, c.req.param("id"));
+  if (!reservation) return jsonError(c, 404, "NOT_FOUND", "Reservation not found.");
+  const userId =
+    reservation.borrower.type === "PERSON" ? reservation.borrower.id : reservation.requestedBy.id;
+  const [person] = await c.env.DB.select({
+    name: schema.authUsers.name,
+    email: schema.authUsers.email,
+    phone: schema.authUsers.phone,
+  })
+    .from(schema.authUsers)
+    .where(eq(schema.authUsers.id, userId))
+    .limit(1);
+  if (!person) return jsonError(c, 404, "NOT_FOUND", "Borrower not found.");
+  const count = await c.env.CLIENT.execute({
+    sql:
+      "SELECT COUNT(DISTINCT r.id) AS count FROM reservations r WHERE " +
+      (reservation.borrower.type === "PERSON"
+        ? "r.borrower_type='PERSON' AND r.borrower_user_id=?"
+        : "r.borrower_type='CHAPTER' AND r.chapter_id=?") +
+      " AND EXISTS (SELECT 1 FROM reservation_assets ra WHERE ra.reservation_id=r.id AND ra.actual_pickup_at IS NOT NULL)",
+    args: [reservation.borrower.id],
+  });
+  return c.json({
+    ...person,
+    borrowingCount: Number(count.rows[0]?.count ?? 0),
+    chapterName: reservation.borrower.type === "CHAPTER" ? reservation.borrower.name : null,
+  });
+});
+
 app.get("/api/v1/board/reservations/:id", async (c) => {
   const reservation = await getReservation(c.env, c.req.param("id"), true);
   if (!reservation) return jsonError(c, 404, "NOT_FOUND", "Reservation not found.");
@@ -588,7 +620,7 @@ app.get("/api/v1/board/reservations/:id", async (c) => {
     reservation.items.map(async (item) => ({
       lineId: item.lineId,
       assets:
-        reservation.status === "PENDING"
+        reservation.status === "APPROVED"
           ? (
               await findAvailableAssets(
                 c.env.CLIENT as unknown as SqlExecutor,
@@ -596,12 +628,16 @@ app.get("/api/v1/board/reservations/:id", async (c) => {
                 Date.parse(reservation.pickupAt),
                 Date.parse(reservation.returnAt)
               )
-            ).map((asset) => ({
-              id: asset.id,
-              assetCode: asset.asset_code,
-              serialNumber: asset.serial_number,
-              state: asset.state,
-            }))
+            )
+              .filter(
+                (asset) => !item.assignedAssets?.some((collected) => collected.id === asset.id)
+              )
+              .map((asset) => ({
+                id: asset.id,
+                assetCode: asset.asset_code,
+                serialNumber: asset.serial_number,
+                state: asset.state,
+              }))
           : [],
     }))
   );
@@ -610,7 +646,14 @@ app.get("/api/v1/board/reservations/:id", async (c) => {
 
 const assignmentsSchema = z.record(z.string(), z.array(z.string()));
 app.post("/api/v1/board/reservations/:id/handover", async (c) => {
-  return c.json(await handoverReservation(c.env, c.get("actor"), c.req.param("id")));
+  const parsed = z
+    .object({ assetIds: z.array(z.string().min(1)).min(1).max(500) })
+    .safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success)
+    return jsonError(c, 400, "VALIDATION", "Select the material labels actually handed over.");
+  return c.json(
+    await handoverReservation(c.env, c.get("actor"), c.req.param("id"), parsed.data.assetIds)
+  );
 });
 
 app.post("/api/v1/board/reservations/:id/approve", async (c) => {

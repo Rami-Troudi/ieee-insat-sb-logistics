@@ -113,6 +113,80 @@ export async function findAvailableAssets(
   );
 }
 
+export async function availableQuantity(
+  tx: SqlExecutor,
+  equipmentId: string,
+  pickupAt: number,
+  returnAt: number,
+  excludeReservationId = ""
+) {
+  const capacity = await one<{ count: number }>(
+    tx,
+    "SELECT COUNT(*) AS count FROM assets a JOIN equipment_items e ON e.id=a.equipment_item_id WHERE a.equipment_item_id=? AND a.active=1 AND e.active=1 AND a.state NOT IN ('OUT_OF_SERVICE','RETIRED')",
+    [equipmentId]
+  );
+  const loans = await rows<{
+    id: string;
+    pickup_at: number;
+    return_at: number;
+    quantity: number;
+    returned: number;
+    borrowed: number;
+  }>(
+    tx,
+    "SELECT r.id,r.pickup_at,r.return_at,l.quantity,(SELECT COUNT(*) FROM reservation_assets ra WHERE ra.reservation_line_id=l.id AND ra.state='RETURNED') AS returned,(SELECT COUNT(*) FROM reservation_assets ra WHERE ra.reservation_line_id=l.id AND ra.state='BORROWED') AS borrowed FROM reservations r JOIN reservation_lines l ON l.reservation_id=r.id WHERE l.equipment_item_id=? AND r.id<>? AND (r.status='APPROVED' OR EXISTS (SELECT 1 FROM reservation_assets ra WHERE ra.reservation_line_id=l.id AND ra.state='BORROWED'))",
+    [equipmentId, excludeReservationId]
+  );
+  const events: Array<{ time: number; delta: number }> = [];
+  for (const loan of loans) {
+    const overlaps = Number(loan.pickup_at) < returnAt && pickupAt < Number(loan.return_at);
+    const held = overlaps
+      ? Math.max(Number(loan.borrowed), Number(loan.quantity) - Number(loan.returned))
+      : Number(loan.borrowed);
+    if (!held) continue;
+    events.push({
+      time: overlaps ? Math.max(pickupAt, Number(loan.pickup_at)) : pickupAt,
+      delta: held,
+    });
+    events.push({
+      time: overlaps ? Math.min(returnAt, Number(loan.return_at)) : returnAt,
+      delta: -held,
+    });
+  }
+  events.sort((a, b) => a.time - b.time || a.delta - b.delta);
+  let used = 0,
+    peak = 0;
+  for (const event of events) {
+    used += event.delta;
+    peak = Math.max(peak, used);
+  }
+  return Math.max(0, Number(capacity?.count ?? 0) - peak);
+}
+
+async function checkQuantities(
+  tx: SqlExecutor,
+  reservationId: string,
+  pickupAt: number,
+  returnAt: number
+) {
+  const lines = await rows<{ equipment_item_id: string; quantity: number }>(
+    tx,
+    "SELECT equipment_item_id,quantity FROM reservation_lines WHERE reservation_id=?",
+    [reservationId]
+  );
+  for (const line of lines) {
+    if (
+      (await availableQuantity(tx, line.equipment_item_id, pickupAt, returnAt, reservationId)) <
+      Number(line.quantity)
+    )
+      throw new DomainError(
+        409,
+        "RESERVATION_CONFLICT",
+        "The requested equipment quantity is no longer available for this window."
+      );
+  }
+}
+
 export interface CatalogueItem {
   id: string;
   name: string;
@@ -130,9 +204,12 @@ export async function listCatalogue(env: Env, pickupAt: number, returnAt: number
   return Promise.all(
     items.map(async (item) => ({
       ...item,
-      availableQuantity: (
-        await findAvailableAssets(env.CLIENT as unknown as SqlExecutor, item.id, pickupAt, returnAt)
-      ).length,
+      availableQuantity: await availableQuantity(
+        env.CLIENT as unknown as SqlExecutor,
+        item.id,
+        pickupAt,
+        returnAt
+      ),
     }))
   );
 }
@@ -389,13 +466,13 @@ export async function createReservation(
           "VALIDATION",
           "One of the selected equipment items is unavailable."
         );
-      const candidates = await findAvailableAssets(
+      const candidates = await availableQuantity(
         tx,
         line.equipmentItemId,
         input.pickupAt,
         input.returnAt
       );
-      if (candidates.length < line.quantity) {
+      if (candidates < line.quantity) {
         throw new DomainError(
           409,
           "NOT_AVAILABLE",
@@ -535,7 +612,7 @@ export async function approveReservation(
   env: Env,
   actor: CurrentUser,
   reservationId: string,
-  assignments?: Record<string, string[]>
+  _assignments?: Record<string, string[]>
 ) {
   await write(env, async (tx) => {
     const reservation = await one<{ status: string; pickup_at: number; return_at: number }>(
@@ -550,83 +627,19 @@ export async function approveReservation(
         "RESERVATION_CONFLICT",
         "Only a pending reservation can be approved."
       );
-    const lines = await rows<{ id: string; equipment_item_id: string; quantity: number }>(
+    await checkQuantities(
       tx,
-      "SELECT id,equipment_item_id,quantity FROM reservation_lines WHERE reservation_id=? ORDER BY equipment_item_id",
-      [reservationId]
+      reservationId,
+      Number(reservation.pickup_at),
+      Number(reservation.return_at)
     );
-    const selections: Array<{ lineId: string; asset: AvailableAsset }> = [];
-    for (const line of lines) {
-      const available = await findAvailableAssets(
-        tx,
-        line.equipment_item_id,
-        Number(reservation.pickup_at),
-        Number(reservation.return_at)
-      );
-      const requestedIds = assignments?.[line.id];
-      const chosen = requestedIds
-        ? requestedIds
-            .map((assetId) => available.find((candidate) => candidate.id === assetId))
-            .filter((asset): asset is AvailableAsset => Boolean(asset))
-        : available.slice(0, Number(line.quantity));
-      if (
-        requestedIds &&
-        (requestedIds.length !== Number(line.quantity) ||
-          chosen.length !== requestedIds.length ||
-          new Set(requestedIds).size !== requestedIds.length)
-      ) {
-        throw new DomainError(
-          409,
-          "RESERVATION_CONFLICT",
-          "The selected assets are no longer available for this reservation."
-        );
-      }
-      if (chosen.length !== Number(line.quantity)) {
-        throw new DomainError(
-          409,
-          "RESERVATION_CONFLICT",
-          "Approval failed — equipment is no longer available."
-        );
-      }
-      selections.push(...chosen.map((asset) => ({ lineId: line.id, asset })));
-    }
-
     const timestamp = Date.now();
-    for (const selection of selections) {
-      const restored = await tx.execute({
-        sql: "UPDATE reservation_assets SET reservation_line_id=?,state='RESERVED',actual_pickup_at=NULL,checked_out_by_user_id=NULL,actual_return_at=NULL,checked_in_by_user_id=NULL,updated_at=? WHERE reservation_id=? AND asset_id=? AND state='RELEASED'",
-        args: [selection.lineId, timestamp, reservationId, selection.asset.id],
-      });
-      if (Number(restored.rowsAffected) === 0) {
-        await tx.execute({
-          sql: "INSERT INTO reservation_assets(id,reservation_id,reservation_line_id,asset_id,state,created_at,updated_at) VALUES(?,?,?,?, 'RESERVED',?,?)",
-          args: [
-            id("reservation_asset"),
-            reservationId,
-            selection.lineId,
-            selection.asset.id,
-            timestamp,
-            timestamp,
-          ],
-        });
-      }
-      const assetUpdate = await tx.execute({
-        sql: "UPDATE assets SET state='RESERVED',updated_at=? WHERE id=? AND state IN ('AVAILABLE','RESERVED') AND active=1",
-        args: [timestamp, selection.asset.id],
-      });
-      if (Number(assetUpdate.rowsAffected) !== 1)
-        throw new DomainError(
-          409,
-          "RESERVATION_CONFLICT",
-          "An asset changed while this reservation was being approved."
-        );
-    }
     await tx.execute({
       sql: "UPDATE reservations SET status='APPROVED',approved_by_user_id=?,updated_at=? WHERE id=? AND status='PENDING'",
       args: [actor.id, timestamp, reservationId],
     });
     await audit(tx, actor.id, "RESERVATION", reservationId, "RESERVATION_APPROVED", {
-      assignedAssetIds: selections.map(({ asset }) => asset.id),
+      allocation: "QUANTITY_ONLY",
     });
     const requester = await one<{ requested_by_user_id: string }>(
       tx,
@@ -810,76 +823,13 @@ async function assignApprovedReservation(
   reservationId: string,
   pickupAt: number,
   returnAt: number,
-  assignments?: Record<string, string[]>
+  _assignments?: Record<string, string[]>
 ) {
-  const lines = await rows<{ id: string; equipment_item_id: string; quantity: number }>(
-    tx,
-    "SELECT id,equipment_item_id,quantity FROM reservation_lines WHERE reservation_id=? ORDER BY equipment_item_id",
-    [reservationId]
-  );
-  const selections: Array<{ lineId: string; asset: AvailableAsset }> = [];
-  for (const line of lines) {
-    const available = await findAvailableAssets(tx, line.equipment_item_id, pickupAt, returnAt);
-    const requestedIds = assignments?.[line.id];
-    const chosen = requestedIds
-      ? requestedIds
-          .map((assetId) => available.find((candidate) => candidate.id === assetId))
-          .filter((asset): asset is AvailableAsset => Boolean(asset))
-      : available.slice(0, Number(line.quantity));
-    if (
-      requestedIds &&
-      (requestedIds.length !== Number(line.quantity) ||
-        chosen.length !== requestedIds.length ||
-        new Set(requestedIds).size !== requestedIds.length)
-    ) {
-      throw new DomainError(
-        409,
-        "RESERVATION_CONFLICT",
-        "The selected assets are no longer available for this reservation."
-      );
-    }
-    if (chosen.length !== Number(line.quantity))
-      throw new DomainError(
-        409,
-        "RESERVATION_CONFLICT",
-        "Approval failed — equipment is no longer available."
-      );
-    selections.push(...chosen.map((asset) => ({ lineId: line.id, asset })));
-  }
-  const timestamp = Date.now();
-  for (const selection of selections) {
-    const restored = await tx.execute({
-      sql: "UPDATE reservation_assets SET reservation_line_id=?,state='RESERVED',actual_pickup_at=NULL,checked_out_by_user_id=NULL,actual_return_at=NULL,checked_in_by_user_id=NULL,updated_at=? WHERE reservation_id=? AND asset_id=? AND state='RELEASED'",
-      args: [selection.lineId, timestamp, reservationId, selection.asset.id],
-    });
-    if (Number(restored.rowsAffected) === 0) {
-      await tx.execute({
-        sql: "INSERT INTO reservation_assets(id,reservation_id,reservation_line_id,asset_id,state,created_at,updated_at) VALUES(?,?,?,?, 'RESERVED',?,?)",
-        args: [
-          id("reservation_asset"),
-          reservationId,
-          selection.lineId,
-          selection.asset.id,
-          timestamp,
-          timestamp,
-        ],
-      });
-    }
-    const assetUpdate = await tx.execute({
-      sql: "UPDATE assets SET state='RESERVED',updated_at=? WHERE id=? AND state IN ('AVAILABLE','RESERVED') AND active=1",
-      args: [timestamp, selection.asset.id],
-    });
-    if (Number(assetUpdate.rowsAffected) !== 1)
-      throw new DomainError(
-        409,
-        "RESERVATION_CONFLICT",
-        "An asset changed while this reservation was being rescheduled."
-      );
-  }
+  await checkQuantities(tx, reservationId, pickupAt, returnAt);
   await audit(tx, actor.id, "RESERVATION", reservationId, "RESERVATION_RESCHEDULED", {
     pickupAt,
     returnAt,
-    assetIds: selections.map(({ asset }) => asset.id),
+    allocation: "QUANTITY_ONLY",
   });
 }
 
@@ -955,84 +905,123 @@ export interface ScanResult {
   returnAt?: string;
 }
 
-export async function handoverReservation(env: Env, actor: CurrentUser, reservationId: string) {
-  return write(env, async (tx) => {
-    const reservation = await one<{
-      status: string;
-      pickup_at: number;
-      return_at: number;
-      requested_by_user_id: string;
-    }>(tx, "SELECT status,pickup_at,return_at,requested_by_user_id FROM reservations WHERE id=?", [
+async function collectMaterial(
+  tx: WriteTransaction,
+  actor: CurrentUser,
+  reservationId: string,
+  assetId: string,
+  timestamp: number
+) {
+  const reservation = await one<{
+    status: string;
+    pickup_at: number;
+    return_at: number;
+    requested_by_user_id: string;
+    borrower_name: string;
+  }>(
+    tx,
+    "SELECT r.status,r.pickup_at,r.return_at,r.requested_by_user_id,CASE WHEN r.borrower_type='PERSON' THEN u.name ELSE ch.name END AS borrower_name FROM reservations r LEFT JOIN user u ON u.id=r.borrower_user_id LEFT JOIN chapters ch ON ch.id=r.chapter_id WHERE r.id=?",
+    [reservationId]
+  );
+  if (!reservation) throw new DomainError(404, "NOT_FOUND", "Reservation not found.");
+  if (reservation.status !== "APPROVED")
+    throw new DomainError(
+      409,
+      "INVALID_CHECKOUT",
+      "Only approved reservations can collect equipment."
+    );
+  if (timestamp < Number(reservation.pickup_at))
+    throw new DomainError(409, "TOO_EARLY", "The pickup window has not started yet.");
+  if (timestamp >= Number(reservation.return_at))
+    throw new DomainError(409, "RESERVATION_EXPIRED", "The reservation window has expired.");
+  const asset = await one<{
+    equipment_item_id: string;
+    state: string;
+    active: number;
+    equipment_active: number;
+  }>(
+    tx,
+    "SELECT a.equipment_item_id,a.state,a.active,e.active AS equipment_active FROM assets a JOIN equipment_items e ON e.id=a.equipment_item_id WHERE a.id=?",
+    [assetId]
+  );
+  if (
+    !asset ||
+    !asset.active ||
+    !asset.equipment_active ||
+    !["AVAILABLE", "RESERVED"].includes(asset.state)
+  )
+    throw new DomainError(409, "ASSET_UNAVAILABLE", "This material is not available for pickup.");
+  const existing = await one<{ id: string }>(
+    tx,
+    "SELECT id FROM reservation_assets WHERE asset_id=? AND (state='BORROWED' OR (reservation_id=? AND actual_pickup_at IS NOT NULL))",
+    [assetId, reservationId]
+  );
+  if (existing)
+    throw new DomainError(409, "INVALID_CHECKOUT", "This material has already been collected.");
+  const line = await one<{ id: string; quantity: number; collected: number }>(
+    tx,
+    "SELECT l.id,l.quantity,(SELECT COUNT(*) FROM reservation_assets ra WHERE ra.reservation_line_id=l.id AND ra.actual_pickup_at IS NOT NULL) AS collected FROM reservation_lines l WHERE l.reservation_id=? AND l.equipment_item_id=?",
+    [reservationId, asset.equipment_item_id]
+  );
+  if (!line)
+    throw new DomainError(
+      409,
+      "WRONG_RESERVATION",
+      "This equipment type is not part of this reservation."
+    );
+  if (Number(line.collected) >= Number(line.quantity))
+    throw new DomainError(
+      409,
+      "QUANTITY_REACHED",
+      "All requested units of this equipment type have been collected."
+    );
+  await tx.execute({
+    sql: "INSERT INTO reservation_assets(id,reservation_id,reservation_line_id,asset_id,state,actual_pickup_at,checked_out_by_user_id,created_at,updated_at) VALUES(?,?,?,?,'BORROWED',?,?,?,?)",
+    args: [
+      id("reservation_asset"),
       reservationId,
-    ]);
-    if (!reservation) throw new DomainError(404, "NOT_FOUND", "Reservation not found.");
-    if (reservation.status !== "APPROVED")
-      throw new DomainError(
-        409,
-        "INVALID_STATUS",
-        "Only approved reservations can be handed over."
-      );
+      line.id,
+      assetId,
+      timestamp,
+      actor.id,
+      timestamp,
+      timestamp,
+    ],
+  });
+  await tx.execute({
+    sql: "UPDATE assets SET state='BORROWED',last_scan_at=?,updated_at=? WHERE id=?",
+    args: [timestamp, timestamp, assetId],
+  });
+  await audit(tx, actor.id, "ASSET", assetId, "ASSET_CHECKED_OUT", { reservationId });
+  return reservation;
+}
+
+export async function handoverReservation(
+  env: Env,
+  actor: CurrentUser,
+  reservationId: string,
+  assetIds: string[] = []
+) {
+  if (!assetIds.length || new Set(assetIds).size !== assetIds.length)
+    throw new DomainError(400, "VALIDATION", "Select the material labels actually handed over.");
+  return write(env, async (tx) => {
     const timestamp = Date.now();
-    const pending = await rows<{
-      id: string;
-      asset_id: string;
-      asset_code: string;
-      state: string;
-      active: number;
-    }>(
+    for (const assetId of assetIds)
+      await collectMaterial(tx, actor, reservationId, assetId, timestamp);
+    const reservation = await one<{ requested_by_user_id: string }>(
       tx,
-      "SELECT ra.id,ra.asset_id,a.asset_code,a.state,a.active FROM reservation_assets ra JOIN assets a ON a.id=ra.asset_id WHERE ra.reservation_id=? AND ra.state='RESERVED'",
+      "SELECT requested_by_user_id FROM reservations WHERE id=?",
       [reservationId]
     );
-    if (!pending.length) return { ok: true, handedOverCount: 0 };
-    if (timestamp < Number(reservation.pickup_at))
-      throw new DomainError(409, "TOO_EARLY", "The pickup window has not started yet.");
-    if (timestamp >= Number(reservation.return_at))
-      throw new DomainError(
-        409,
-        "RESERVATION_EXPIRED",
-        "Reservation window has expired. Update the reservation first."
-      );
-    for (const asset of pending) {
-      if (!asset.active || !["AVAILABLE", "RESERVED"].includes(asset.state))
-        throw new DomainError(
-          409,
-          "ASSET_UNAVAILABLE",
-          "An assigned asset is unavailable. Review the assigned equipment before handover."
-        );
-      const borrowed = await one<{ id: string }>(
-        tx,
-        "SELECT id FROM reservation_assets WHERE asset_id=? AND state='BORROWED' LIMIT 1",
-        [asset.asset_id]
-      );
-      if (borrowed)
-        throw new DomainError(
-          409,
-          "ASSET_UNAVAILABLE",
-          "An assigned asset has not been returned yet."
-        );
-      await tx.execute({
-        sql: "UPDATE reservation_assets SET state='BORROWED',actual_pickup_at=?,checked_out_by_user_id=?,updated_at=? WHERE id=? AND state='RESERVED'",
-        args: [timestamp, actor.id, timestamp, asset.id],
-      });
-      await tx.execute({
-        sql: "UPDATE assets SET state='BORROWED',last_scan_at=?,updated_at=? WHERE id=?",
-        args: [timestamp, timestamp, asset.asset_id],
-      });
-      await audit(tx, actor.id, "ASSET", asset.asset_id, "ASSET_CHECKED_OUT", {
-        reservationId,
-        method: "MANUAL",
-      });
-    }
     await notify(
       tx,
-      reservation.requested_by_user_id,
+      reservation!.requested_by_user_id,
       "ASSET_CHECKED_OUT",
       "Equipment handed over",
-      "Your reserved equipment has been handed over. Please return it by the reservation deadline.",
+      "Equipment collection has been recorded. Please return it by the reservation deadline.",
       reservationId
     );
-    return { ok: true, handedOverCount: pending.length };
+    return { ok: true, handedOverCount: assetIds.length };
   });
 }
 
@@ -1063,45 +1052,28 @@ export async function scanAsset(
       active: number;
       last_scan_at: number | null;
       equipment_name: string;
+      equipment_item_id: string;
     }>(
       tx,
-      "SELECT a.id,a.asset_code,a.state,a.active,a.last_scan_at,e.name AS equipment_name FROM assets a INNER JOIN equipment_items e ON e.id=a.equipment_item_id WHERE a.qr_token=?",
+      "SELECT a.id,a.asset_code,a.state,a.active,a.last_scan_at,a.equipment_item_id,e.name AS equipment_name FROM assets a INNER JOIN equipment_items e ON e.id=a.equipment_item_id WHERE a.qr_token=?",
       [qrToken]
     );
     if (!asset) throw new DomainError(404, "INVALID_ASSET", "No equipment matches this QR code.");
-    if (reservationId) {
-      const assignment = await one<{ state: string; status: string }>(
+    if (reservationId && operation === "RETURNED") {
+      const assignment = await one<{ id: string }>(
         tx,
-        "SELECT ra.state,r.status FROM reservation_assets ra JOIN reservations r ON r.id=ra.reservation_id WHERE ra.reservation_id=? AND ra.asset_id=?",
+        "SELECT id FROM reservation_assets WHERE reservation_id=? AND asset_id=? AND state='BORROWED'",
         [reservationId, asset.id]
       );
       if (!assignment)
-        throw new DomainError(
-          409,
-          "WRONG_RESERVATION",
-          "This material is not assigned to the selected reservation."
-        );
-      if (
-        operation === "CHECKED_OUT" &&
-        (assignment.status !== "APPROVED" ||
-          assignment.state !== "RESERVED" ||
-          asset.state === "BORROWED")
-      )
-        throw new DomainError(
-          409,
-          "INVALID_CHECKOUT",
-          "This material cannot be collected again or is still borrowed."
-        );
-      if (
-        operation === "RETURNED" &&
-        (assignment.state !== "BORROWED" || asset.state !== "BORROWED")
-      )
         throw new DomainError(
           409,
           "INVALID_RETURN",
           "This material is not awaiting return for this reservation."
         );
     }
+    if (operation === "CHECKED_OUT" && asset.state === "BORROWED")
+      throw new DomainError(409, "INVALID_CHECKOUT", "This material is already borrowed.");
     if (!asset.active || asset.state === "RETIRED")
       throw new DomainError(409, "INVALID_ASSET", "This asset has been retired.");
     if (asset.state === "OUT_OF_SERVICE")
@@ -1155,8 +1127,8 @@ export async function scanAsset(
       });
       const unfinished = await one<{ count: number }>(
         tx,
-        "SELECT COUNT(*) AS count FROM reservation_assets WHERE reservation_id=? AND state IN ('RESERVED','BORROWED')",
-        [assignment.reservation_id]
+        "SELECT (SELECT COALESCE(SUM(quantity),0) FROM reservation_lines WHERE reservation_id=?) - (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id=? AND state='RETURNED') AS count",
+        [assignment.reservation_id, assignment.reservation_id]
       );
       if (Number(unfinished?.count ?? 0) === 0) {
         await tx.execute({
@@ -1181,58 +1153,14 @@ export async function scanAsset(
         assetCode: asset.asset_code,
       };
     } else {
-      const activeAssignment = await one<{
-        id: string;
-        reservation_id: string;
-        pickup_at: number;
-        return_at: number;
-        borrower_name: string;
-        requested_by_user_id: string;
-      }>(
-        tx,
-        `SELECT ra.id,ra.reservation_id,r.pickup_at,r.return_at,r.requested_by_user_id,
-                CASE WHEN r.borrower_type='PERSON' THEN bu.name ELSE ch.name END AS borrower_name
-           FROM reservation_assets ra
-           INNER JOIN reservations r ON r.id=ra.reservation_id
-           LEFT JOIN user bu ON bu.id=r.borrower_user_id
-           LEFT JOIN chapters ch ON ch.id=r.chapter_id
-          WHERE ra.asset_id=? AND ra.state='RESERVED' AND r.status='APPROVED'
-          ORDER BY r.pickup_at ASC LIMIT 1`,
-        [asset.id]
-      );
-      if (!activeAssignment)
-        throw new DomainError(409, "NOT_FOUND", "No approved reservation found for this asset.");
-      if (reservationId && activeAssignment.reservation_id !== reservationId)
+      if (!reservationId)
         throw new DomainError(
-          409,
-          "WRONG_RESERVATION",
-          "Another reservation must collect this material first."
+          400,
+          "RESERVATION_REQUIRED",
+          "Scan the borrower's reservation QR before collecting materials."
         );
-      if (timestamp < Number(activeAssignment.pickup_at)) {
-        throw new DomainError(
-          409,
-          "TOO_EARLY",
-          `Reservation starts at ${formatTunis(Number(activeAssignment.pickup_at))}. Checkout is not active yet.`
-        );
-      }
-      if (timestamp >= Number(activeAssignment.return_at)) {
-        throw new DomainError(
-          409,
-          "RESERVATION_EXPIRED",
-          "Reservation window has expired. Update or recreate the reservation."
-        );
-      }
-      await tx.execute({
-        sql: "UPDATE reservation_assets SET state='BORROWED',actual_pickup_at=?,checked_out_by_user_id=?,updated_at=? WHERE id=? AND state='RESERVED'",
-        args: [timestamp, actor.id, timestamp, activeAssignment.id],
-      });
-      await tx.execute({
-        sql: "UPDATE assets SET state='BORROWED',last_scan_at=?,updated_at=? WHERE id=?",
-        args: [timestamp, timestamp, asset.id],
-      });
-      await audit(tx, actor.id, "ASSET", asset.id, "ASSET_CHECKED_OUT", {
-        reservationId: activeAssignment.reservation_id,
-      });
+      const collected = await collectMaterial(tx, actor, reservationId, asset.id, timestamp);
+      const activeAssignment = { ...collected, reservation_id: reservationId };
       await notify(
         tx,
         activeAssignment.requested_by_user_id,
@@ -1256,14 +1184,6 @@ export async function scanAsset(
     });
     return result;
   });
-}
-
-function formatTunis(timestamp: number) {
-  return new Intl.DateTimeFormat("en-GB", {
-    timeZone: DISPLAY_TIME_ZONE,
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(timestamp);
 }
 
 export function tunisDayRange(timestamp = Date.now()) {
@@ -1339,7 +1259,7 @@ export async function calendarEvents(
   const ids = await rows<{ id: string }>(
     env.CLIENT as unknown as SqlExecutor,
     `SELECT DISTINCT r.id FROM reservations r
-       INNER JOIN reservation_assets ra ON ra.reservation_id=r.id
+       LEFT JOIN reservation_assets ra ON ra.reservation_id=r.id
       WHERE ((r.status='APPROVED' AND r.pickup_at < ? AND ? < r.return_at) OR ra.state='BORROWED')
       ORDER BY r.pickup_at`,
     [end, start]
@@ -1351,7 +1271,10 @@ export async function calendarEvents(
     .filter((reservation): reservation is ReservationDTO => Boolean(reservation))
     .flatMap((reservation) =>
       reservation.items.flatMap((item) =>
-        (item.assignedAssets ?? [])
+        (item.assignedAssets?.length
+          ? item.assignedAssets
+          : [{ id: item.lineId, assetCode: String(item.quantity) + " units", state: "RESERVED" }]
+        )
           .filter((asset) => asset.state === "RESERVED" || asset.state === "BORROWED")
           .filter(
             () => !filters.equipmentItemId || item.equipmentItemId === filters.equipmentItemId

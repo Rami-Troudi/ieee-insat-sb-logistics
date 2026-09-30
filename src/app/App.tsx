@@ -1585,13 +1585,41 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
   const [reservations, setReservations] = useState<Reservation[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("ALL");
-  const [assigningReservation, setAssigningReservation] = useState<Reservation | null>(null);
   const [candidates, setCandidates] = useState<AllocationCandidate[]>([]);
   const [selectedAssets, setSelectedAssets] = useState<Record<string, string[]>>({});
   const [deleteTarget, setDeleteTarget] = useState<Reservation | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [handoverTarget, setHandoverTarget] = useState<Reservation | null>(null);
   const [handingOver, setHandingOver] = useState(false);
+  const [borrowerInfo, setBorrowerInfo] = useState<{
+    name: string;
+    email: string;
+    phone: string | null;
+    borrowingCount: number;
+    chapterName: string | null;
+  } | null>(null);
+  const [borrowerOpen, setBorrowerOpen] = useState(false);
+  const [borrowerLoading, setBorrowerLoading] = useState(false);
+  const [borrowerError, setBorrowerError] = useState("");
+  const borrowerRequest = useRef(0);
+  const openBorrower = async (reservationId: string) => {
+    const requestId = ++borrowerRequest.current;
+    setBorrowerInfo(null);
+    setBorrowerError("");
+    setBorrowerLoading(true);
+    setBorrowerOpen(true);
+    try {
+      const info = await api<NonNullable<typeof borrowerInfo>>(
+        `/api/v1/board/reservations/${reservationId}/borrower`
+      );
+      if (requestId === borrowerRequest.current) setBorrowerInfo(info);
+    } catch (e) {
+      if (requestId === borrowerRequest.current)
+        setBorrowerError(e instanceof Error ? e.message : "Could not load borrower details.");
+    } finally {
+      if (requestId === borrowerRequest.current) setBorrowerLoading(false);
+    }
+  };
 
   const refresh = useCallback(
     () =>
@@ -1626,17 +1654,9 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
       const detail = await api<Reservation & { allocationCandidates: AllocationCandidate[] }>(
         `/api/v1/board/reservations/${reservation.id}`
       );
-      const defaults = Object.fromEntries(
-        detail.items.map((item) => [
-          item.lineId,
-          (detail.allocationCandidates.find((line) => line.lineId === item.lineId)?.assets ?? [])
-            .slice(0, item.quantity)
-            .map((asset) => asset.id),
-        ])
-      );
       setCandidates(detail.allocationCandidates);
-      setSelectedAssets(defaults);
-      setAssigningReservation(reservation);
+      setSelectedAssets({});
+      setHandoverTarget(detail);
     } catch (e) {
       setNotice(e instanceof Error ? e.message : "Could not load available assets.");
     }
@@ -1645,16 +1665,14 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
   const act = async (id: string, action: "approve" | "decline") => {
     try {
       if (action === "approve") {
-        await api(
-          `/api/v1/board/reservations/${id}/approve`,
-          post({ assignments: selectedAssets })
-        );
-        setAssigningReservation(null);
+        await api(`/api/v1/board/reservations/${id}/approve`, post());
       } else {
         await api(`/api/v1/board/reservations/${id}/decline`, post());
       }
       setNotice(
-        action === "approve" ? "Reservation approved and assets assigned." : "Reservation declined."
+        action === "approve"
+          ? "Reservation approved. Material labels will be recorded at pickup."
+          : "Reservation declined."
       );
       refresh();
     } catch (e) {
@@ -1669,7 +1687,7 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
     try {
       const result = await api<{ handedOverCount: number }>(
         `/api/v1/board/reservations/${handoverTarget.id}/handover`,
-        post()
+        post({ assetIds: Object.values(selectedAssets).flat() })
       );
       setNotice(
         result.handedOverCount
@@ -1690,7 +1708,7 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
       <PageHeading
         eyebrow="BOARD · RESERVATIONS"
         title="Reservation requests"
-        description="Review the requested window and assign actual physical assets before approving."
+        description="Approve equipment quantities for the requested window. Record specific material labels at pickup."
         action={
           <Button asChild variant="outline" size="sm" className="gap-2">
             <Link to="/board/calendar">
@@ -1748,7 +1766,16 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
                     </span>
                   </div>
                   <div>
-                    <h3 className="font-bold text-sm text-foreground">{r.borrower.name}</h3>
+                    <h3 className="font-bold text-sm text-foreground">
+                      <button
+                        type="button"
+                        onClick={() => openBorrower(r.id)}
+                        className="text-primary hover:underline rounded focus-visible:ring-2 focus-visible:ring-primary"
+                        aria-label={"View borrower details for " + r.borrower.name}
+                      >
+                        {r.borrower.name}
+                      </button>
+                    </h3>
                     <p className="text-xs text-muted-foreground">
                       Requested by <strong className="text-foreground">{r.requestedBy.name}</strong>{" "}
                       ({r.requestedBy.email})
@@ -1807,22 +1834,19 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
                 </Button>
 
                 <div className="flex items-center gap-2">
-                  {r.status === "APPROVED" &&
-                    r.items.some((item) =>
-                      item.assignedAssets?.some((asset) => asset.state === "RESERVED")
-                    ) && (
-                      <>
-                        <Button asChild variant="outline" size="sm" className="gap-1.5">
-                          <Link to="/board/scan">
-                            <QrCode className="w-3.5 h-3.5" />
-                            Scan QR
-                          </Link>
-                        </Button>
-                        <Button size="sm" onClick={() => setHandoverTarget(r)}>
-                          Mark as handed over
-                        </Button>
-                      </>
-                    )}
+                  {r.status === "APPROVED" && r.collectedCount < r.totalQuantity && (
+                    <>
+                      <Button asChild variant="outline" size="sm" className="gap-1.5">
+                        <Link to={"/board/scan?res=" + r.id}>
+                          <QrCode className="w-3.5 h-3.5" />
+                          Scan QR
+                        </Link>
+                      </Button>
+                      <Button size="sm" onClick={() => openAllocation(r)}>
+                        Mark as handed over
+                      </Button>
+                    </>
+                  )}
                   {r.status === "PENDING" && (
                     <>
                       <Button
@@ -1836,11 +1860,11 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
                       <Button
                         variant="default"
                         size="sm"
-                        onClick={() => openAllocation(r)}
+                        onClick={() => act(r.id, "approve")}
                         className="text-xs gap-1.5"
                       >
                         <Check className="w-3.5 h-3.5" />
-                        <span>Assign assets</span>
+                        <span>Approve reservation</span>
                       </Button>
                     </>
                   )}
@@ -1858,6 +1882,70 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
       )}
 
       {/* Asset Allocation Dialog: Matches E2E test selectors & accessible dialog */}
+      <Dialog open={borrowerOpen} onOpenChange={setBorrowerOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Borrower information</DialogTitle>
+            <DialogDescription>
+              {borrowerInfo?.chapterName
+                ? "Contact details of the member who requested equipment for " +
+                  borrowerInfo.chapterName +
+                  "."
+                : "Contact details and borrowing history."}
+            </DialogDescription>
+          </DialogHeader>
+          {borrowerLoading && <p className="text-sm">Loading borrower details…</p>}
+          {borrowerError && (
+            <p role="alert" className="text-sm text-destructive">
+              {borrowerError}
+            </p>
+          )}
+          {borrowerInfo && (
+            <dl className="space-y-3 text-sm">
+              <div>
+                <dt className="text-muted-foreground">Full name</dt>
+                <dd className="font-medium">{borrowerInfo.name}</dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">Email</dt>
+                <dd>
+                  <a
+                    className="text-primary break-all hover:underline"
+                    href={"mailto:" + borrowerInfo.email}
+                  >
+                    {borrowerInfo.email}
+                  </a>
+                </dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">Phone number</dt>
+                <dd>
+                  {borrowerInfo.phone ? (
+                    <a className="text-primary hover:underline" href={"tel:" + borrowerInfo.phone}>
+                      {borrowerInfo.phone}
+                    </a>
+                  ) : (
+                    "Not provided"
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">
+                  {borrowerInfo.chapterName
+                    ? "Times this chapter borrowed equipment"
+                    : "Times borrowed equipment"}
+                </dt>
+                <dd className="font-medium">{borrowerInfo.borrowingCount}</dd>
+              </div>
+            </dl>
+          )}
+          <p className="text-xs text-muted-foreground">
+            Counts reservations with at least one material collected, including current loans.
+            Requests without pickup are excluded.
+          </p>
+        </DialogContent>
+      </Dialog>
+
       <Dialog
         open={Boolean(handoverTarget)}
         onOpenChange={(open) => {
@@ -1868,21 +1956,46 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
           <DialogHeader>
             <DialogTitle>Confirm equipment handover</DialogTitle>
             <DialogDescription>
-              Confirm that {handoverTarget?.borrower.name} has received all the equipment listed
-              below. Equipment already collected by QR scan is excluded.
+              Select the labels of the materials actually given to {handoverTarget?.borrower.name}.
+              You can record a partial pickup.
             </DialogDescription>
           </DialogHeader>
-          <ul className="space-y-2 text-sm">
-            {handoverTarget?.items.flatMap((item) =>
-              (item.assignedAssets ?? [])
-                .filter((asset) => asset.state === "RESERVED")
-                .map((asset) => (
-                  <li key={asset.id}>
-                    {item.name} — {asset.assetCode}
-                  </li>
-                ))
-            )}
-          </ul>
+          <div className="space-y-3 max-h-[50vh] overflow-y-auto">
+            {handoverTarget?.items.map((item) => {
+              const collected = (item.assignedAssets ?? []).filter((asset) =>
+                ["BORROWED", "RETURNED"].includes(asset.state)
+              ).length;
+              const remaining = item.quantity - collected;
+              if (remaining <= 0) return null;
+              return (
+                <div key={item.lineId} className="space-y-2">
+                  <p className="text-sm font-medium">
+                    {item.name}: {remaining} remaining to collect
+                  </p>
+                  {(candidates.find((line) => line.lineId === item.lineId)?.assets ?? []).map(
+                    (asset) => (
+                      <label key={asset.id} className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          disabled={handingOver}
+                          checked={(selectedAssets[item.lineId] ?? []).includes(asset.id)}
+                          onChange={(event) =>
+                            setSelectedAssets((current) => ({
+                              ...current,
+                              [item.lineId]: event.target.checked
+                                ? [...(current[item.lineId] ?? []), asset.id]
+                                : (current[item.lineId] ?? []).filter((id) => id !== asset.id),
+                            }))
+                          }
+                        />
+                        {asset.assetCode}
+                      </label>
+                    )
+                  )}
+                </div>
+              );
+            })}
+          </div>
           <p className="text-sm text-muted-foreground">
             Return deadline:{" "}
             {handoverTarget && fmtWindow(handoverTarget.pickupAt, handoverTarget.returnAt)}
@@ -1895,91 +2008,11 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
             >
               Cancel
             </Button>
-            <Button disabled={handingOver} onClick={confirmHandover}>
-              {handingOver ? "Saving…" : "Confirm handover"}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={Boolean(assigningReservation)}
-        onOpenChange={() => setAssigningReservation(null)}
-      >
-        <DialogContent className="max-w-lg p-6 bg-card border-border sm:rounded-2xl space-y-4">
-          <DialogHeader>
-            <DialogTitle>Assign assets</DialogTitle>
-            <DialogDescription>
-              Choose the physical units to allocate for {assigningReservation?.borrower.name}.
-            </DialogDescription>
-          </DialogHeader>
-
-          {assigningReservation && (
-            <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-1">
-              {assigningReservation.items.map((item) => {
-                const lineCandidates =
-                  candidates.find((c) => c.lineId === item.lineId)?.assets ?? [];
-                const currentAssigned = selectedAssets[item.lineId] ?? [];
-
-                return (
-                  <div
-                    key={item.lineId}
-                    className="p-3.5 rounded-xl border border-border bg-surface-subtle space-y-2"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-xs text-foreground">
-                        {item.quantity} × {item.name}
-                      </span>
-                      <span className="text-[11px] text-muted-foreground">
-                        Selected {currentAssigned.length} of {item.quantity}
-                      </span>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2 pt-1">
-                      {lineCandidates.map((asset) => {
-                        const isChecked = currentAssigned.includes(asset.id);
-                        return (
-                          <label
-                            key={asset.id}
-                            className={cn(
-                              "allocation-option flex items-center gap-2 p-2 rounded-lg border text-xs font-mono cursor-pointer transition-colors",
-                              isChecked
-                                ? "bg-primary/10 border-primary text-primary font-bold"
-                                : "bg-card border-input text-foreground hover:bg-muted"
-                            )}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={isChecked}
-                              onChange={(e) => {
-                                const next = e.target.checked
-                                  ? [...currentAssigned, asset.id]
-                                  : currentAssigned.filter((id) => id !== asset.id);
-                                setSelectedAssets({ ...selectedAssets, [item.lineId]: next });
-                              }}
-                              className="rounded text-primary focus:ring-primary"
-                            />
-                            <span>{asset.assetCode}</span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          <div className="flex items-center justify-end gap-2 pt-2 border-t border-border">
-            <Button variant="outline" size="sm" onClick={() => setAssigningReservation(null)}>
-              Cancel
-            </Button>
             <Button
-              variant="default"
-              size="sm"
-              onClick={() => assigningReservation && act(assigningReservation.id, "approve")}
+              disabled={handingOver || !Object.values(selectedAssets).flat().length}
+              onClick={confirmHandover}
             >
-              Confirm allocation
+              {handingOver ? "Saving…" : "Confirm handover"}
             </Button>
           </div>
         </DialogContent>
@@ -2758,6 +2791,17 @@ function BoardScan({
             </Button>
           </div>
           <ul className="text-sm space-y-1">
+            {reservation.items.map((item) => (
+              <li key={item.lineId}>
+                {item.quantity} × {item.name} ·{" "}
+                {
+                  (item.assignedAssets ?? []).filter((asset) =>
+                    ["BORROWED", "RETURNED"].includes(asset.state)
+                  ).length
+                }{" "}
+                collected
+              </li>
+            ))}
             {reservation.items.flatMap((item) =>
               (item.assignedAssets ?? []).map((asset) => (
                 <li key={asset.id}>

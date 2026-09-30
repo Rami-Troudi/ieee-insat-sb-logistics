@@ -30,7 +30,7 @@ The command prints a random password once. Use the Admin sign in tab with that e
 ## Product flows
 
 - Members select multiple equipment types and quantities, choose a pickup and return window, reserve personally or for an active chapter, and follow reservation status.
-- Board accounts approve or decline requests, allocate individual assets, manage the equipment catalogue, print QR labels, scan collections and returns, and review the calendar and audit log.
+- Board accounts approve or decline equipment quantities, manage the equipment catalogue, print QR labels, scan collections and returns, and review the calendar and audit log. Approval reserves quantities for the requested window. Individual units are identified only at pickup by scanning their labels or selecting the actual labels in the PC handover dialog.
 - Superadmins manage account roles.
 - The application uses USER, BOARD, and SUPERADMIN roles, Better Auth sessions, relational storage, immutable audit events, and an Africa/Tunis timezone.
 

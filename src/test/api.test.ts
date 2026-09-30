@@ -59,6 +59,12 @@ beforeEach(async () => {
     "utf8"
   );
   await client.executeMultiple(migration);
+  await client.executeMultiple(
+    await readFile(new URL("../../drizzle/0001_borrower_phone.sql", import.meta.url), "utf8")
+  );
+  await client.executeMultiple(
+    await readFile(new URL("../../drizzle/0002_quantity_reservations.sql", import.meta.url), "utf8")
+  );
   env = {
     CLIENT: client,
     DB: createDatabase(client),
@@ -151,7 +157,7 @@ describe("reservation API against a real libSQL database", () => {
     ]);
     await request(
       "/api/v1/board/reservations/" + created.id + "/handover",
-      sendJson({}),
+      sendJson({ assetIds: ["asset-one"] }),
       boardCookie
     );
     await request("/api/v1/notifications/refresh", sendJson({}), memberCookie);
@@ -189,18 +195,24 @@ describe("reservation API against a real libSQL database", () => {
       boardCookie
     );
     const path = "/api/v1/board/reservations/" + created.id + "/handover";
-    expect((await request(path, sendJson({}), memberCookie)).status).toBe(403);
-    expect((await request(path, sendJson({}), boardCookie)).status).toBe(409);
+    expect((await request(path, sendJson({ assetIds: ["asset-one"] }), memberCookie)).status).toBe(
+      403
+    );
+    expect((await request(path, sendJson({ assetIds: ["asset-one"] }), boardCookie)).status).toBe(
+      409
+    );
     await client.execute("UPDATE reservations SET pickup_at=? WHERE id=?", [
       Date.now() - 1000,
       created.id,
     ]);
-    expect(await (await request(path, sendJson({}), boardCookie)).json()).toMatchObject({
+    expect(
+      await (await request(path, sendJson({ assetIds: ["asset-one"] }), boardCookie)).json()
+    ).toMatchObject({
       handedOverCount: 1,
     });
-    expect(await (await request(path, sendJson({}), boardCookie)).json()).toMatchObject({
-      handedOverCount: 0,
-    });
+    expect((await request(path, sendJson({ assetIds: ["asset-one"] }), boardCookie)).status).toBe(
+      409
+    );
     const assignment = await client.execute(
       "SELECT state,checked_out_by_user_id,actual_pickup_at FROM reservation_assets WHERE reservation_id=?",
       [created.id]
@@ -253,7 +265,7 @@ describe("reservation API against a real libSQL database", () => {
         },
         boardCookie
       );
-    expect((await scan(qrToken, "CHECKED_OUT", "wrong-reservation")).status).toBe(409);
+    expect((await scan(qrToken, "CHECKED_OUT", "wrong-reservation")).status).toBe(404);
     expect((await scan(qrToken, "CHECKED_OUT")).status).toBe(200);
     expect((await scan(qrToken, "CHECKED_OUT")).status).toBe(409);
     expect((await scan(secondToken, "CHECKED_OUT")).status).toBe(200);
@@ -320,7 +332,7 @@ describe("reservation API against a real libSQL database", () => {
     expect(approvedResponse.status).toBe(200);
     expect(await approvedResponse.json()).toMatchObject({
       status: "APPROVED",
-      items: [{ assignedAssets: [{ assetCode: "SB-METER-01", state: "RESERVED" }] }],
+      items: [{ assignedAssets: [] }],
     });
     const calendar = await request(
       "/api/v1/board/calendar?start=" +
@@ -332,7 +344,7 @@ describe("reservation API against a real libSQL database", () => {
     );
     expect(calendar.status).toBe(200);
     expect(await calendar.json()).toMatchObject([
-      { title: expect.stringContaining("SB-METER-01"), assetCode: "SB-METER-01" },
+      { title: expect.stringContaining("1 units"), assetCode: "1 units" },
     ]);
     const conflict = await request(
       "/api/v1/board/reservations/" + competing.id + "/approve",
@@ -349,7 +361,7 @@ describe("reservation API against a real libSQL database", () => {
     const checkout = await request(
       "/api/v1/board/scan",
       {
-        ...sendJson({ qrToken }),
+        ...sendJson({ qrToken, reservationId: created.id, operation: "CHECKED_OUT" }),
         headers: { "Content-Type": "application/json", "Idempotency-Key": "checkout-key-0001" },
       },
       boardCookie
@@ -363,13 +375,13 @@ describe("reservation API against a real libSQL database", () => {
     const duplicate = await request(
       "/api/v1/board/scan",
       {
-        ...sendJson({ qrToken }),
+        ...sendJson({ qrToken, reservationId: created.id, operation: "CHECKED_OUT" }),
         headers: { "Content-Type": "application/json", "Idempotency-Key": "checkout-key-0002" },
       },
       boardCookie
     );
     expect(duplicate.status).toBe(409);
-    expect((await duplicate.json()).error.code).toBe("DUPLICATE_SCAN");
+    expect((await duplicate.json()).error.code).toBe("INVALID_CHECKOUT");
 
     await client.execute({
       sql: "UPDATE assets SET last_scan_at=? WHERE id='asset-one'",
@@ -453,7 +465,7 @@ describe("reservation API against a real libSQL database", () => {
 
     // Verify asset is now RESERVED
     const assetCheckBefore = await client.execute("SELECT state FROM assets WHERE id='asset-one'");
-    expect(assetCheckBefore.rows[0]?.state).toBe("RESERVED");
+    expect(assetCheckBefore.rows[0]?.state).toBe("AVAILABLE");
 
     // Force delete as board
     const deleteRes = await request(

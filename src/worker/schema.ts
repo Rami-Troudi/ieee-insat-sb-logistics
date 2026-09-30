@@ -15,6 +15,7 @@ export const authUsers = sqliteTable(
     id: text("id").primaryKey(),
     name: text("name").notNull(),
     email: text("email").notNull(),
+    phone: text("phone"),
     emailVerified: integer("emailVerified", { mode: "boolean" }).notNull().default(false),
     image: text("image"),
     role: text("role", { enum: ["USER", "BOARD", "SUPERADMIN"] })

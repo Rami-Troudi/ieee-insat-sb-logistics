@@ -22,6 +22,10 @@ const client = createClient({ url });
 try {
   await client.execute("PRAGMA foreign_keys = ON");
   await client.executeMultiple(await readFile(resolve("drizzle/0000_sb_reservations.sql"), "utf8"));
+  await client.executeMultiple(await readFile(resolve("drizzle/0001_borrower_phone.sql"), "utf8"));
+  await client.executeMultiple(
+    await readFile(resolve("drizzle/0002_quantity_reservations.sql"), "utf8")
+  );
   const now = Date.now();
   const result = {};
   for (const [id, name, role] of [

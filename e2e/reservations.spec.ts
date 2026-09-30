@@ -43,19 +43,7 @@ test("member requests equipment, Board approves it, and the reservation appears 
   await page.goto("/board/reservations");
   await expect(page.getByRole("heading", { name: "Reservation requests" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Alex Member" })).toBeVisible();
-  await page.getByRole("button", { name: /Assign assets/i }).click();
-  await expect(page.getByText("Choose the physical units")).toBeVisible();
-  await page
-    .locator(".allocation-option")
-    .filter({ hasText: "E2E-METER-01" })
-    .locator("input")
-    .uncheck();
-  await page
-    .locator(".allocation-option")
-    .filter({ hasText: "E2E-METER-02" })
-    .locator("input")
-    .check();
-  await page.getByRole("button", { name: /Confirm allocation/i }).click();
+  await page.getByRole("button", { name: /Approve reservation/i }).click();
   await expect(page.getByText("Approved", { exact: true }).first()).toBeVisible();
   await expect(page.getByRole("button", { name: "Mark as handed over" })).toBeVisible();
   const response = await page.request.get("/api/v1/board/reservations");
@@ -68,7 +56,7 @@ test("member requests equipment, Board approves it, and the reservation appears 
   await expect(page.getByRole("button", { name: "Return", exact: true })).toBeVisible();
   await expect(page.getByText("0/1 collected · 0/1 returned")).toBeVisible();
   await page.goto("/board/calendar");
-  await expect(page.getByText(/E2E Digital Multimeter E2E-METER-02/)).toBeVisible();
+  await expect(page.getByText(/E2E Digital Multimeter 1 units/)).toBeVisible();
 });
 
 test("guest can choose a password and the layout works at a narrow viewport", async ({ page }) => {
