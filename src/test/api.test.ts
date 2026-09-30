@@ -293,4 +293,31 @@ describe("reservation API against a real libSQL database", () => {
     );
     expect(auditRow.rows.length).toBe(1);
   });
+
+  it("deletes a user account cleanly cascade cleaning their past records", async () => {
+    const memberId = "user-to-del";
+    await seedUser(memberId, "USER");
+    const superadminCookie = await seedUser("super-admin-del", "SUPERADMIN");
+
+    // Add a completed past reservation
+    const resId = "past-res-del";
+    await client.execute({
+      sql: `INSERT INTO reservations(id, requested_by_user_id, borrower_type, borrower_user_id, chapter_id, pickup_at, return_at, status, created_at, updated_at)
+        VALUES(?, ?, 'PERSON', ?, NULL, ?, ?, 'COMPLETED', ?, ?)`,
+      args: [resId, memberId, memberId, Date.now() - 200000, Date.now() - 100000, Date.now() - 200000, Date.now() - 100000],
+    });
+    await client.execute({
+      sql: "INSERT INTO reservation_lines(id, reservation_id, equipment_item_id, quantity) VALUES('rl-del', ?, ?, 1)",
+      args: [resId, itemId],
+    });
+
+    // Delete user as superadmin
+    const delRes = await request(`/api/v1/board/users/${memberId}`, { method: "DELETE" }, superadminCookie);
+    expect(delRes.status).toBe(200);
+    expect(await delRes.json()).toMatchObject({ ok: true });
+
+    // Verify user is gone
+    const checkUser = await client.execute("SELECT * FROM user WHERE id=?", [memberId]);
+    expect(checkUser.rows.length).toBe(0);
+  });
 });
