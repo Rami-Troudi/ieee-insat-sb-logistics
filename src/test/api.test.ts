@@ -236,4 +236,61 @@ describe("reservation API against a real libSQL database", () => {
     );
     expect(crossOrigin.status).toBe(403);
   });
+
+  it("force deletes a reservation and releases allocated assets back to available", async () => {
+    const pickupAt = new Date(Date.now() + 48 * 60 * 60_000).toISOString();
+    const returnAt = new Date(Date.parse(pickupAt) + 2 * 60 * 60_000).toISOString();
+
+    const createdRes = await request(
+      "/api/v1/reservations",
+      sendJson({
+        borrowerType: "PERSON",
+        pickupAt,
+        returnAt,
+        items: [{ equipmentItemId: itemId, quantity: 1 }],
+      }),
+      memberCookie
+    );
+    expect(createdRes.status).toBe(201);
+    const created = await createdRes.json();
+
+    const approvedRes = await request(
+      `/api/v1/board/reservations/${created.id}/approve`,
+      sendJson({}),
+      boardCookie
+    );
+    expect(approvedRes.status).toBe(200);
+
+    // Verify asset is now RESERVED
+    const assetCheckBefore = await client.execute("SELECT state FROM assets WHERE id='asset-one'");
+    expect(assetCheckBefore.rows[0]?.state).toBe("RESERVED");
+
+    // Force delete as board
+    const deleteRes = await request(
+      `/api/v1/board/reservations/${created.id}/force`,
+      { method: "DELETE" },
+      boardCookie
+    );
+    expect(deleteRes.status).toBe(200);
+    expect(await deleteRes.json()).toMatchObject({ ok: true, id: created.id });
+
+    // Verify asset is restored to AVAILABLE
+    const assetCheckAfter = await client.execute("SELECT state FROM assets WHERE id='asset-one'");
+    expect(assetCheckAfter.rows[0]?.state).toBe("AVAILABLE");
+
+    // Verify reservation and child records are completely gone
+    const resRow = await client.execute("SELECT * FROM reservations WHERE id=?", [created.id]);
+    expect(resRow.rows.length).toBe(0);
+    const linesRow = await client.execute("SELECT * FROM reservation_lines WHERE reservation_id=?", [created.id]);
+    expect(linesRow.rows.length).toBe(0);
+    const assetsRow = await client.execute("SELECT * FROM reservation_assets WHERE reservation_id=?", [created.id]);
+    expect(assetsRow.rows.length).toBe(0);
+
+    // Verify audit log
+    const auditRow = await client.execute(
+      "SELECT action FROM audit_events WHERE entity_id=? AND action='RESERVATION_FORCE_DELETED'",
+      [created.id]
+    );
+    expect(auditRow.rows.length).toBe(1);
+  });
 });
