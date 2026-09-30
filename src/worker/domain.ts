@@ -650,6 +650,76 @@ export async function cancelReservation(
   return getReservation(env, reservationId, isBoard);
 }
 
+export async function forceDeleteReservation(
+  env: Env,
+  actor: CurrentUser,
+  reservationId: string
+) {
+  return await write(env, async (tx) => {
+    const reservation = await one<{
+      id: string;
+      status: string;
+      requested_by_user_id: string;
+    }>(tx, "SELECT id,status,requested_by_user_id FROM reservations WHERE id=?", [
+      reservationId,
+    ]);
+    if (!reservation) throw new DomainError(404, "NOT_FOUND", "Reservation not found.");
+
+    // Release any physical assets currently in RESERVED or BORROWED state
+    await tx.execute({
+      sql: `UPDATE assets SET state='AVAILABLE', updated_at=?
+            WHERE id IN (
+              SELECT asset_id FROM reservation_assets
+              WHERE reservation_id=? AND state IN ('RESERVED', 'BORROWED')
+            ) AND state IN ('RESERVED', 'BORROWED')`,
+      args: [Date.now(), reservationId],
+    });
+
+    // Delete reservation assets
+    await tx.execute({
+      sql: "DELETE FROM reservation_assets WHERE reservation_id=?",
+      args: [reservationId],
+    });
+
+    // Delete reservation lines
+    await tx.execute({
+      sql: "DELETE FROM reservation_lines WHERE reservation_id=?",
+      args: [reservationId],
+    });
+
+    // Nullify reservation_id in notifications
+    await tx.execute({
+      sql: "UPDATE notifications SET reservation_id=NULL WHERE reservation_id=?",
+      args: [reservationId],
+    });
+
+    // Delete the reservation itself
+    await tx.execute({
+      sql: "DELETE FROM reservations WHERE id=?",
+      args: [reservationId],
+    });
+
+    // Audit log
+    await audit(tx, actor.id, "RESERVATION", reservationId, "RESERVATION_FORCE_DELETED", {
+      previousStatus: reservation.status,
+    });
+
+    // Notify requester if not the actor
+    if (reservation.requested_by_user_id !== actor.id) {
+      await notify(
+        tx,
+        reservation.requested_by_user_id,
+        "RESERVATION_DELETED",
+        "Reservation request removed",
+        "Your equipment reservation request was removed by the Board.",
+        null
+      );
+    }
+
+    return { ok: true, id: reservationId };
+  });
+}
+
 async function assignApprovedReservation(
   tx: WriteTransaction,
   actor: CurrentUser,

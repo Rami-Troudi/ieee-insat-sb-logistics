@@ -1581,6 +1581,8 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
   const [assigningReservation, setAssigningReservation] = useState<Reservation | null>(null);
   const [candidates, setCandidates] = useState<AllocationCandidate[]>([]);
   const [selectedAssets, setSelectedAssets] = useState<Record<string, string[]>>({});
+  const [deleteTarget, setDeleteTarget] = useState<Reservation | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const refresh = useCallback(
     () =>
@@ -1590,6 +1592,21 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
         .finally(() => setLoading(false)),
     [setNotice]
   );
+
+  const handleForceDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await api(`/api/v1/board/reservations/${deleteTarget.id}/force`, { method: "DELETE" });
+      setNotice(`Reservation for ${deleteTarget.borrower.name} was permanently force-deleted.`);
+      setDeleteTarget(null);
+      refresh();
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : "Failed to force delete reservation.");
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   useEffect(() => {
     void refresh();
@@ -1747,28 +1764,41 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
                 ))}
               </div>
 
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-border/50">
-                {r.status === "PENDING" && (
-                  <>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => act(r.id, "decline")}
-                      className="text-xs text-destructive hover:bg-destructive/10"
-                    >
-                      Decline
-                    </Button>
-                    <Button
-                      variant="default"
-                      size="sm"
-                      onClick={() => openAllocation(r)}
-                      className="text-xs gap-1.5"
-                    >
-                      <Check className="w-3.5 h-3.5" />
-                      <span>Assign assets</span>
-                    </Button>
-                  </>
-                )}
+              <div className="flex items-center justify-between gap-2 pt-2 border-t border-border/50">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setDeleteTarget(r)}
+                  className="text-xs text-destructive hover:text-destructive hover:bg-destructive/10 gap-1.5 h-8 px-2.5"
+                  title="Force delete this reservation request"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Force delete</span>
+                </Button>
+
+                <div className="flex items-center gap-2">
+                  {r.status === "PENDING" && (
+                    <>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => act(r.id, "decline")}
+                        className="text-xs text-destructive hover:bg-destructive/10"
+                      >
+                        Decline
+                      </Button>
+                      <Button
+                        variant="default"
+                        size="sm"
+                        onClick={() => openAllocation(r)}
+                        className="text-xs gap-1.5"
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Assign assets</span>
+                      </Button>
+                    </>
+                  )}
+                </div>
               </div>
             </article>
           ))}
@@ -1860,6 +1890,57 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
               onClick={() => assigningReservation && act(assigningReservation.id, "approve")}
             >
               Confirm allocation
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Force Delete Confirmation Dialog */}
+      <Dialog
+        open={Boolean(deleteTarget)}
+        onOpenChange={(open) => {
+          if (!open && !deleting) setDeleteTarget(null);
+        }}
+      >
+        <DialogContent className="max-w-md p-6 bg-card border-border sm:rounded-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-destructive flex items-center gap-2">
+              <Trash2 className="w-5 h-5" />
+              <span>Force Delete Reservation?</span>
+            </DialogTitle>
+            <DialogDescription>
+              Are you sure you want to permanently delete the reservation request for{" "}
+              <strong>{deleteTarget?.borrower.name}</strong> (requested by{" "}
+              {deleteTarget?.requestedBy.name})?
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="py-2 text-xs text-muted-foreground bg-destructive/10 border border-destructive/20 rounded-lg p-3 space-y-1">
+            <p className="font-semibold text-destructive">⚠️ Permanent Action</p>
+            <p>
+              This will completely remove the reservation request from the system and automatically release any
+              allocated physical units back to available inventory.
+            </p>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-4">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setDeleteTarget(null)}
+              disabled={deleting}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={handleForceDelete}
+              disabled={deleting}
+              className="gap-1.5"
+            >
+              <Trash2 className="w-4 h-4" />
+              <span>{deleting ? "Deleting…" : "Force Delete"}</span>
             </Button>
           </div>
         </DialogContent>

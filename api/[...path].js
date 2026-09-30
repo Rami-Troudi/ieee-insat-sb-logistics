@@ -1115,6 +1115,52 @@ async function cancelReservation(env, actor, reservationId, isBoard = false) {
   });
   return getReservation(env, reservationId, isBoard);
 }
+async function forceDeleteReservation(env, actor, reservationId) {
+  return await write(env, async (tx) => {
+    const reservation = await one(tx, "SELECT id,status,requested_by_user_id FROM reservations WHERE id=?", [
+      reservationId
+    ]);
+    if (!reservation) throw new DomainError(404, "NOT_FOUND", "Reservation not found.");
+    await tx.execute({
+      sql: `UPDATE assets SET state='AVAILABLE', updated_at=?
+            WHERE id IN (
+              SELECT asset_id FROM reservation_assets
+              WHERE reservation_id=? AND state IN ('RESERVED', 'BORROWED')
+            ) AND state IN ('RESERVED', 'BORROWED')`,
+      args: [Date.now(), reservationId]
+    });
+    await tx.execute({
+      sql: "DELETE FROM reservation_assets WHERE reservation_id=?",
+      args: [reservationId]
+    });
+    await tx.execute({
+      sql: "DELETE FROM reservation_lines WHERE reservation_id=?",
+      args: [reservationId]
+    });
+    await tx.execute({
+      sql: "UPDATE notifications SET reservation_id=NULL WHERE reservation_id=?",
+      args: [reservationId]
+    });
+    await tx.execute({
+      sql: "DELETE FROM reservations WHERE id=?",
+      args: [reservationId]
+    });
+    await audit(tx, actor.id, "RESERVATION", reservationId, "RESERVATION_FORCE_DELETED", {
+      previousStatus: reservation.status
+    });
+    if (reservation.requested_by_user_id !== actor.id) {
+      await notify(
+        tx,
+        reservation.requested_by_user_id,
+        "RESERVATION_DELETED",
+        "Reservation request removed",
+        "Your equipment reservation request was removed by the Board.",
+        null
+      );
+    }
+    return { ok: true, id: reservationId };
+  });
+}
 async function assignApprovedReservation(tx, actor, reservationId, pickupAt, returnAt, assignments) {
   const lines = await rows(
     tx,
@@ -1782,6 +1828,17 @@ app.get("/api/v1/reservations/:id", async (c) => {
   return c.json(reservation);
 });
 app.delete("/api/v1/reservations/:id", async (c) => {
+  const force = c.req.query("force") === "true";
+  if (force) {
+    const res = await getReservation(c.env, c.req.param("id"));
+    if (!res || res.requestedBy.id !== c.get("actor").id) {
+      return jsonError(c, 404, "NOT_FOUND", "Reservation not found.");
+    }
+    if (res.status !== "PENDING") {
+      return jsonError(c, 400, "BAD_REQUEST", "Only pending reservation requests can be force deleted.");
+    }
+    return c.json(await forceDeleteReservation(c.env, c.get("actor"), c.req.param("id")));
+  }
   return c.json(await cancelReservation(c.env, c.get("actor"), c.req.param("id")));
 });
 app.get("/api/v1/notifications", async (c) => {
@@ -1844,7 +1901,14 @@ app.post("/api/v1/board/reservations/:id/decline", async (c) => {
   return c.json(await declineReservation(c.env, c.get("actor"), c.req.param("id")));
 });
 app.delete("/api/v1/board/reservations/:id", async (c) => {
+  const force = c.req.query("force") === "true";
+  if (force) {
+    return c.json(await forceDeleteReservation(c.env, c.get("actor"), c.req.param("id")));
+  }
   return c.json(await cancelReservation(c.env, c.get("actor"), c.req.param("id"), true));
+});
+app.delete("/api/v1/board/reservations/:id/force", async (c) => {
+  return c.json(await forceDeleteReservation(c.env, c.get("actor"), c.req.param("id")));
 });
 app.patch("/api/v1/board/reservations/:id/window", async (c) => {
   const parsed = z.object({ pickupAt: millisIso, returnAt: millisIso, assignments: assignmentsSchema.optional() }).safeParse(await c.req.json().catch(() => null));

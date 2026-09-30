@@ -18,6 +18,7 @@ import {
   createReservation,
   declineReservation,
   findAvailableAssets,
+  forceDeleteReservation,
   getReservation,
   listBoardAudit,
   listBoardReservations,
@@ -406,6 +407,17 @@ app.get("/api/v1/reservations/:id", async (c) => {
 });
 
 app.delete("/api/v1/reservations/:id", async (c) => {
+  const force = c.req.query("force") === "true";
+  if (force) {
+    const res = await getReservation(c.env, c.req.param("id"));
+    if (!res || res.requestedBy.id !== c.get("actor").id) {
+      return jsonError(c, 404, "NOT_FOUND", "Reservation not found.");
+    }
+    if (res.status !== "PENDING") {
+      return jsonError(c, 400, "BAD_REQUEST", "Only pending reservation requests can be force deleted.");
+    }
+    return c.json(await forceDeleteReservation(c.env, c.get("actor"), c.req.param("id")));
+  }
   return c.json(await cancelReservation(c.env, c.get("actor"), c.req.param("id")));
 });
 
@@ -487,7 +499,15 @@ app.post("/api/v1/board/reservations/:id/decline", async (c) => {
 });
 
 app.delete("/api/v1/board/reservations/:id", async (c) => {
+  const force = c.req.query("force") === "true";
+  if (force) {
+    return c.json(await forceDeleteReservation(c.env, c.get("actor"), c.req.param("id")));
+  }
   return c.json(await cancelReservation(c.env, c.get("actor"), c.req.param("id"), true));
+});
+
+app.delete("/api/v1/board/reservations/:id/force", async (c) => {
+  return c.json(await forceDeleteReservation(c.env, c.get("actor"), c.req.param("id")));
 });
 
 app.patch("/api/v1/board/reservations/:id/window", async (c) => {
