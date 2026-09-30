@@ -531,50 +531,109 @@ function DateWindow({
   end,
   setStart,
   setEnd,
+  compact = false,
 }: {
   start: string;
   end: string;
   setStart: (value: string) => void;
   setEnd: (value: string) => void;
+  compact?: boolean;
 }) {
+  if (compact) {
+    return (
+      <div className="rounded-xl border border-border bg-surface-subtle/50 p-3.5 space-y-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center text-primary shrink-0">
+              <CalendarDays className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="text-xs font-bold text-foreground">
+                Time Window
+              </div>
+              <div className="text-[11px] text-muted-foreground">
+                Availability checks full period
+              </div>
+            </div>
+          </div>
+          <span className="text-[10px] font-semibold text-muted-foreground bg-card px-2 py-0.5 rounded border border-border shrink-0">
+            UTC+1 · Tunis
+          </span>
+        </div>
+
+        <div className="space-y-2">
+          <div className="space-y-1">
+            <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block">
+              Pick up *
+            </label>
+            <div className="flex items-center bg-card border border-input rounded-lg px-2.5 py-1.5 focus-within:ring-2 focus-within:ring-primary/20 focus-within:border-primary">
+              <input
+                aria-label="Pick up"
+                type="datetime-local"
+                value={start}
+                onChange={(e) => setStart(e.target.value)}
+                className="bg-transparent text-xs font-semibold focus:outline-none text-foreground w-full cursor-pointer"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block">
+              Return *
+            </label>
+            <div className="flex items-center bg-card border border-input rounded-lg px-2.5 py-1.5 focus-within:ring-2 focus-within:ring-primary/20 focus-within:border-primary">
+              <input
+                aria-label="Return"
+                type="datetime-local"
+                value={end}
+                onChange={(e) => setEnd(e.target.value)}
+                className="bg-transparent text-xs font-semibold focus:outline-none text-foreground w-full cursor-pointer"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="bg-card border border-border rounded-xl p-3.5 sm:p-4 shadow-xs flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-      <div className="flex items-center gap-2.5">
+    <div className="bg-card border border-border rounded-xl p-3.5 sm:p-4 shadow-xs flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+      <div className="flex items-center gap-2.5 min-w-0">
         <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center text-primary shrink-0">
           <CalendarDays className="w-5 h-5" />
         </div>
-        <div>
+        <div className="min-w-0">
           <div className="text-xs sm:text-sm font-semibold text-foreground">
             When do you need it?
           </div>
-          <div className="text-[11px] text-muted-foreground">
+          <div className="text-[11px] text-muted-foreground truncate">
             Availability checks the complete time window.
           </div>
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <label className="flex items-center gap-2 bg-surface-subtle border border-input rounded-lg px-2.5 py-1.5 text-xs">
-          <span className="text-muted-foreground font-medium">Pick up:</span>
+          <span className="text-muted-foreground font-medium shrink-0">Pick up:</span>
           <input
             aria-label="Pick up"
             type="datetime-local"
             value={start}
             onChange={(e) => setStart(e.target.value)}
-            className="bg-transparent text-xs font-semibold focus:outline-none text-foreground"
+            className="bg-transparent text-xs font-semibold focus:outline-none text-foreground min-w-0"
           />
         </label>
-        <ArrowRight className="w-3.5 h-3.5 text-muted-foreground hidden sm:block" />
+        <ArrowRight className="w-3.5 h-3.5 text-muted-foreground hidden sm:block shrink-0" />
         <label className="flex items-center gap-2 bg-surface-subtle border border-input rounded-lg px-2.5 py-1.5 text-xs">
-          <span className="text-muted-foreground font-medium">Return:</span>
+          <span className="text-muted-foreground font-medium shrink-0">Return:</span>
           <input
             aria-label="Return"
             type="datetime-local"
             value={end}
             onChange={(e) => setEnd(e.target.value)}
-            className="bg-transparent text-xs font-semibold focus:outline-none text-foreground"
+            className="bg-transparent text-xs font-semibold focus:outline-none text-foreground min-w-0"
           />
         </label>
-        <span className="text-[11px] font-medium text-muted-foreground bg-surface-subtle px-2 py-1 rounded-md border border-border">
+        <span className="text-[11px] font-medium text-muted-foreground bg-surface-subtle px-2 py-1 rounded-md border border-border shrink-0">
           UTC+1 · Tunis
         </span>
       </div>
@@ -995,7 +1054,7 @@ function SelectionPage({
               </p>
             </div>
 
-            <DateWindow start={start} end={end} setStart={setStart} setEnd={setEnd} />
+            <DateWindow start={start} end={end} setStart={setStart} setEnd={setEnd} compact />
 
             <div className="space-y-2">
               <label className="text-xs font-semibold text-foreground block">
