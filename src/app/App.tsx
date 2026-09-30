@@ -197,6 +197,34 @@ function AppFrame() {
       return {};
     }
   });
+  const startInitial = useMemo(() => initialStart(), []);
+  const [start, setStart] = useState<string>(() => {
+    try {
+      const saved = sessionStorage.getItem("sb-reservation-window");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.start && parsed.end) return parsed.start;
+      }
+    } catch {}
+    return dateInput(startInitial);
+  });
+  const [end, setEnd] = useState<string>(() => {
+    try {
+      const saved = sessionStorage.getItem("sb-reservation-window");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.start && parsed.end) return parsed.end;
+      }
+    } catch {}
+    return dateInput(startInitial.plus({ hours: 2 }));
+  });
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem("sb-reservation-window", JSON.stringify({ start, end }));
+    } catch {}
+  }, [start, end]);
+
   const { notice, setNotice } = useNotice();
   const location = useLocation();
   const isBoardPath = location.pathname.startsWith("/board");
@@ -303,6 +331,10 @@ function AppFrame() {
               setCart={setCart}
               setNotice={setNotice}
               onOpenAuth={() => setShowAuthModal(true)}
+              start={start}
+              end={end}
+              setStart={setStart}
+              setEnd={setEnd}
             />
           )}
         </main>
@@ -333,6 +365,10 @@ function PageRouter(props: {
   setCart: (next: Record<string, number>) => void;
   setNotice: (message: string) => void;
   onOpenAuth: () => void;
+  start: string;
+  end: string;
+  setStart: (value: string) => void;
+  setEnd: (value: string) => void;
 }) {
   const { pathname, search } = useLocation();
   const route = pathname.replace(/\/$/, "") || "/app";
@@ -363,6 +399,10 @@ function PageRouter(props: {
           setCart={props.setCart}
           setNotice={props.setNotice}
           onOpenAuth={props.onOpenAuth}
+          start={props.start}
+          end={props.end}
+          setStart={props.setStart}
+          setEnd={props.setEnd}
         />
       );
     case "/app/selection":
@@ -374,6 +414,10 @@ function PageRouter(props: {
           user={props.user}
           setNotice={props.setNotice}
           onOpenAuth={props.onOpenAuth}
+          start={props.start}
+          end={props.end}
+          setStart={props.setStart}
+          setEnd={props.setEnd}
         />
       );
     case "/app/reservations":
@@ -647,16 +691,21 @@ function Catalogue({
   setCart,
   setNotice,
   onOpenAuth,
+  start,
+  end,
+  setStart,
+  setEnd,
 }: {
   user: User | null;
   cart: Record<string, number>;
   setCart: (next: Record<string, number>) => void;
   setNotice: (message: string) => void;
   onOpenAuth: () => void;
+  start: string;
+  end: string;
+  setStart: (value: string) => void;
+  setEnd: (value: string) => void;
 }) {
-  const startInitial = useMemo(() => initialStart(), []);
-  const [start, setStart] = useState(dateInput(startInitial));
-  const [end, setEnd] = useState(dateInput(startInitial.plus({ hours: 2 })));
   const [items, setItems] = useState<Item[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -878,12 +927,20 @@ function SelectionPage({
   user,
   setNotice,
   onOpenAuth,
+  start,
+  end,
+  setStart,
+  setEnd,
 }: {
   cart: Record<string, number>;
   setCart: (next: Record<string, number>) => void;
   user: User | null;
   setNotice: (message: string) => void;
   onOpenAuth: () => void;
+  start: string;
+  end: string;
+  setStart: (value: string) => void;
+  setEnd: (value: string) => void;
 }) {
   const navigate = useNavigate();
   const [items, setItems] = useState<Item[]>([]);
@@ -892,9 +949,6 @@ function SelectionPage({
   );
   const [borrowerType, setBorrowerType] = useState<"PERSON" | "CHAPTER">("PERSON");
   const [chapterId, setChapterId] = useState("");
-  const startInitial = useMemo(() => initialStart(), []);
-  const [start, setStart] = useState(dateInput(startInitial));
-  const [end, setEnd] = useState(dateInput(startInitial.plus({ hours: 2 })));
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
 
