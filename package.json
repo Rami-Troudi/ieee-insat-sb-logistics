@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "dev:api": "esbuild src/worker/dev-server.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/dev-server.mjs && node --env-file-if-exists=.env dist/dev-server.mjs",
-    "build": "tsc -b && vite build && esbuild src/worker/serverless.ts --bundle --platform=node --target=node20 --format=esm --packages=external --outfile=api/'[...path].js'",
+    "build": "tsc -b && vite build && esbuild src/worker/serverless.ts --bundle --platform=node --target=node20 --format=esm --packages=external --outfile=\"api/[...path].js\"",
     "dev:vercel": "vercel dev",
     "deploy:production": "vercel deploy --prod",
     "db:generate": "drizzle-kit generate",

@@ -205,7 +205,9 @@ function AppFrame() {
         const parsed = JSON.parse(saved);
         if (parsed.start && parsed.end) return parsed.start;
       }
-    } catch {}
+    } catch {
+      /* Fall back to the default reservation window. */
+    }
     return dateInput(startInitial);
   });
   const [end, setEnd] = useState<string>(() => {
@@ -215,14 +217,18 @@ function AppFrame() {
         const parsed = JSON.parse(saved);
         if (parsed.start && parsed.end) return parsed.end;
       }
-    } catch {}
+    } catch {
+      /* Fall back to the default reservation window. */
+    }
     return dateInput(startInitial.plus({ hours: 2 }));
   });
 
   useEffect(() => {
     try {
       sessionStorage.setItem("sb-reservation-window", JSON.stringify({ start, end }));
-    } catch {}
+    } catch {
+      /* Reservation selection still works if storage is unavailable. */
+    }
   }, [start, end]);
 
   const { notice, setNotice } = useNotice();
@@ -592,9 +598,7 @@ function DateWindow({
               <CalendarDays className="w-4 h-4" />
             </div>
             <div>
-              <div className="text-xs font-bold text-foreground">
-                Time Window
-              </div>
+              <div className="text-xs font-bold text-foreground">Time Window</div>
               <div className="text-[11px] text-muted-foreground">
                 Availability checks full period
               </div>
@@ -1043,7 +1047,9 @@ function SelectionPage({
                     <p className="text-xs text-muted-foreground">{item.category}</p>
                     <h3 className="font-semibold text-sm text-foreground truncate">{item.name}</h3>
                     <p className="text-[11px] text-muted-foreground mt-0.5">
-                      {item.availableQuantity} available for this window
+                      {item.availableQuantity > 0
+                        ? "Available for this window"
+                        : "Unavailable for this window"}
                     </p>
                   </div>
                   <div className="flex items-center border border-border rounded-lg bg-surface-subtle p-1">
@@ -1394,7 +1400,8 @@ function MyReservations({ user }: { user: User }) {
           <DialogHeader>
             <DialogTitle>Desk Handover QR</DialogTitle>
             <DialogDescription>
-              Present this QR code to the Board desk staff to collect or return your equipment.
+              Present this reservation QR to the Board for pickup or return. They will scan each
+              material to record the handover.
             </DialogDescription>
           </DialogHeader>
           {selectedQr && (
@@ -1583,6 +1590,8 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
   const [selectedAssets, setSelectedAssets] = useState<Record<string, string[]>>({});
   const [deleteTarget, setDeleteTarget] = useState<Reservation | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [handoverTarget, setHandoverTarget] = useState<Reservation | null>(null);
+  const [handingOver, setHandingOver] = useState(false);
 
   const refresh = useCallback(
     () =>
@@ -1654,6 +1663,27 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
   };
 
   const shown = reservations.filter((r) => filter === "ALL" || r.status === filter);
+  const confirmHandover = async () => {
+    if (!handoverTarget || handingOver) return;
+    setHandingOver(true);
+    try {
+      const result = await api<{ handedOverCount: number }>(
+        `/api/v1/board/reservations/${handoverTarget.id}/handover`,
+        post()
+      );
+      setNotice(
+        result.handedOverCount
+          ? "Equipment marked as handed over."
+          : "Equipment was already handed over."
+      );
+      setHandoverTarget(null);
+      await refresh();
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : "Could not record handover.");
+    } finally {
+      setHandingOver(false);
+    }
+  };
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-6">
@@ -1777,6 +1807,22 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
                 </Button>
 
                 <div className="flex items-center gap-2">
+                  {r.status === "APPROVED" &&
+                    r.items.some((item) =>
+                      item.assignedAssets?.some((asset) => asset.state === "RESERVED")
+                    ) && (
+                      <>
+                        <Button asChild variant="outline" size="sm" className="gap-1.5">
+                          <Link to="/board/scan">
+                            <QrCode className="w-3.5 h-3.5" />
+                            Scan QR
+                          </Link>
+                        </Button>
+                        <Button size="sm" onClick={() => setHandoverTarget(r)}>
+                          Mark as handed over
+                        </Button>
+                      </>
+                    )}
                   {r.status === "PENDING" && (
                     <>
                       <Button
@@ -1812,6 +1858,50 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
       )}
 
       {/* Asset Allocation Dialog: Matches E2E test selectors & accessible dialog */}
+      <Dialog
+        open={Boolean(handoverTarget)}
+        onOpenChange={(open) => {
+          if (!open && !handingOver) setHandoverTarget(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirm equipment handover</DialogTitle>
+            <DialogDescription>
+              Confirm that {handoverTarget?.borrower.name} has received all the equipment listed
+              below. Equipment already collected by QR scan is excluded.
+            </DialogDescription>
+          </DialogHeader>
+          <ul className="space-y-2 text-sm">
+            {handoverTarget?.items.flatMap((item) =>
+              (item.assignedAssets ?? [])
+                .filter((asset) => asset.state === "RESERVED")
+                .map((asset) => (
+                  <li key={asset.id}>
+                    {item.name} — {asset.assetCode}
+                  </li>
+                ))
+            )}
+          </ul>
+          <p className="text-sm text-muted-foreground">
+            Return deadline:{" "}
+            {handoverTarget && fmtWindow(handoverTarget.pickupAt, handoverTarget.returnAt)}
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="outline"
+              disabled={handingOver}
+              onClick={() => setHandoverTarget(null)}
+            >
+              Cancel
+            </Button>
+            <Button disabled={handingOver} onClick={confirmHandover}>
+              {handingOver ? "Saving…" : "Confirm handover"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <Dialog
         open={Boolean(assigningReservation)}
         onOpenChange={() => setAssigningReservation(null)}
@@ -1918,8 +2008,8 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
           <div className="py-2 text-xs text-muted-foreground bg-destructive/10 border border-destructive/20 rounded-lg p-3 space-y-1">
             <p className="font-semibold text-destructive">⚠️ Permanent Action</p>
             <p>
-              This will completely remove the reservation request from the system and automatically release any
-              allocated physical units back to available inventory.
+              This will completely remove the reservation request from the system and automatically
+              release any allocated physical units back to available inventory.
             </p>
           </div>
 
@@ -2178,7 +2268,6 @@ function BoardInventory({ setNotice }: { setNotice: (message: string) => void })
     }
   };
 
-
   const filtered = inventory.filter(
     (item) =>
       item.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -2277,7 +2366,9 @@ function BoardInventory({ setNotice }: { setNotice: (message: string) => void })
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => setDeleteConfirm({ type: "equipment", id: item.id, name: item.name })}
+                    onClick={() =>
+                      setDeleteConfirm({ type: "equipment", id: item.id, name: item.name })
+                    }
                     className="text-xs text-destructive border-destructive/30 hover:bg-destructive/10 hover:text-destructive gap-1"
                     title="Permanently delete this equipment type"
                   >
@@ -2362,7 +2453,13 @@ function BoardInventory({ setNotice }: { setNotice: (message: string) => void })
                             type="button"
                             variant="outline"
                             size="sm"
-                            onClick={() => setDeleteConfirm({ type: "asset", id: asset.id, name: asset.assetCode })}
+                            onClick={() =>
+                              setDeleteConfirm({
+                                type: "asset",
+                                id: asset.id,
+                                name: asset.assetCode,
+                              })
+                            }
                             className="text-[11px] h-7 px-2 text-destructive border-destructive/30 hover:bg-destructive/10 hover:text-destructive gap-1"
                             title="Permanently delete this asset"
                           >
@@ -2506,6 +2603,24 @@ function BoardScan({
   setNotice: (message: string) => void;
 }) {
   const [token, setToken] = useState(initialToken);
+  const [reservation, setReservation] = useState<Reservation | null>(null);
+  const [operation, setOperation] = useState<"CHECKED_OUT" | "RETURNED">("CHECKED_OUT");
+  const openReservation = useCallback(async (id: string) => {
+    const detail = await api<Reservation>(`/api/v1/board/reservations/${encodeURIComponent(id)}`);
+    if (!["APPROVED", "COMPLETED", "CANCELLED"].includes(detail.status))
+      throw new Error("This reservation has not been approved.");
+    setReservation(detail);
+    setOperation(
+      detail.items.some((item) => item.assignedAssets?.some((asset) => asset.state === "BORROWED"))
+        ? "RETURNED"
+        : "CHECKED_OUT"
+    );
+    setToken("");
+  }, []);
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get("res");
+    if (id) void openReservation(id).catch((e: Error) => setNotice(e.message));
+  }, [openReservation, setNotice]);
   const [busy, setBusy] = useState(false);
   const [scanError, setScanError] = useState<{ title: string; message: string } | null>(null);
   const [result, setResult] = useState<{
@@ -2554,11 +2669,28 @@ function BoardScan({
     setScanError(null);
     const value = token.match(/[a-f0-9]{64}/i)?.[0] ?? token.trim();
     try {
+      let reservationId: string | null = null;
+      try {
+        reservationId = new URL(token.trim(), window.location.origin).searchParams.get("res");
+      } catch {
+        /* A raw material token is also accepted. */
+      }
+      if (reservationId) {
+        await openReservation(reservationId);
+        setNotice("Reservation opened. Choose pickup or return, then scan each material.");
+        return;
+      }
       const scanned = await api<typeof result>("/api/v1/board/scan", {
-        ...post({ qrToken: value }),
+        ...post({
+          qrToken: value,
+          ...(reservation ? { reservationId: reservation.id, operation } : {}),
+        }),
         headers: { "Idempotency-Key": crypto.randomUUID() },
       });
       setResult(scanned);
+      setToken("");
+      if (reservation)
+        setReservation(await api<Reservation>(`/api/v1/board/reservations/${reservation.id}`));
       setNotice(
         scanned?.operation === "RETURNED"
           ? "Equipment returned to the desk."
@@ -2585,7 +2717,7 @@ function BoardScan({
           </div>
           <h1 className="text-2xl font-bold tracking-tight text-foreground">Scan equipment</h1>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Operational scanner for equipment checkouts and returns.
+            Scan the borrower’s reservation QR, then scan each material for pickup or return.
           </p>
         </div>
         <Button asChild variant="outline" size="sm" className="gap-1.5">
@@ -2597,6 +2729,49 @@ function BoardScan({
       </div>
 
       {/* Section 21: Scanner Visual Identity (Base Navy #002855, Viewfinder Cyan #00B5E2) */}
+      {reservation && (
+        <section className="rounded-xl border border-border bg-card p-4 space-y-3">
+          <h2 className="font-semibold">
+            {reservation.borrower.name} · {titleCase(reservation.derivedStatus)}
+          </h2>
+          <p className="text-sm">
+            {reservation.collectedCount}/{reservation.totalQuantity} collected ·{" "}
+            {reservation.returnedCount}/{reservation.totalQuantity} returned
+          </p>
+          <div className="flex gap-2">
+            <Button
+              variant={operation === "CHECKED_OUT" ? "default" : "outline"}
+              disabled={busy}
+              onClick={() => setOperation("CHECKED_OUT")}
+            >
+              Pickup
+            </Button>
+            <Button
+              variant={operation === "RETURNED" ? "default" : "outline"}
+              disabled={busy}
+              onClick={() => setOperation("RETURNED")}
+            >
+              Return
+            </Button>
+            <Button variant="ghost" disabled={busy} onClick={() => setReservation(null)}>
+              Close reservation
+            </Button>
+          </div>
+          <ul className="text-sm space-y-1">
+            {reservation.items.flatMap((item) =>
+              (item.assignedAssets ?? []).map((asset) => (
+                <li key={asset.id}>
+                  {item.name} · {asset.assetCode} · {titleCase(asset.state)}
+                </li>
+              ))
+            )}
+          </ul>
+          <p className="text-xs text-muted-foreground">
+            Scan every material. The Board member and time are saved for each pickup and return. All
+            materials must be returned before the reservation is completed.
+          </p>
+        </section>
+      )}
       <div className="rounded-2xl bg-[#002855] text-white p-6 shadow-elevation space-y-5 border border-[#003B7A]">
         {/* Camera Viewport with Dominant Viewfinder */}
         <div className="relative aspect-video w-full rounded-xl bg-black/80 overflow-hidden flex items-center justify-center border-2 border-[#00B5E2]/40">
@@ -2645,7 +2820,7 @@ function BoardScan({
           <Input
             value={token}
             onChange={(e) => setToken(e.target.value)}
-            placeholder="Paste 64-char QR token or label URL..."
+            placeholder="Paste reservation QR URL or material QR token..."
             className="font-mono text-xs flex-1 bg-white/10 text-white placeholder:text-white/50 border-white/20 focus-visible:ring-[#00B5E2]"
           />
           <Button
@@ -2702,7 +2877,9 @@ function BoardScan({
 }
 
 function BoardChapters({ setNotice }: { setNotice: (message: string) => void }) {
-  const [chapters, setChapters] = useState<Array<{ id: string; name: string; shortCode: string; active: boolean }>>([]);
+  const [chapters, setChapters] = useState<
+    Array<{ id: string; name: string; shortCode: string; active: boolean }>
+  >([]);
   const [name, setName] = useState("");
   const [shortCode, setShortCode] = useState("");
   const [loading, setLoading] = useState(true);
@@ -2784,7 +2961,12 @@ function BoardChapters({ setNotice }: { setNotice: (message: string) => void }) 
               className="p-4 rounded-xl border border-border bg-card shadow-xs flex items-center justify-between gap-2"
             >
               <div className="min-w-0">
-                <h3 className={cn("font-bold text-sm", ch.active ? "text-foreground" : "text-muted-foreground line-through")}>
+                <h3
+                  className={cn(
+                    "font-bold text-sm",
+                    ch.active ? "text-foreground" : "text-muted-foreground line-through"
+                  )}
+                >
                   {ch.name}
                 </h3>
                 <span className="font-mono text-xs text-primary font-bold">{ch.shortCode}</span>
@@ -2827,7 +3009,8 @@ function BoardChapters({ setNotice }: { setNotice: (message: string) => void }) 
               <span>Delete Chapter?</span>
             </DialogTitle>
             <DialogDescription>
-              Are you sure you want to permanently delete chapter &ldquo;{deleteTarget?.name}&rdquo;? This cannot be undone.
+              Are you sure you want to permanently delete chapter &ldquo;{deleteTarget?.name}
+              &rdquo;? This cannot be undone.
             </DialogDescription>
           </DialogHeader>
           <div className="flex justify-end gap-2 pt-4">
@@ -2878,8 +3061,8 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
   const [newEmail, setNewEmail] = useState("");
   const [newRole, setNewRole] = useState<"BOARD" | "SUPERADMIN">("BOARD");
   const [newPassword, setNewPassword] = useState("");
+  const [newPasswordConfirmation, setNewPasswordConfirmation] = useState("");
   const [showPass, setShowPass] = useState(false);
-  const [copiedPass, setCopiedPass] = useState(false);
   const [addBusy, setAddBusy] = useState(false);
   const [createdCreds, setCreatedCreds] = useState<{
     name: string;
@@ -2891,6 +3074,7 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
 
   // Reset password form state
   const [resetPassword, setResetPassword] = useState("");
+  const [resetPasswordConfirmation, setResetPasswordConfirmation] = useState("");
   const [showResetPass, setShowResetPass] = useState(false);
   const [copiedResetPass, setCopiedResetPass] = useState(false);
   const [resetBusy, setResetBusy] = useState(false);
@@ -2913,15 +3097,17 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
     setNewName("");
     setNewEmail("");
     setNewRole("BOARD");
-    setNewPassword(generateSecurePassword(16));
+    setNewPassword("");
+    setNewPasswordConfirmation("");
     setShowPass(false);
-    setCopiedPass(false);
     setShowAddModal(true);
   };
 
   const openResetModal = (u: User) => {
     setResetTarget(u);
-    setResetPassword(generateSecurePassword(16));
+    const password = generateSecurePassword(16);
+    setResetPassword(password);
+    setResetPasswordConfirmation(password);
     setShowResetPass(false);
     setCopiedResetPass(false);
   };
@@ -2938,6 +3124,14 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
 
   const createUser = async (e: FormEvent) => {
     e.preventDefault();
+    if (newPassword.length < 12 || newPassword.length > 128) {
+      setNotice("Choose a password between 12 and 128 characters.");
+      return;
+    }
+    if (newPassword !== newPasswordConfirmation) {
+      setNotice("The passwords do not match.");
+      return;
+    }
     setAddBusy(true);
     try {
       await api(
@@ -2968,6 +3162,14 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
   const doResetPassword = async (e: FormEvent) => {
     e.preventDefault();
     if (!resetTarget) return;
+    if (resetPassword.length < 12 || resetPassword.length > 128) {
+      setNotice("Choose a password between 12 and 128 characters.");
+      return;
+    }
+    if (resetPassword !== resetPasswordConfirmation) {
+      setNotice("The passwords do not match.");
+      return;
+    }
     setResetBusy(true);
     try {
       await api(`/api/v1/board/users/${resetTarget.id}/password`, {
@@ -2988,7 +3190,7 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
       <PageHeading
         eyebrow="SUPERADMIN · SECURITY"
         title="User Accounts & Role Clearances"
-        description="Server-enforced role assignments. Board and Superadmin accounts sign in using their autogenerated secure credentials."
+        description="Server-enforced role assignments. Coordinate an initial password with the new account owner, then share the account email with them."
         action={
           <Button variant="default" size="sm" onClick={openAddModal} className="gap-2">
             <Plus className="w-4 h-4" />
@@ -3070,7 +3272,7 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
           <DialogHeader>
             <DialogTitle>Add Board Member</DialogTitle>
             <DialogDescription>
-              Create a new Board or Superadmin account. A secure password is automatically generated.
+              Create a Board or Superadmin account and choose its initial password.
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={createUser} className="space-y-4 pt-2">
@@ -3105,30 +3307,22 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
               </select>
             </div>
 
-            {/* Autogenerated Secure Password Box */}
+            {/* Initial Password */}
             <div className="space-y-1.5 p-3 rounded-xl bg-surface-subtle border border-border">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-semibold text-foreground">
-                  Autogenerated Secure Password
-                </label>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setNewPassword(generateSecurePassword(16));
-                    setCopiedPass(false);
-                  }}
-                  className="text-[11px] text-primary hover:underline flex items-center gap-1 font-semibold"
-                >
-                  <RefreshCw className="w-3 h-3" />
-                  <span>Regenerate</span>
-                </button>
-              </div>
+              <label htmlFor="new-board-password" className="text-xs font-semibold text-foreground">
+                Initial Password
+              </label>
               <div className="flex items-center gap-2">
                 <div className="relative flex-1">
                   <Input
-                    readOnly
+                    id="new-board-password"
                     type={showPass ? "text" : "password"}
                     value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    minLength={12}
+                    maxLength={128}
+                    autoComplete="new-password"
+                    required
                     className="font-mono text-xs pr-9 bg-card select-all font-semibold tracking-wider text-foreground"
                   />
                   <button
@@ -3136,30 +3330,33 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
                     onClick={() => setShowPass(!showPass)}
                     className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                   >
-                    {showPass ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    {showPass ? (
+                      <EyeOff className="w-3.5 h-3.5" />
+                    ) : (
+                      <Eye className="w-3.5 h-3.5" />
+                    )}
                   </button>
                 </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    void navigator.clipboard.writeText(newPassword);
-                    setCopiedPass(true);
-                    setTimeout(() => setCopiedPass(false), 2000);
-                  }}
-                  className="text-xs shrink-0 gap-1.5 h-9"
-                >
-                  {copiedPass ? (
-                    <Check className="w-3.5 h-3.5 text-emerald-600" />
-                  ) : (
-                    <Copy className="w-3.5 h-3.5" />
-                  )}
-                  <span>{copiedPass ? "Copied" : "Copy"}</span>
-                </Button>
               </div>
+              <label
+                htmlFor="new-board-password-confirmation"
+                className="block pt-2 text-xs font-semibold text-foreground"
+              >
+                Confirm password
+              </label>
+              <Input
+                id="new-board-password-confirmation"
+                type="password"
+                value={newPasswordConfirmation}
+                onChange={(e) => setNewPasswordConfirmation(e.target.value)}
+                minLength={12}
+                maxLength={128}
+                autoComplete="new-password"
+                required
+                className="font-mono text-xs bg-card"
+              />
               <p className="text-[10px] text-muted-foreground">
-                16-character high-entropy passphrase with uppercase, lowercase, numbers, and symbols.
+                Use at least 12 characters and coordinate this password with the new account owner.
               </p>
             </div>
 
@@ -3252,20 +3449,26 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
           <DialogHeader>
             <DialogTitle>Set New Password</DialogTitle>
             <DialogDescription>
-              Set a new autogenerated secure password for <strong>{resetTarget?.name}</strong>. Existing sessions will be invalidated.
+              Set a password to coordinate with <strong>{resetTarget?.name}</strong>. Existing
+              sessions will be invalidated.
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={doResetPassword} className="space-y-4 pt-2">
-            {/* Autogenerated Secure Password Box */}
+            {/* New Password */}
             <div className="space-y-1.5 p-3 rounded-xl bg-surface-subtle border border-border">
               <div className="flex items-center justify-between">
-                <label className="text-xs font-semibold text-foreground">
-                  Autogenerated Secure Password
+                <label
+                  htmlFor="reset-user-password"
+                  className="text-xs font-semibold text-foreground"
+                >
+                  New Password
                 </label>
                 <button
                   type="button"
                   onClick={() => {
-                    setResetPassword(generateSecurePassword(16));
+                    const password = generateSecurePassword(16);
+                    setResetPassword(password);
+                    setResetPasswordConfirmation(password);
                     setCopiedResetPass(false);
                   }}
                   className="text-[11px] text-primary hover:underline flex items-center gap-1 font-semibold"
@@ -3277,9 +3480,14 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
               <div className="flex items-center gap-2">
                 <div className="relative flex-1">
                   <Input
-                    readOnly
+                    id="reset-user-password"
                     type={showResetPass ? "text" : "password"}
                     value={resetPassword}
+                    onChange={(e) => setResetPassword(e.target.value)}
+                    minLength={12}
+                    maxLength={128}
+                    autoComplete="new-password"
+                    required
                     className="font-mono text-xs pr-9 bg-card select-all font-semibold tracking-wider text-foreground"
                   />
                   <button
@@ -3287,7 +3495,11 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
                     onClick={() => setShowResetPass(!showResetPass)}
                     className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                   >
-                    {showResetPass ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    {showResetPass ? (
+                      <EyeOff className="w-3.5 h-3.5" />
+                    ) : (
+                      <Eye className="w-3.5 h-3.5" />
+                    )}
                   </button>
                 </div>
                 <Button
@@ -3309,6 +3521,26 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
                   <span>{copiedResetPass ? "Copied" : "Copy"}</span>
                 </Button>
               </div>
+              <label
+                htmlFor="reset-user-password-confirmation"
+                className="block pt-2 text-xs font-semibold text-foreground"
+              >
+                Confirm password
+              </label>
+              <Input
+                id="reset-user-password-confirmation"
+                type="password"
+                value={resetPasswordConfirmation}
+                onChange={(e) => setResetPasswordConfirmation(e.target.value)}
+                minLength={12}
+                maxLength={128}
+                autoComplete="new-password"
+                required
+                className="font-mono text-xs bg-card"
+              />
+              <p className="text-[10px] text-muted-foreground">
+                Use at least 12 characters. You can edit the generated password before saving.
+              </p>
             </div>
 
             <div className="flex justify-end gap-2 pt-2">

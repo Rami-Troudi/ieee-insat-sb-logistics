@@ -6,7 +6,12 @@ import { dirname, resolve } from "node:path";
 const url = process.env.TURSO_DATABASE_URL;
 const secret = process.env.BETTER_AUTH_SECRET;
 const origin = process.env.APP_ORIGIN;
-if (!url?.startsWith("file:") || !url.endsWith("/.local/e2e.db") || !secret || !origin) {
+if (
+  !url?.startsWith("file:") ||
+  !url.replaceAll("\\", "/").endsWith("/.local/e2e.db") ||
+  !secret ||
+  !origin
+) {
   throw new Error("E2E setup requires the isolated local database, test secret, and app origin.");
 }
 const databasePath = url.slice("file:".length);

@@ -31,7 +31,7 @@ export const EquipmentCard: React.FC<EquipmentCardProps> = ({
   const inCart = quantity > 0;
   const isAvailable = item.availableQuantity > 0;
 
-  const availabilityLabel = isAvailable ? `${item.availableQuantity} available` : "Unavailable";
+  const availabilityLabel = isAvailable ? "Available" : "Unavailable";
 
   return (
     <div className="group flex flex-col justify-between rounded-xl border border-border bg-card overflow-hidden hover:border-primary/50 transition-all shadow-sm hover:shadow-md">

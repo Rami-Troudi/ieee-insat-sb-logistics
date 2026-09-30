@@ -90,6 +90,196 @@ beforeEach(async () => {
 afterEach(() => client.close());
 
 describe("reservation API against a real libSQL database", () => {
+  it("lets borrowers choose a password and sign in with it", async () => {
+    const profile = {
+      name: "New Borrower",
+      email: "new@example.test",
+      password: "My-chosen-password-2026",
+    };
+    expect(
+      (await request("/api/v1/auth/borrower", sendJson({ ...profile, password: "short" }))).status
+    ).toBe(400);
+    const signup = await request("/api/v1/auth/borrower", sendJson(profile));
+    expect(signup.status).toBe(200);
+    expect(signup.headers.get("set-cookie")).toContain("session_token");
+    expect((await request("/api/v1/auth/borrower", sendJson(profile))).status).toBe(409);
+    expect(
+      (
+        await request(
+          "/api/v1/auth/borrower-login",
+          sendJson({ ...profile, password: "wrong-password-2026" })
+        )
+      ).status
+    ).toBe(401);
+    const login = await request("/api/v1/auth/borrower-login", sendJson(profile));
+    expect(login.status).toBe(200);
+    expect(login.headers.get("set-cookie")).toContain("session_token");
+    const hashes = await client.execute(
+      "SELECT password FROM account WHERE providerId='credential'"
+    );
+    expect(hashes.rows[0]?.password).not.toBe(profile.password);
+  });
+
+  it("notifies the Board on requests and borrowers before and after the return deadline", async () => {
+    const now = Date.now();
+    const response = await request(
+      "/api/v1/reservations",
+      sendJson({
+        borrowerType: "PERSON",
+        pickupAt: new Date(now + 60_000).toISOString(),
+        returnAt: new Date(now + 1_800_000).toISOString(),
+        items: [{ equipmentItemId: itemId, quantity: 1 }],
+      }),
+      memberCookie
+    );
+    const created = await response.json();
+    expect(response.status).toBe(201);
+    const boardNotifications = await client.execute(
+      "SELECT type FROM notifications WHERE user_id='board'"
+    );
+    expect(boardNotifications.rows).toContainEqual(
+      expect.objectContaining({ type: "NEW_RESERVATION" })
+    );
+    await request(
+      "/api/v1/board/reservations/" + created.id + "/approve",
+      sendJson({}),
+      boardCookie
+    );
+    await client.execute("UPDATE reservations SET pickup_at=? WHERE id=?", [
+      now - 1000,
+      created.id,
+    ]);
+    await request(
+      "/api/v1/board/reservations/" + created.id + "/handover",
+      sendJson({}),
+      boardCookie
+    );
+    await request("/api/v1/notifications/refresh", sendJson({}), memberCookie);
+    await request("/api/v1/notifications/refresh", sendJson({}), memberCookie);
+    await client.execute("UPDATE reservations SET pickup_at=?,return_at=? WHERE id=?", [
+      now - 60_000,
+      now - 1000,
+      created.id,
+    ]);
+    await request("/api/v1/notifications/refresh", sendJson({}), memberCookie);
+    await request("/api/v1/notifications/refresh", sendJson({}), memberCookie);
+    const notices = await client.execute(
+      "SELECT type,COUNT(*) AS count FROM notifications WHERE user_id='member' AND type IN ('RETURN_DUE_SOON','RETURN_OVERDUE') GROUP BY type"
+    );
+    expect(notices.rows).toHaveLength(2);
+    for (const notice of notices.rows) expect(Number(notice.count)).toBe(1);
+  });
+
+  it("records manual pickup once and saves the Board member", async () => {
+    const response = await request(
+      "/api/v1/reservations",
+      sendJson({
+        borrowerType: "PERSON",
+        pickupAt: new Date(Date.now() + 60_000).toISOString(),
+        returnAt: new Date(Date.now() + 3_600_000).toISOString(),
+        items: [{ equipmentItemId: itemId, quantity: 1 }],
+      }),
+      memberCookie
+    );
+    const created = await response.json();
+    expect(response.status).toBe(201);
+    await request(
+      "/api/v1/board/reservations/" + created.id + "/approve",
+      sendJson({}),
+      boardCookie
+    );
+    const path = "/api/v1/board/reservations/" + created.id + "/handover";
+    expect((await request(path, sendJson({}), memberCookie)).status).toBe(403);
+    expect((await request(path, sendJson({}), boardCookie)).status).toBe(409);
+    await client.execute("UPDATE reservations SET pickup_at=? WHERE id=?", [
+      Date.now() - 1000,
+      created.id,
+    ]);
+    expect(await (await request(path, sendJson({}), boardCookie)).json()).toMatchObject({
+      handedOverCount: 1,
+    });
+    expect(await (await request(path, sendJson({}), boardCookie)).json()).toMatchObject({
+      handedOverCount: 0,
+    });
+    const assignment = await client.execute(
+      "SELECT state,checked_out_by_user_id,actual_pickup_at FROM reservation_assets WHERE reservation_id=?",
+      [created.id]
+    );
+    expect(assignment.rows[0]).toMatchObject({
+      state: "BORROWED",
+      checked_out_by_user_id: "board",
+      actual_pickup_at: expect.any(Number),
+    });
+  });
+
+  it("scans all reservation materials for pickup and return, rejecting repeat pickups", async () => {
+    const now = Date.now();
+    const secondToken = "b".repeat(64);
+    await client.execute({
+      sql: "INSERT INTO assets(id,equipment_item_id,asset_code,qr_token,state,active,created_at,updated_at) VALUES('asset-two',?,?,?,'AVAILABLE',1,?,?)",
+      args: [itemId, "SB-METER-02", secondToken, now, now],
+    });
+    const response = await request(
+      "/api/v1/reservations",
+      sendJson({
+        borrowerType: "PERSON",
+        pickupAt: new Date(now + 60_000).toISOString(),
+        returnAt: new Date(now + 3_600_000).toISOString(),
+        items: [{ equipmentItemId: itemId, quantity: 2 }],
+      }),
+      memberCookie
+    );
+    const created = await response.json();
+    expect(response.status).toBe(201);
+    expect(
+      (
+        await request(
+          "/api/v1/board/reservations/" + created.id + "/approve",
+          sendJson({}),
+          boardCookie
+        )
+      ).status
+    ).toBe(200);
+    await client.execute("UPDATE reservations SET pickup_at=? WHERE id=?", [
+      now - 1000,
+      created.id,
+    ]);
+    const scan = (token: string, operation: string, reservationId = created.id) =>
+      request(
+        "/api/v1/board/scan",
+        {
+          ...sendJson({ qrToken: token, operation, reservationId }),
+          headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
+        },
+        boardCookie
+      );
+    expect((await scan(qrToken, "CHECKED_OUT", "wrong-reservation")).status).toBe(409);
+    expect((await scan(qrToken, "CHECKED_OUT")).status).toBe(200);
+    expect((await scan(qrToken, "CHECKED_OUT")).status).toBe(409);
+    expect((await scan(secondToken, "CHECKED_OUT")).status).toBe(200);
+    await client.execute("UPDATE assets SET last_scan_at=?", [now - 4000]);
+    expect((await scan(qrToken, "RETURNED")).status).toBe(200);
+    const partial = await request("/api/v1/board/reservations/" + created.id, {}, boardCookie);
+    expect(await partial.json()).toMatchObject({ status: "APPROVED", returnedCount: 1 });
+    expect((await scan(qrToken, "RETURNED")).status).toBe(409);
+    expect((await scan(secondToken, "RETURNED")).status).toBe(200);
+    expect(
+      await (await request("/api/v1/board/reservations/" + created.id, {}, boardCookie)).json()
+    ).toMatchObject({ status: "COMPLETED", returnedCount: 2 });
+    const records = await client.execute(
+      "SELECT checked_out_by_user_id,checked_in_by_user_id,actual_pickup_at,actual_return_at FROM reservation_assets WHERE reservation_id=?",
+      [created.id]
+    );
+    expect(records.rows).toHaveLength(2);
+    for (const record of records.rows)
+      expect(record).toMatchObject({
+        checked_out_by_user_id: "board",
+        checked_in_by_user_id: "board",
+        actual_pickup_at: expect.any(Number),
+        actual_return_at: expect.any(Number),
+      });
+  });
+
   it("serves catalogue data and protects member and Board routes", async () => {
     const health = await request("/api/health");
     expect(health.status).toBe(200);
@@ -281,9 +471,15 @@ describe("reservation API against a real libSQL database", () => {
     // Verify reservation and child records are completely gone
     const resRow = await client.execute("SELECT * FROM reservations WHERE id=?", [created.id]);
     expect(resRow.rows.length).toBe(0);
-    const linesRow = await client.execute("SELECT * FROM reservation_lines WHERE reservation_id=?", [created.id]);
+    const linesRow = await client.execute(
+      "SELECT * FROM reservation_lines WHERE reservation_id=?",
+      [created.id]
+    );
     expect(linesRow.rows.length).toBe(0);
-    const assetsRow = await client.execute("SELECT * FROM reservation_assets WHERE reservation_id=?", [created.id]);
+    const assetsRow = await client.execute(
+      "SELECT * FROM reservation_assets WHERE reservation_id=?",
+      [created.id]
+    );
     expect(assetsRow.rows.length).toBe(0);
 
     // Verify audit log

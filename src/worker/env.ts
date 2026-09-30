@@ -21,6 +21,7 @@ export interface Env {
   BREVO_API_KEY?: string;
   BREVO_SENDER_EMAIL?: string;
   BREVO_SENDER_NAME?: string;
+  CRON_SECRET?: string;
   VERCEL_URL?: string;
   VERCEL_PROJECT_PRODUCTION_URL?: string;
   API_RATE_LIMIT_PER_MINUTE: number;

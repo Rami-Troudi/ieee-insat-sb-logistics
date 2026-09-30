@@ -430,6 +430,14 @@ export async function createReservation(
     await audit(tx, actor.id, "RESERVATION", reservationId, "RESERVATION_CREATED", {
       itemCount: input.items.length,
     });
+    await notify(
+      tx,
+      actor.id,
+      "RESERVATION_SUBMITTED",
+      "Reservation request submitted",
+      "Your request is waiting for Board review. We will remind you before borrowed equipment is due back.",
+      reservationId
+    );
     await notifyBoard(
       tx,
       "NEW_RESERVATION",
@@ -439,6 +447,88 @@ export async function createReservation(
     );
   });
   return getReservation(env, reservationId);
+}
+
+export async function refreshReturnNotificationsForUser(
+  env: Env,
+  userId: string,
+  now = Date.now()
+) {
+  return write(env, async (tx) => {
+    const activeLoans = await rows<{ id: string; return_at: number; borrowed_count: number }>(
+      tx,
+      "SELECT r.id,r.return_at,COUNT(ra.id) AS borrowed_count " +
+        "FROM reservations r " +
+        "INNER JOIN reservation_assets ra ON ra.reservation_id=r.id " +
+        "WHERE r.requested_by_user_id=? AND r.status='APPROVED' AND ra.state='BORROWED' " +
+        "GROUP BY r.id,r.return_at",
+      [userId]
+    );
+    const todayStart = tunisDayRange(now).start;
+    let created = 0;
+
+    for (const loan of activeLoans) {
+      const returnAt = Number(loan.return_at);
+      const dueLabel = DateTime.fromMillis(returnAt, { zone: DISPLAY_TIME_ZONE }).toFormat(
+        "ccc, d LLL 'at' HH:mm"
+      );
+      if (returnAt > now && returnAt <= now + 60 * 60_000) {
+        const priorReminder = await one<{ id: string }>(
+          tx,
+          "SELECT id FROM notifications WHERE user_id=? AND reservation_id=? AND type='RETURN_DUE_SOON' LIMIT 1",
+          [userId, loan.id]
+        );
+        if (!priorReminder) {
+          await notify(
+            tx,
+            userId,
+            "RETURN_DUE_SOON",
+            "Equipment due back soon",
+            "Your borrowed equipment is due back by " +
+              dueLabel +
+              ". Please return it to the Board.",
+            loan.id
+          );
+          created++;
+        }
+      } else if (returnAt <= now) {
+        const priorOverdue = await one<{ id: string }>(
+          tx,
+          "SELECT id FROM notifications WHERE user_id=? AND reservation_id=? AND type='RETURN_OVERDUE' AND created_at>=? LIMIT 1",
+          [userId, loan.id, todayStart]
+        );
+        if (!priorOverdue) {
+          await notify(
+            tx,
+            userId,
+            "RETURN_OVERDUE",
+            "Equipment return overdue",
+            "The return time (" +
+              dueLabel +
+              ") has passed. Please return the borrowed equipment to the Board as soon as possible.",
+            loan.id
+          );
+          created++;
+        }
+      }
+    }
+    return created;
+  });
+}
+
+export async function refreshAllReturnNotifications(env: Env, now = Date.now()) {
+  const borrowers = await rows<{ user_id: string }>(
+    env.CLIENT as unknown as SqlExecutor,
+    "SELECT DISTINCT r.requested_by_user_id AS user_id " +
+      "FROM reservations r " +
+      "INNER JOIN reservation_assets ra ON ra.reservation_id=r.id " +
+      "WHERE r.status='APPROVED' AND ra.state='BORROWED'"
+  );
+  let created = 0;
+  for (const borrower of borrowers) {
+    created += await refreshReturnNotificationsForUser(env, borrower.user_id, now);
+  }
+  return { borrowersChecked: borrowers.length, notificationsCreated: created };
 }
 
 export async function approveReservation(
@@ -549,7 +639,7 @@ export async function approveReservation(
         requester.requested_by_user_id,
         "RESERVATION_APPROVED",
         "Reservation approved",
-        "Your equipment reservation has been approved.",
+        "Your equipment reservation has been approved. Open your reservations and select Show Handover QR. Present it to the Board for pickup and return.",
         reservationId
       );
   });
@@ -650,19 +740,13 @@ export async function cancelReservation(
   return getReservation(env, reservationId, isBoard);
 }
 
-export async function forceDeleteReservation(
-  env: Env,
-  actor: CurrentUser,
-  reservationId: string
-) {
+export async function forceDeleteReservation(env: Env, actor: CurrentUser, reservationId: string) {
   return await write(env, async (tx) => {
     const reservation = await one<{
       id: string;
       status: string;
       requested_by_user_id: string;
-    }>(tx, "SELECT id,status,requested_by_user_id FROM reservations WHERE id=?", [
-      reservationId,
-    ]);
+    }>(tx, "SELECT id,status,requested_by_user_id FROM reservations WHERE id=?", [reservationId]);
     if (!reservation) throw new DomainError(404, "NOT_FOUND", "Reservation not found.");
 
     // Release any physical assets currently in RESERVED or BORROWED state
@@ -871,11 +955,94 @@ export interface ScanResult {
   returnAt?: string;
 }
 
+export async function handoverReservation(env: Env, actor: CurrentUser, reservationId: string) {
+  return write(env, async (tx) => {
+    const reservation = await one<{
+      status: string;
+      pickup_at: number;
+      return_at: number;
+      requested_by_user_id: string;
+    }>(tx, "SELECT status,pickup_at,return_at,requested_by_user_id FROM reservations WHERE id=?", [
+      reservationId,
+    ]);
+    if (!reservation) throw new DomainError(404, "NOT_FOUND", "Reservation not found.");
+    if (reservation.status !== "APPROVED")
+      throw new DomainError(
+        409,
+        "INVALID_STATUS",
+        "Only approved reservations can be handed over."
+      );
+    const timestamp = Date.now();
+    const pending = await rows<{
+      id: string;
+      asset_id: string;
+      asset_code: string;
+      state: string;
+      active: number;
+    }>(
+      tx,
+      "SELECT ra.id,ra.asset_id,a.asset_code,a.state,a.active FROM reservation_assets ra JOIN assets a ON a.id=ra.asset_id WHERE ra.reservation_id=? AND ra.state='RESERVED'",
+      [reservationId]
+    );
+    if (!pending.length) return { ok: true, handedOverCount: 0 };
+    if (timestamp < Number(reservation.pickup_at))
+      throw new DomainError(409, "TOO_EARLY", "The pickup window has not started yet.");
+    if (timestamp >= Number(reservation.return_at))
+      throw new DomainError(
+        409,
+        "RESERVATION_EXPIRED",
+        "Reservation window has expired. Update the reservation first."
+      );
+    for (const asset of pending) {
+      if (!asset.active || !["AVAILABLE", "RESERVED"].includes(asset.state))
+        throw new DomainError(
+          409,
+          "ASSET_UNAVAILABLE",
+          "An assigned asset is unavailable. Review the assigned equipment before handover."
+        );
+      const borrowed = await one<{ id: string }>(
+        tx,
+        "SELECT id FROM reservation_assets WHERE asset_id=? AND state='BORROWED' LIMIT 1",
+        [asset.asset_id]
+      );
+      if (borrowed)
+        throw new DomainError(
+          409,
+          "ASSET_UNAVAILABLE",
+          "An assigned asset has not been returned yet."
+        );
+      await tx.execute({
+        sql: "UPDATE reservation_assets SET state='BORROWED',actual_pickup_at=?,checked_out_by_user_id=?,updated_at=? WHERE id=? AND state='RESERVED'",
+        args: [timestamp, actor.id, timestamp, asset.id],
+      });
+      await tx.execute({
+        sql: "UPDATE assets SET state='BORROWED',last_scan_at=?,updated_at=? WHERE id=?",
+        args: [timestamp, timestamp, asset.asset_id],
+      });
+      await audit(tx, actor.id, "ASSET", asset.asset_id, "ASSET_CHECKED_OUT", {
+        reservationId,
+        method: "MANUAL",
+      });
+    }
+    await notify(
+      tx,
+      reservation.requested_by_user_id,
+      "ASSET_CHECKED_OUT",
+      "Equipment handed over",
+      "Your reserved equipment has been handed over. Please return it by the reservation deadline.",
+      reservationId
+    );
+    return { ok: true, handedOverCount: pending.length };
+  });
+}
+
 export async function scanAsset(
   env: Env,
   actor: CurrentUser,
   qrToken: string,
-  idempotencyKey: string
+  idempotencyKey: string,
+  reservationId?: string,
+  operation?: "CHECKED_OUT" | "RETURNED"
 ): Promise<ScanResult> {
   if (!/^[a-f0-9]{64}$/i.test(qrToken))
     throw new DomainError(400, "INVALID_ASSET", "This QR code is not valid.");
@@ -902,6 +1069,39 @@ export async function scanAsset(
       [qrToken]
     );
     if (!asset) throw new DomainError(404, "INVALID_ASSET", "No equipment matches this QR code.");
+    if (reservationId) {
+      const assignment = await one<{ state: string; status: string }>(
+        tx,
+        "SELECT ra.state,r.status FROM reservation_assets ra JOIN reservations r ON r.id=ra.reservation_id WHERE ra.reservation_id=? AND ra.asset_id=?",
+        [reservationId, asset.id]
+      );
+      if (!assignment)
+        throw new DomainError(
+          409,
+          "WRONG_RESERVATION",
+          "This material is not assigned to the selected reservation."
+        );
+      if (
+        operation === "CHECKED_OUT" &&
+        (assignment.status !== "APPROVED" ||
+          assignment.state !== "RESERVED" ||
+          asset.state === "BORROWED")
+      )
+        throw new DomainError(
+          409,
+          "INVALID_CHECKOUT",
+          "This material cannot be collected again or is still borrowed."
+        );
+      if (
+        operation === "RETURNED" &&
+        (assignment.state !== "BORROWED" || asset.state !== "BORROWED")
+      )
+        throw new DomainError(
+          409,
+          "INVALID_RETURN",
+          "This material is not awaiting return for this reservation."
+        );
+    }
     if (!asset.active || asset.state === "RETIRED")
       throw new DomainError(409, "INVALID_ASSET", "This asset has been retired.");
     if (asset.state === "OUT_OF_SERVICE")
@@ -1002,6 +1202,12 @@ export async function scanAsset(
       );
       if (!activeAssignment)
         throw new DomainError(409, "NOT_FOUND", "No approved reservation found for this asset.");
+      if (reservationId && activeAssignment.reservation_id !== reservationId)
+        throw new DomainError(
+          409,
+          "WRONG_RESERVATION",
+          "Another reservation must collect this material first."
+        );
       if (timestamp < Number(activeAssignment.pickup_at)) {
         throw new DomainError(
           409,

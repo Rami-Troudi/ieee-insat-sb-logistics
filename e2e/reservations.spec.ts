@@ -57,21 +57,39 @@ test("member requests equipment, Board approves it, and the reservation appears 
     .check();
   await page.getByRole("button", { name: /Confirm allocation/i }).click();
   await expect(page.getByText("Approved", { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Mark as handed over" })).toBeVisible();
+  const response = await page.request.get("/api/v1/board/reservations");
+  const reservations = await response.json();
+  const reservation = reservations.find(
+    (entry: { borrower: { name: string } }) => entry.borrower.name === "Alex Member"
+  );
+  await page.goto("/board/scan?res=" + reservation.id);
+  await expect(page.getByRole("button", { name: "Pickup", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Return", exact: true })).toBeVisible();
+  await expect(page.getByText("0/1 collected · 0/1 returned")).toBeVisible();
   await page.goto("/board/calendar");
   await expect(page.getByText(/E2E Digital Multimeter E2E-METER-02/)).toBeVisible();
 });
 
-test("guest can request a sign-in link and the layout works at a narrow viewport", async ({
-  page,
-}) => {
+test("guest can choose a password and the layout works at a narrow viewport", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/app");
   await page
     .getByRole("button", { name: /Select item/i })
     .first()
     .click();
-  await expect(page.getByRole("heading", { name: /Sign in to reserve/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Create a borrower account/i })).toBeVisible();
   await page.getByLabel("Email address").fill("guest@example.test");
-  await expect(page.getByRole("button", { name: /Email me a sign-in link/i })).toBeVisible();
+  await expect(page.locator("#borrower-password")).toBeVisible();
+  await expect(page.locator("#borrower-password-confirmation")).toBeVisible();
+  await page.locator("#borrower-first-name").fill("Browser");
+  await page.locator("#borrower-last-name").fill("Borrower");
+  await page.locator("#borrower-phone").fill("+216 98765432");
+  await page.locator("#borrower-password").fill("Browser-password-2026");
+  await page.locator("#borrower-password-confirmation").fill("Browser-password-2026");
+  await page.locator('form button[type="submit"]').click();
+  await expect(page.getByRole("dialog")).not.toBeVisible();
+  const identity = await page.request.get("/api/v1/me");
+  expect((await identity.json()).user.email).toBe("guest@example.test");
   await expect(page.locator(".app-shell")).toHaveCSS("display", "block");
 });

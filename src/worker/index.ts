@@ -20,11 +20,14 @@ import {
   findAvailableAssets,
   forceDeleteReservation,
   getReservation,
+  handoverReservation,
   listBoardAudit,
   listBoardReservations,
   listCatalogue,
   listReservations,
   randomId,
+  refreshAllReturnNotifications,
+  refreshReturnNotificationsForUser,
   rescheduleReservation,
   scanAsset,
 } from "./domain";
@@ -97,6 +100,16 @@ app.get("/api/health", async (c) => {
   return c.json({ status: "ok" });
 });
 
+app.get("/api/cron/return-reminders", async (c) => {
+  if (!c.env.CRON_SECRET) {
+    return jsonError(c, 503, "CRON_NOT_CONFIGURED", "The reminder job is not configured.");
+  }
+  if (c.req.header("Authorization") !== "Bearer " + c.env.CRON_SECRET) {
+    return jsonError(c, 401, "UNAUTHENTICATED", "Invalid cron authorization.");
+  }
+  return c.json(await refreshAllReturnNotifications(c.env));
+});
+
 app.all("/api/auth/*", async (c) => {
   if (await isRateLimited(c.env, `auth:${requestIp(c)}`, c.env.AUTH_RATE_LIMIT_PER_MINUTE)) {
     return jsonError(c, 429, "RATE_LIMITED", "Too many sign-in attempts. Try again shortly.");
@@ -107,6 +120,9 @@ app.all("/api/auth/*", async (c) => {
 });
 
 app.post("/api/v1/auth/borrower", async (c) => {
+  if (await isRateLimited(c.env, "auth:" + requestIp(c), c.env.AUTH_RATE_LIMIT_PER_MINUTE)) {
+    return jsonError(c, 429, "RATE_LIMITED", "Too many sign-in attempts. Try again shortly.");
+  }
   const body = await c.req
     .json<{
       firstName?: string;
@@ -115,6 +131,7 @@ app.post("/api/v1/auth/borrower", async (c) => {
       email?: string;
       phone?: string;
       membership?: string;
+      password?: string;
     }>()
     .catch(() => null);
   if (
@@ -122,9 +139,17 @@ app.post("/api/v1/auth/borrower", async (c) => {
     typeof body.email !== "string" ||
     !/^\S+@\S+\.\S+$/.test(body.email.trim()) ||
     typeof body.name !== "string" ||
-    body.name.trim().length < 2
+    body.name.trim().length < 2 ||
+    typeof body.password !== "string" ||
+    body.password.length < 12 ||
+    body.password.length > 128
   ) {
-    return jsonError(c, 400, "VALIDATION", "Valid member details are required.");
+    return jsonError(
+      c,
+      400,
+      "VALIDATION",
+      "Enter a valid name and email, and choose a password between 12 and 128 characters."
+    );
   }
   const email = body.email.trim().toLowerCase();
   const name = body.name.trim();
@@ -139,10 +164,30 @@ app.post("/api/v1/auth/borrower", async (c) => {
   let user: typeof schema.authUsers.$inferSelect;
   if (existing.length > 0) {
     userId = existing[0].id;
-    user = existing[0];
+    if (existing[0].role !== "USER") {
+      return jsonError(c, 409, "ACCOUNT_EXISTS", "This email belongs to a Board account.");
+    }
+    const [credential] = await c.env.DB.select()
+      .from(schema.authAccounts)
+      .where(
+        and(
+          eq(schema.authAccounts.userId, userId),
+          eq(schema.authAccounts.providerId, "credential")
+        )
+      )
+      .limit(1);
+    if (credential?.password) {
+      return jsonError(
+        c,
+        409,
+        "ACCOUNT_EXISTS",
+        "An account already exists with this email. Switch to Sign in."
+      );
+    }
     await c.env.DB.update(schema.authUsers)
       .set({ name, updatedAt: now })
       .where(eq(schema.authUsers.id, userId));
+    user = { ...existing[0], name, updatedAt: now };
   } else {
     userId = crypto.randomUUID();
     const [newUser] = await c.env.DB.insert(schema.authUsers)
@@ -157,6 +202,29 @@ app.post("/api/v1/auth/borrower", async (c) => {
       })
       .returning();
     user = newUser;
+  }
+
+  const passwordHash = await hashPassword(body.password);
+  const [existingCredential] = await c.env.DB.select()
+    .from(schema.authAccounts)
+    .where(
+      and(eq(schema.authAccounts.userId, userId), eq(schema.authAccounts.providerId, "credential"))
+    )
+    .limit(1);
+  if (existingCredential) {
+    await c.env.DB.update(schema.authAccounts)
+      .set({ password: passwordHash, updatedAt: now })
+      .where(eq(schema.authAccounts.id, existingCredential.id));
+  } else {
+    await c.env.DB.insert(schema.authAccounts).values({
+      id: crypto.randomUUID(),
+      accountId: userId,
+      providerId: "credential",
+      userId,
+      password: passwordHash,
+      createdAt: now,
+      updatedAt: now,
+    });
   }
 
   const token = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
@@ -193,6 +261,45 @@ app.post("/api/v1/auth/borrower", async (c) => {
   return response;
 });
 
+app.post("/api/v1/auth/borrower-login", async (c) => {
+  if (await isRateLimited(c.env, "auth:" + requestIp(c), c.env.AUTH_RATE_LIMIT_PER_MINUTE)) {
+    return jsonError(c, 429, "RATE_LIMITED", "Too many sign-in attempts. Try again shortly.");
+  }
+  const body = await c.req.json<{ email?: string; password?: string }>().catch(() => null);
+  if (!body || typeof body.email !== "string" || typeof body.password !== "string") {
+    return jsonError(c, 400, "VALIDATION", "Borrower email and password are required.");
+  }
+  const email = body.email.trim().toLowerCase();
+  const [user] = await c.env.DB.select()
+    .from(schema.authUsers)
+    .where(eq(schema.authUsers.email, email))
+    .limit(1);
+  if (!user || user.role !== "USER") {
+    return jsonError(c, 401, "UNAUTHENTICATED", "Invalid email or password.");
+  }
+
+  const auth = createAuth(c.env, trustedAuthOrigin(c.env, c.req.url, c.req.header("Origin")));
+  const res = await auth.api
+    .signInEmail({
+      body: { email, password: body.password },
+      headers: c.req.raw.headers,
+      asResponse: true,
+    })
+    .catch(() => null);
+  if (!res || !res.ok) {
+    return jsonError(c, 401, "UNAUTHENTICATED", "Invalid email or password.");
+  }
+  const response = c.json({ ok: true, user });
+  const setCookies =
+    typeof res.headers.getSetCookie === "function"
+      ? res.headers.getSetCookie()
+      : res.headers.get("set-cookie")
+        ? [res.headers.get("set-cookie")!]
+        : [];
+  for (const cookie of setCookies) response.headers.append("Set-Cookie", cookie);
+  return response;
+});
+
 app.post("/api/v1/auth/board-login", async (c) => {
   const body = await c.req.json<{ email?: string; password?: string }>().catch(() => null);
   if (!body || !body.email || !body.password) {
@@ -221,7 +328,9 @@ app.post("/api/v1/auth/board-login", async (c) => {
   const setCookies =
     typeof res.headers.getSetCookie === "function"
       ? res.headers.getSetCookie()
-      : (res.headers.get("set-cookie") ? [res.headers.get("set-cookie")!] : []);
+      : res.headers.get("set-cookie")
+        ? [res.headers.get("set-cookie")!]
+        : [];
   for (const cookie of setCookies) {
     response.headers.append("Set-Cookie", cookie);
   }
@@ -266,7 +375,9 @@ app.post("/api/v1/auth/sign-out", async (c) => {
   // 4. If user was identified, delete all active sessions for this user
   if (currentUserId) {
     try {
-      await c.env.DB.delete(schema.authSessions).where(eq(schema.authSessions.userId, currentUserId));
+      await c.env.DB.delete(schema.authSessions).where(
+        eq(schema.authSessions.userId, currentUserId)
+      );
     } catch {
       // Ignore DB delete error
     }
@@ -414,7 +525,12 @@ app.delete("/api/v1/reservations/:id", async (c) => {
       return jsonError(c, 404, "NOT_FOUND", "Reservation not found.");
     }
     if (res.status !== "PENDING") {
-      return jsonError(c, 400, "BAD_REQUEST", "Only pending reservation requests can be force deleted.");
+      return jsonError(
+        c,
+        400,
+        "BAD_REQUEST",
+        "Only pending reservation requests can be force deleted."
+      );
     }
     return c.json(await forceDeleteReservation(c.env, c.get("actor"), c.req.param("id")));
   }
@@ -438,6 +554,14 @@ app.get("/api/v1/notifications", async (c) => {
     .orderBy(desc(schema.notifications.createdAt))
     .limit(100);
   return c.json(notifications);
+});
+
+app.post("/api/v1/notifications/refresh", async (c) => {
+  const actor = await resolveIdentity(c);
+  if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue.");
+  const created =
+    actor.role === "USER" ? await refreshReturnNotificationsForUser(c.env, actor.id) : 0;
+  return c.json({ ok: true, notificationsCreated: created });
 });
 
 app.patch("/api/v1/notifications/:id/read", async (c) => {
@@ -485,6 +609,10 @@ app.get("/api/v1/board/reservations/:id", async (c) => {
 });
 
 const assignmentsSchema = z.record(z.string(), z.array(z.string()));
+app.post("/api/v1/board/reservations/:id/handover", async (c) => {
+  return c.json(await handoverReservation(c.env, c.get("actor"), c.req.param("id")));
+});
+
 app.post("/api/v1/board/reservations/:id/approve", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const parsed = z.object({ assignments: assignmentsSchema.optional() }).safeParse(body);
@@ -552,11 +680,31 @@ app.post("/api/v1/board/scan", async (c) => {
   if (await isRateLimited(c.env, `scan:${actor.id}`, 180))
     return jsonError(c, 429, "RATE_LIMITED", "Scanner is busy. Wait a moment and try again.");
   const parsed = z
-    .object({ qrToken: z.string().min(1).max(256) })
+    .object({
+      qrToken: z.string().min(1).max(256),
+      reservationId: z.string().min(1).optional(),
+      operation: z.enum(["CHECKED_OUT", "RETURNED"]).optional(),
+    })
     .safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return jsonError(c, 400, "INVALID_ASSET", "This QR code is not valid.");
   const idempotencyKey = c.req.header("Idempotency-Key") ?? "";
-  return c.json(await scanAsset(c.env, actor, parsed.data.qrToken, idempotencyKey));
+  if (Boolean(parsed.data.reservationId) !== Boolean(parsed.data.operation))
+    return jsonError(
+      c,
+      400,
+      "VALIDATION",
+      "Choose a reservation and pickup or return operation together."
+    );
+  return c.json(
+    await scanAsset(
+      c.env,
+      actor,
+      parsed.data.qrToken,
+      idempotencyKey,
+      parsed.data.reservationId,
+      parsed.data.operation
+    )
+  );
 });
 
 app.get("/api/v1/board/inventory", async (c) => {
@@ -843,15 +991,7 @@ app.delete("/api/v1/board/assets/:id", requireBoard, async (c) => {
   await c.env.DB.delete(schema.assets).where(eq(schema.assets.id, id));
   await c.env.CLIENT.execute({
     sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("audit"),
-      c.get("actor").id,
-      "ASSET",
-      id,
-      "ASSET_DELETED",
-      Date.now(),
-      "{}",
-    ],
+    args: [randomId("audit"), c.get("actor").id, "ASSET", id, "ASSET_DELETED", Date.now(), "{}"],
   });
   return c.json({ ok: true });
 });
@@ -995,7 +1135,7 @@ app.post("/api/v1/board/users", requireSuperadmin, async (c) => {
     sql: "INSERT INTO account(id,accountId,providerId,userId,password,createdAt,updatedAt) VALUES(?,?,?,?,?,?,?)",
     args: [
       randomId("account"),
-      userId,  // accountId must equal userId for credential provider
+      userId, // accountId must equal userId for credential provider
       "credential",
       userId,
       passwordHash,
@@ -1057,7 +1197,7 @@ app.put("/api/v1/board/users/:id/password", requireSuperadmin, async (c) => {
       sql: "INSERT INTO account(id,accountId,providerId,userId,password,createdAt,updatedAt) VALUES(?,?,?,?,?,?,?)",
       args: [
         randomId("account"),
-        targetId,  // accountId must equal userId for credential provider
+        targetId, // accountId must equal userId for credential provider
         "credential",
         targetId,
         passwordHash,
@@ -1142,7 +1282,12 @@ app.delete("/api/v1/board/users/:id", requireSuperadmin, async (c) => {
     )
     .limit(1);
   if (activeRes.length > 0) {
-    return jsonError(c, 409, "ACTIVE_RESERVATIONS", "Cannot delete a user with active or pending reservations.");
+    return jsonError(
+      c,
+      409,
+      "ACTIVE_RESERVATIONS",
+      "Cannot delete a user with active or pending reservations."
+    );
   }
 
   // Invalidate all sessions for this user

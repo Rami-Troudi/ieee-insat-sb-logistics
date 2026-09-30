@@ -10,8 +10,159 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Badge } from "@/components/ui/badge";
-import { Compass, LogIn, LogOut, ShieldCheck, ShoppingBag, User as UserIcon } from "lucide-react";
+import {
+  Bell,
+  CheckCheck,
+  Compass,
+  LogIn,
+  LogOut,
+  ShieldCheck,
+  ShoppingBag,
+  User as UserIcon,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useEffect, useState } from "react";
+
+type Notification = {
+  id: string;
+  title: string;
+  message: string;
+  readAt: number | null;
+  createdAt: number;
+};
+
+function NotificationBell({ userId }: { userId: string }) {
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const unreadCount = notifications.filter((notification) => !notification.readAt).length;
+
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      try {
+        await fetch("/api/v1/notifications/refresh", {
+          method: "POST",
+          credentials: "same-origin",
+        }).catch(() => undefined);
+        const response = await fetch("/api/v1/notifications", {
+          credentials: "same-origin",
+        });
+        if (!response.ok) return;
+        const data = (await response.json()) as Notification[];
+        if (active) setNotifications(data);
+      } catch {
+        // Keep the last notification list when the network is unavailable.
+      }
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), 60_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [userId]);
+
+  const markRead = async (notification: Notification) => {
+    if (notification.readAt) return;
+    setLoading(true);
+    try {
+      const response = await fetch("/api/v1/notifications/" + notification.id + "/read", {
+        method: "PATCH",
+        credentials: "same-origin",
+      });
+      if (response.ok) {
+        setNotifications((current) =>
+          current.map((item) =>
+            item.id === notification.id ? { ...item, readAt: Date.now() } : item
+          )
+        );
+      }
+    } catch {
+      // Keep the notification unread so the user can retry.
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        className="relative flex h-10 min-h-11 min-w-11 items-center justify-center rounded-md text-muted-foreground hover:bg-surface-subtle hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        aria-label={unreadCount ? "Notifications, " + unreadCount + " unread" : "Notifications"}
+        aria-expanded={open}
+      >
+        <Bell className="h-5 w-5" />
+        {unreadCount > 0 && (
+          <span className="absolute right-0.5 top-0.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-bold text-white">
+            {unreadCount > 99 ? "99+" : unreadCount}
+          </span>
+        )}
+      </button>
+      {open && (
+        <div
+          role="dialog"
+          aria-label="Notifications"
+          className="absolute right-0 top-12 z-50 w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-border bg-card shadow-xl"
+        >
+          <div className="flex items-center justify-between border-b border-border px-4 py-3">
+            <div>
+              <h2 className="text-sm font-semibold text-foreground">Notifications</h2>
+              <p className="text-[11px] text-muted-foreground">
+                {unreadCount ? unreadCount + " unread" : "You are all caught up"}
+              </p>
+            </div>
+            {loading && <span className="text-[10px] text-muted-foreground">Saving…</span>}
+          </div>
+          <div className="max-h-80 overflow-y-auto">
+            {notifications.length ? (
+              notifications.slice(0, 20).map((notification) => (
+                <button
+                  key={notification.id}
+                  type="button"
+                  onClick={() => void markRead(notification)}
+                  className={cn(
+                    "block w-full border-b border-border/60 px-4 py-3 text-left last:border-0 hover:bg-surface-subtle",
+                    !notification.readAt && "bg-primary/[0.04]"
+                  )}
+                >
+                  <span className="flex items-start gap-2">
+                    {!notification.readAt ? (
+                      <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-primary" />
+                    ) : (
+                      <CheckCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    )}
+                    <span className="min-w-0">
+                      <span className="block text-xs font-semibold text-foreground">
+                        {notification.title}
+                      </span>
+                      <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
+                        {notification.message}
+                      </span>
+                      <time className="mt-1 block text-[10px] text-muted-foreground">
+                        {new Intl.DateTimeFormat("en-GB", {
+                          timeZone: "Africa/Tunis",
+                          dateStyle: "medium",
+                          timeStyle: "short",
+                        }).format(notification.createdAt)}
+                      </time>
+                    </span>
+                  </span>
+                </button>
+              ))
+            ) : (
+              <p className="px-4 py-8 text-center text-xs text-muted-foreground">
+                No notifications yet.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export interface TopBarProps {
   isBoard?: boolean;
@@ -58,6 +209,7 @@ export const TopBar: React.FC<TopBarProps> = ({
 
       {/* Right Controls: Switcher, Cart & User Account */}
       <div className="flex items-center gap-1.5 sm:gap-2.5">
+        {user && <NotificationBell key={user.id} userId={user.id} />}
         {/* Quick Workspace Switcher for Board / Superadmin */}
         {hasBoardAccess && (
           <Link

@@ -926,6 +926,14 @@ async function createReservation(env, actor, input) {
     await audit(tx, actor.id, "RESERVATION", reservationId, "RESERVATION_CREATED", {
       itemCount: input.items.length
     });
+    await notify(
+      tx,
+      actor.id,
+      "RESERVATION_SUBMITTED",
+      "Reservation request submitted",
+      "Your request is waiting for Board review. We will remind you before borrowed equipment is due back.",
+      reservationId
+    );
     await notifyBoard(
       tx,
       "NEW_RESERVATION",
@@ -935,6 +943,70 @@ async function createReservation(env, actor, input) {
     );
   });
   return getReservation(env, reservationId);
+}
+async function refreshReturnNotificationsForUser(env, userId, now = Date.now()) {
+  return write(env, async (tx) => {
+    const activeLoans = await rows(
+      tx,
+      "SELECT r.id,r.return_at,COUNT(ra.id) AS borrowed_count FROM reservations r INNER JOIN reservation_assets ra ON ra.reservation_id=r.id WHERE r.requested_by_user_id=? AND r.status='APPROVED' AND ra.state='BORROWED' GROUP BY r.id,r.return_at",
+      [userId]
+    );
+    const todayStart = tunisDayRange(now).start;
+    let created = 0;
+    for (const loan of activeLoans) {
+      const returnAt = Number(loan.return_at);
+      const dueLabel = DateTime.fromMillis(returnAt, { zone: DISPLAY_TIME_ZONE }).toFormat(
+        "ccc, d LLL 'at' HH:mm"
+      );
+      if (returnAt > now && returnAt <= now + 60 * 6e4) {
+        const priorReminder = await one(
+          tx,
+          "SELECT id FROM notifications WHERE user_id=? AND reservation_id=? AND type='RETURN_DUE_SOON' LIMIT 1",
+          [userId, loan.id]
+        );
+        if (!priorReminder) {
+          await notify(
+            tx,
+            userId,
+            "RETURN_DUE_SOON",
+            "Equipment due back soon",
+            "Your borrowed equipment is due back by " + dueLabel + ". Please return it to the Board.",
+            loan.id
+          );
+          created++;
+        }
+      } else if (returnAt <= now) {
+        const priorOverdue = await one(
+          tx,
+          "SELECT id FROM notifications WHERE user_id=? AND reservation_id=? AND type='RETURN_OVERDUE' AND created_at>=? LIMIT 1",
+          [userId, loan.id, todayStart]
+        );
+        if (!priorOverdue) {
+          await notify(
+            tx,
+            userId,
+            "RETURN_OVERDUE",
+            "Equipment return overdue",
+            "The return time (" + dueLabel + ") has passed. Please return the borrowed equipment to the Board as soon as possible.",
+            loan.id
+          );
+          created++;
+        }
+      }
+    }
+    return created;
+  });
+}
+async function refreshAllReturnNotifications(env, now = Date.now()) {
+  const borrowers = await rows(
+    env.CLIENT,
+    "SELECT DISTINCT r.requested_by_user_id AS user_id FROM reservations r INNER JOIN reservation_assets ra ON ra.reservation_id=r.id WHERE r.status='APPROVED' AND ra.state='BORROWED'"
+  );
+  let created = 0;
+  for (const borrower of borrowers) {
+    created += await refreshReturnNotificationsForUser(env, borrower.user_id, now);
+  }
+  return { borrowersChecked: borrowers.length, notificationsCreated: created };
 }
 async function approveReservation(env, actor, reservationId, assignments) {
   await write(env, async (tx) => {
@@ -1029,7 +1101,7 @@ async function approveReservation(env, actor, reservationId, assignments) {
         requester.requested_by_user_id,
         "RESERVATION_APPROVED",
         "Reservation approved",
-        "Your equipment reservation has been approved.",
+        "Your equipment reservation has been approved. Open your reservations and select Show Handover QR. Present it to the Board for pickup and return.",
         reservationId
       );
   });
@@ -1117,9 +1189,7 @@ async function cancelReservation(env, actor, reservationId, isBoard = false) {
 }
 async function forceDeleteReservation(env, actor, reservationId) {
   return await write(env, async (tx) => {
-    const reservation = await one(tx, "SELECT id,status,requested_by_user_id FROM reservations WHERE id=?", [
-      reservationId
-    ]);
+    const reservation = await one(tx, "SELECT id,status,requested_by_user_id FROM reservations WHERE id=?", [reservationId]);
     if (!reservation) throw new DomainError(404, "NOT_FOUND", "Reservation not found.");
     await tx.execute({
       sql: `UPDATE assets SET state='AVAILABLE', updated_at=?
@@ -1279,7 +1349,76 @@ async function rescheduleReservation(env, actor, reservationId, pickupAt, return
   });
   return getReservation(env, reservationId, true);
 }
-async function scanAsset(env, actor, qrToken, idempotencyKey) {
+async function handoverReservation(env, actor, reservationId) {
+  return write(env, async (tx) => {
+    const reservation = await one(tx, "SELECT status,pickup_at,return_at,requested_by_user_id FROM reservations WHERE id=?", [
+      reservationId
+    ]);
+    if (!reservation) throw new DomainError(404, "NOT_FOUND", "Reservation not found.");
+    if (reservation.status !== "APPROVED")
+      throw new DomainError(
+        409,
+        "INVALID_STATUS",
+        "Only approved reservations can be handed over."
+      );
+    const timestamp = Date.now();
+    const pending = await rows(
+      tx,
+      "SELECT ra.id,ra.asset_id,a.asset_code,a.state,a.active FROM reservation_assets ra JOIN assets a ON a.id=ra.asset_id WHERE ra.reservation_id=? AND ra.state='RESERVED'",
+      [reservationId]
+    );
+    if (!pending.length) return { ok: true, handedOverCount: 0 };
+    if (timestamp < Number(reservation.pickup_at))
+      throw new DomainError(409, "TOO_EARLY", "The pickup window has not started yet.");
+    if (timestamp >= Number(reservation.return_at))
+      throw new DomainError(
+        409,
+        "RESERVATION_EXPIRED",
+        "Reservation window has expired. Update the reservation first."
+      );
+    for (const asset of pending) {
+      if (!asset.active || !["AVAILABLE", "RESERVED"].includes(asset.state))
+        throw new DomainError(
+          409,
+          "ASSET_UNAVAILABLE",
+          "An assigned asset is unavailable. Review the assigned equipment before handover."
+        );
+      const borrowed = await one(
+        tx,
+        "SELECT id FROM reservation_assets WHERE asset_id=? AND state='BORROWED' LIMIT 1",
+        [asset.asset_id]
+      );
+      if (borrowed)
+        throw new DomainError(
+          409,
+          "ASSET_UNAVAILABLE",
+          "An assigned asset has not been returned yet."
+        );
+      await tx.execute({
+        sql: "UPDATE reservation_assets SET state='BORROWED',actual_pickup_at=?,checked_out_by_user_id=?,updated_at=? WHERE id=? AND state='RESERVED'",
+        args: [timestamp, actor.id, timestamp, asset.id]
+      });
+      await tx.execute({
+        sql: "UPDATE assets SET state='BORROWED',last_scan_at=?,updated_at=? WHERE id=?",
+        args: [timestamp, timestamp, asset.asset_id]
+      });
+      await audit(tx, actor.id, "ASSET", asset.asset_id, "ASSET_CHECKED_OUT", {
+        reservationId,
+        method: "MANUAL"
+      });
+    }
+    await notify(
+      tx,
+      reservation.requested_by_user_id,
+      "ASSET_CHECKED_OUT",
+      "Equipment handed over",
+      "Your reserved equipment has been handed over. Please return it by the reservation deadline.",
+      reservationId
+    );
+    return { ok: true, handedOverCount: pending.length };
+  });
+}
+async function scanAsset(env, actor, qrToken, idempotencyKey, reservationId, operation) {
   if (!/^[a-f0-9]{64}$/i.test(qrToken))
     throw new DomainError(400, "INVALID_ASSET", "This QR code is not valid.");
   if (!/^[a-zA-Z0-9_-]{12,120}$/.test(idempotencyKey))
@@ -1297,6 +1436,31 @@ async function scanAsset(env, actor, qrToken, idempotencyKey) {
       [qrToken]
     );
     if (!asset) throw new DomainError(404, "INVALID_ASSET", "No equipment matches this QR code.");
+    if (reservationId) {
+      const assignment = await one(
+        tx,
+        "SELECT ra.state,r.status FROM reservation_assets ra JOIN reservations r ON r.id=ra.reservation_id WHERE ra.reservation_id=? AND ra.asset_id=?",
+        [reservationId, asset.id]
+      );
+      if (!assignment)
+        throw new DomainError(
+          409,
+          "WRONG_RESERVATION",
+          "This material is not assigned to the selected reservation."
+        );
+      if (operation === "CHECKED_OUT" && (assignment.status !== "APPROVED" || assignment.state !== "RESERVED" || asset.state === "BORROWED"))
+        throw new DomainError(
+          409,
+          "INVALID_CHECKOUT",
+          "This material cannot be collected again or is still borrowed."
+        );
+      if (operation === "RETURNED" && (assignment.state !== "BORROWED" || asset.state !== "BORROWED"))
+        throw new DomainError(
+          409,
+          "INVALID_RETURN",
+          "This material is not awaiting return for this reservation."
+        );
+    }
     if (!asset.active || asset.state === "RETIRED")
       throw new DomainError(409, "INVALID_ASSET", "This asset has been retired.");
     if (asset.state === "OUT_OF_SERVICE")
@@ -1380,6 +1544,12 @@ async function scanAsset(env, actor, qrToken, idempotencyKey) {
       );
       if (!activeAssignment)
         throw new DomainError(409, "NOT_FOUND", "No approved reservation found for this asset.");
+      if (reservationId && activeAssignment.reservation_id !== reservationId)
+        throw new DomainError(
+          409,
+          "WRONG_RESERVATION",
+          "Another reservation must collect this material first."
+        );
       if (timestamp < Number(activeAssignment.pickup_at)) {
         throw new DomainError(
           409,
@@ -1601,6 +1771,15 @@ app.get("/api/health", async (c) => {
   await c.env.CLIENT.execute("SELECT 1");
   return c.json({ status: "ok" });
 });
+app.get("/api/cron/return-reminders", async (c) => {
+  if (!c.env.CRON_SECRET) {
+    return jsonError(c, 503, "CRON_NOT_CONFIGURED", "The reminder job is not configured.");
+  }
+  if (c.req.header("Authorization") !== "Bearer " + c.env.CRON_SECRET) {
+    return jsonError(c, 401, "UNAUTHENTICATED", "Invalid cron authorization.");
+  }
+  return c.json(await refreshAllReturnNotifications(c.env));
+});
 app.all("/api/auth/*", async (c) => {
   if (await isRateLimited(c.env, `auth:${requestIp(c)}`, c.env.AUTH_RATE_LIMIT_PER_MINUTE)) {
     return jsonError(c, 429, "RATE_LIMITED", "Too many sign-in attempts. Try again shortly.");
@@ -1610,9 +1789,17 @@ app.all("/api/auth/*", async (c) => {
   );
 });
 app.post("/api/v1/auth/borrower", async (c) => {
+  if (await isRateLimited(c.env, "auth:" + requestIp(c), c.env.AUTH_RATE_LIMIT_PER_MINUTE)) {
+    return jsonError(c, 429, "RATE_LIMITED", "Too many sign-in attempts. Try again shortly.");
+  }
   const body = await c.req.json().catch(() => null);
-  if (!body || typeof body.email !== "string" || !/^\S+@\S+\.\S+$/.test(body.email.trim()) || typeof body.name !== "string" || body.name.trim().length < 2) {
-    return jsonError(c, 400, "VALIDATION", "Valid member details are required.");
+  if (!body || typeof body.email !== "string" || !/^\S+@\S+\.\S+$/.test(body.email.trim()) || typeof body.name !== "string" || body.name.trim().length < 2 || typeof body.password !== "string" || body.password.length < 12 || body.password.length > 128) {
+    return jsonError(
+      c,
+      400,
+      "VALIDATION",
+      "Enter a valid name and email, and choose a password between 12 and 128 characters."
+    );
   }
   const email = body.email.trim().toLowerCase();
   const name = body.name.trim();
@@ -1622,8 +1809,25 @@ app.post("/api/v1/auth/borrower", async (c) => {
   let user;
   if (existing.length > 0) {
     userId = existing[0].id;
-    user = existing[0];
+    if (existing[0].role !== "USER") {
+      return jsonError(c, 409, "ACCOUNT_EXISTS", "This email belongs to a Board account.");
+    }
+    const [credential] = await c.env.DB.select().from(schema_exports.authAccounts).where(
+      and2(
+        eq2(schema_exports.authAccounts.userId, userId),
+        eq2(schema_exports.authAccounts.providerId, "credential")
+      )
+    ).limit(1);
+    if (credential?.password) {
+      return jsonError(
+        c,
+        409,
+        "ACCOUNT_EXISTS",
+        "An account already exists with this email. Switch to Sign in."
+      );
+    }
     await c.env.DB.update(schema_exports.authUsers).set({ name, updatedAt: now }).where(eq2(schema_exports.authUsers.id, userId));
+    user = { ...existing[0], name, updatedAt: now };
   } else {
     userId = crypto.randomUUID();
     const [newUser] = await c.env.DB.insert(schema_exports.authUsers).values({
@@ -1636,6 +1840,23 @@ app.post("/api/v1/auth/borrower", async (c) => {
       updatedAt: now
     }).returning();
     user = newUser;
+  }
+  const passwordHash = await hashPassword(body.password);
+  const [existingCredential] = await c.env.DB.select().from(schema_exports.authAccounts).where(
+    and2(eq2(schema_exports.authAccounts.userId, userId), eq2(schema_exports.authAccounts.providerId, "credential"))
+  ).limit(1);
+  if (existingCredential) {
+    await c.env.DB.update(schema_exports.authAccounts).set({ password: passwordHash, updatedAt: now }).where(eq2(schema_exports.authAccounts.id, existingCredential.id));
+  } else {
+    await c.env.DB.insert(schema_exports.authAccounts).values({
+      id: crypto.randomUUID(),
+      accountId: userId,
+      providerId: "credential",
+      userId,
+      password: passwordHash,
+      createdAt: now,
+      updatedAt: now
+    });
   }
   const token = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
   const sessionId = "sess_" + crypto.randomUUID();
@@ -1664,6 +1885,33 @@ app.post("/api/v1/auth/borrower", async (c) => {
       `__Secure-better-auth.session_token=${signedToken}; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=${maxAge}`
     );
   }
+  return response;
+});
+app.post("/api/v1/auth/borrower-login", async (c) => {
+  if (await isRateLimited(c.env, "auth:" + requestIp(c), c.env.AUTH_RATE_LIMIT_PER_MINUTE)) {
+    return jsonError(c, 429, "RATE_LIMITED", "Too many sign-in attempts. Try again shortly.");
+  }
+  const body = await c.req.json().catch(() => null);
+  if (!body || typeof body.email !== "string" || typeof body.password !== "string") {
+    return jsonError(c, 400, "VALIDATION", "Borrower email and password are required.");
+  }
+  const email = body.email.trim().toLowerCase();
+  const [user] = await c.env.DB.select().from(schema_exports.authUsers).where(eq2(schema_exports.authUsers.email, email)).limit(1);
+  if (!user || user.role !== "USER") {
+    return jsonError(c, 401, "UNAUTHENTICATED", "Invalid email or password.");
+  }
+  const auth = createAuth(c.env, trustedAuthOrigin(c.env, c.req.url, c.req.header("Origin")));
+  const res = await auth.api.signInEmail({
+    body: { email, password: body.password },
+    headers: c.req.raw.headers,
+    asResponse: true
+  }).catch(() => null);
+  if (!res || !res.ok) {
+    return jsonError(c, 401, "UNAUTHENTICATED", "Invalid email or password.");
+  }
+  const response = c.json({ ok: true, user });
+  const setCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : res.headers.get("set-cookie") ? [res.headers.get("set-cookie")] : [];
+  for (const cookie of setCookies) response.headers.append("Set-Cookie", cookie);
   return response;
 });
 app.post("/api/v1/auth/board-login", async (c) => {
@@ -1719,7 +1967,9 @@ app.post("/api/v1/auth/sign-out", async (c) => {
   }
   if (currentUserId) {
     try {
-      await c.env.DB.delete(schema_exports.authSessions).where(eq2(schema_exports.authSessions.userId, currentUserId));
+      await c.env.DB.delete(schema_exports.authSessions).where(
+        eq2(schema_exports.authSessions.userId, currentUserId)
+      );
     } catch {
     }
   }
@@ -1835,7 +2085,12 @@ app.delete("/api/v1/reservations/:id", async (c) => {
       return jsonError(c, 404, "NOT_FOUND", "Reservation not found.");
     }
     if (res.status !== "PENDING") {
-      return jsonError(c, 400, "BAD_REQUEST", "Only pending reservation requests can be force deleted.");
+      return jsonError(
+        c,
+        400,
+        "BAD_REQUEST",
+        "Only pending reservation requests can be force deleted."
+      );
     }
     return c.json(await forceDeleteReservation(c.env, c.get("actor"), c.req.param("id")));
   }
@@ -1854,6 +2109,12 @@ app.get("/api/v1/notifications", async (c) => {
     createdAt: schema_exports.notifications.createdAt
   }).from(schema_exports.notifications).where(eq2(schema_exports.notifications.userId, actor.id)).orderBy(desc(schema_exports.notifications.createdAt)).limit(100);
   return c.json(notifications2);
+});
+app.post("/api/v1/notifications/refresh", async (c) => {
+  const actor = await resolveIdentity(c);
+  if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue.");
+  const created = actor.role === "USER" ? await refreshReturnNotificationsForUser(c.env, actor.id) : 0;
+  return c.json({ ok: true, notificationsCreated: created });
 });
 app.patch("/api/v1/notifications/:id/read", async (c) => {
   const actor = await resolveIdentity(c);
@@ -1889,6 +2150,9 @@ app.get("/api/v1/board/reservations/:id", async (c) => {
   return c.json({ ...reservation, allocationCandidates: candidates });
 });
 var assignmentsSchema = z.record(z.string(), z.array(z.string()));
+app.post("/api/v1/board/reservations/:id/handover", async (c) => {
+  return c.json(await handoverReservation(c.env, c.get("actor"), c.req.param("id")));
+});
 app.post("/api/v1/board/reservations/:id/approve", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const parsed = z.object({ assignments: assignmentsSchema.optional() }).safeParse(body);
@@ -1947,10 +2211,30 @@ app.post("/api/v1/board/scan", async (c) => {
   const actor = c.get("actor");
   if (await isRateLimited(c.env, `scan:${actor.id}`, 180))
     return jsonError(c, 429, "RATE_LIMITED", "Scanner is busy. Wait a moment and try again.");
-  const parsed = z.object({ qrToken: z.string().min(1).max(256) }).safeParse(await c.req.json().catch(() => null));
+  const parsed = z.object({
+    qrToken: z.string().min(1).max(256),
+    reservationId: z.string().min(1).optional(),
+    operation: z.enum(["CHECKED_OUT", "RETURNED"]).optional()
+  }).safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return jsonError(c, 400, "INVALID_ASSET", "This QR code is not valid.");
   const idempotencyKey = c.req.header("Idempotency-Key") ?? "";
-  return c.json(await scanAsset(c.env, actor, parsed.data.qrToken, idempotencyKey));
+  if (Boolean(parsed.data.reservationId) !== Boolean(parsed.data.operation))
+    return jsonError(
+      c,
+      400,
+      "VALIDATION",
+      "Choose a reservation and pickup or return operation together."
+    );
+  return c.json(
+    await scanAsset(
+      c.env,
+      actor,
+      parsed.data.qrToken,
+      idempotencyKey,
+      parsed.data.reservationId,
+      parsed.data.operation
+    )
+  );
 });
 app.get("/api/v1/board/inventory", async (c) => {
   const origin = trustedAuthOrigin(c.env, c.req.url);
@@ -2195,15 +2479,7 @@ app.delete("/api/v1/board/assets/:id", requireBoard, async (c) => {
   await c.env.DB.delete(schema_exports.assets).where(eq2(schema_exports.assets.id, id2));
   await c.env.CLIENT.execute({
     sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("audit"),
-      c.get("actor").id,
-      "ASSET",
-      id2,
-      "ASSET_DELETED",
-      Date.now(),
-      "{}"
-    ]
+    args: [randomId("audit"), c.get("actor").id, "ASSET", id2, "ASSET_DELETED", Date.now(), "{}"]
   });
   return c.json({ ok: true });
 });
@@ -2430,7 +2706,12 @@ app.delete("/api/v1/board/users/:id", requireSuperadmin, async (c) => {
     )
   ).limit(1);
   if (activeRes.length > 0) {
-    return jsonError(c, 409, "ACTIVE_RESERVATIONS", "Cannot delete a user with active or pending reservations.");
+    return jsonError(
+      c,
+      409,
+      "ACTIVE_RESERVATIONS",
+      "Cannot delete a user with active or pending reservations."
+    );
   }
   await c.env.DB.delete(schema_exports.authSessions).where(eq2(schema_exports.authSessions.userId, targetId));
   await c.env.CLIENT.execute({
@@ -2504,6 +2785,7 @@ async function createRuntimeEnv(source = process.env) {
     BREVO_API_KEY: source.BREVO_API_KEY,
     BREVO_SENDER_EMAIL: source.BREVO_SENDER_EMAIL,
     BREVO_SENDER_NAME: source.BREVO_SENDER_NAME,
+    CRON_SECRET: source.CRON_SECRET,
     VERCEL_URL: source.VERCEL_URL,
     VERCEL_PROJECT_PRODUCTION_URL: source.VERCEL_PROJECT_PRODUCTION_URL,
     API_RATE_LIMIT_PER_MINUTE: 1200,

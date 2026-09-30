@@ -27,6 +27,7 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
   title,
 }) => {
   const [authMode, setAuthMode] = useState<"BORROWER" | "STAFF">(initialMode);
+  const [borrowerAuthAction, setBorrowerAuthAction] = useState<"SIGN_UP" | "SIGN_IN">("SIGN_UP");
 
   // Borrower state
   const [firstName, setFirstName] = useState("");
@@ -34,6 +35,8 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
   const [email, setEmail] = useState("");
   const [membership, setMembership] = useState<"IEEE" | "EXTERNAL">("IEEE");
   const [phone, setPhone] = useState("");
+  const [borrowerPassword, setBorrowerPassword] = useState("");
+  const [borrowerPasswordConfirmation, setBorrowerPasswordConfirmation] = useState("");
   const [borrowerError, setBorrowerError] = useState("");
   const [borrowerSubmitting, setBorrowerSubmitting] = useState(false);
 
@@ -75,44 +78,61 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
     e.preventDefault();
     setBorrowerError("");
     const fullName = `${firstName.trim()} ${lastName.trim()}`.trim();
-    if (!firstName.trim() || !lastName.trim() || !email.trim()) {
+    if (
+      borrowerAuthAction === "SIGN_UP" &&
+      (!firstName.trim() || !lastName.trim() || !email.trim())
+    ) {
       setBorrowerError("Please fill in all required fields.");
+      return;
+    }
+    if (borrowerPassword.length < 12 || borrowerPassword.length > 128) {
+      setBorrowerError("Choose a password between 12 and 128 characters.");
+      return;
+    }
+    if (borrowerAuthAction === "SIGN_UP" && borrowerPassword !== borrowerPasswordConfirmation) {
+      setBorrowerError("The passwords do not match.");
       return;
     }
     setBorrowerSubmitting(true);
     try {
-      const response = await fetch("/api/v1/auth/borrower", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          firstName: firstName.trim(),
-          lastName: lastName.trim(),
-          name: fullName,
-          email: email.trim().toLowerCase(),
-          membership,
-          phone: phone.trim(),
-        }),
-      });
+      const response = await fetch(
+        borrowerAuthAction === "SIGN_UP" ? "/api/v1/auth/borrower" : "/api/v1/auth/borrower-login",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            firstName: firstName.trim(),
+            lastName: lastName.trim(),
+            name: fullName,
+            email: email.trim().toLowerCase(),
+            membership,
+            phone: phone.trim(),
+            password: borrowerPassword,
+          }),
+        }
+      );
       if (!response.ok) {
         const data = (await response.json().catch(() => ({}))) as {
           error?: { message?: string };
         };
         throw new Error(data.error?.message ?? "Could not complete sign up. Please try again.");
       }
-      localStorage.setItem("sb_onboarding_completed", "true");
-      localStorage.setItem("sb_borrower_email", email.trim().toLowerCase());
-      localStorage.setItem(
-        "sb_borrower_profile",
-        JSON.stringify({
-          name: fullName,
-          firstName: firstName.trim(),
-          lastName: lastName.trim(),
-          email: email.trim().toLowerCase(),
-          membership,
-          phone: phone.trim(),
-        })
-      );
+      if (borrowerAuthAction === "SIGN_UP") {
+        localStorage.setItem("sb_onboarding_completed", "true");
+        localStorage.setItem("sb_borrower_email", email.trim().toLowerCase());
+        localStorage.setItem(
+          "sb_borrower_profile",
+          JSON.stringify({
+            name: fullName,
+            firstName: firstName.trim(),
+            lastName: lastName.trim(),
+            email: email.trim().toLowerCase(),
+            membership,
+            phone: phone.trim(),
+          })
+        );
+      }
       onClose();
       if (onSuccess) {
         onSuccess();
@@ -125,7 +145,6 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
       setBorrowerSubmitting(false);
     }
   };
-
 
   const onSubmitStaff = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -175,7 +194,7 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
             )}
           >
             <UserCheck className="w-3.5 h-3.5" />
-            <span>Borrower Sign In</span>
+            <span>Borrower Account</span>
           </button>
           <button
             type="button"
@@ -199,52 +218,91 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
                 <Sparkles className="w-5 h-5 text-primary" />
               </div>
               <DialogTitle className="text-xl font-bold text-foreground">
-                {title || "Welcome to IEEE INSAT Logistics!"}
+                {borrowerAuthAction === "SIGN_UP"
+                  ? "Create a borrower account"
+                  : title || "Borrower Sign In"}
               </DialogTitle>
               <DialogDescription className="text-xs text-muted-foreground">
-                Please enter your student details to link your borrow requests and get notified when
-                equipment is ready for pickup.
+                {borrowerAuthAction === "SIGN_UP"
+                  ? "Create your account with a password you choose."
+                  : "Sign in with the email and password for your borrower account."}
               </DialogDescription>
             </DialogHeader>
 
+            <div className="grid grid-cols-2 gap-1 rounded-lg bg-surface-subtle p-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setBorrowerAuthAction("SIGN_UP");
+                  setBorrowerError("");
+                }}
+                className={cn(
+                  "min-h-9 rounded-md text-xs font-semibold",
+                  borrowerAuthAction === "SIGN_UP"
+                    ? "bg-card text-foreground shadow-xs"
+                    : "text-muted-foreground"
+                )}
+              >
+                Create account
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setBorrowerAuthAction("SIGN_IN");
+                  setBorrowerError("");
+                }}
+                className={cn(
+                  "min-h-9 rounded-md text-xs font-semibold",
+                  borrowerAuthAction === "SIGN_IN"
+                    ? "bg-card text-foreground shadow-xs"
+                    : "text-muted-foreground"
+                )}
+              >
+                Sign in
+              </button>
+            </div>
             <form onSubmit={onSubmitBorrower} className="space-y-3 pt-3">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                <div className="space-y-1">
-                  <label
-                    htmlFor="borrower-first-name"
-                    className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block"
-                  >
-                    Name *
-                  </label>
-                  <Input
-                    id="borrower-first-name"
-                    type="text"
-                    required
-                    value={firstName}
-                    onChange={(e) => setFirstName(e.target.value)}
-                    placeholder="e.g. Ahmed"
-                    className="min-h-[38px] text-xs"
-                  />
-                </div>
+              {borrowerAuthAction === "SIGN_UP" && (
+                <>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div className="space-y-1">
+                      <label
+                        htmlFor="borrower-first-name"
+                        className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block"
+                      >
+                        Name *
+                      </label>
+                      <Input
+                        id="borrower-first-name"
+                        type="text"
+                        required
+                        value={firstName}
+                        onChange={(e) => setFirstName(e.target.value)}
+                        placeholder="e.g. Ahmed"
+                        className="min-h-[38px] text-xs"
+                      />
+                    </div>
 
-                <div className="space-y-1">
-                  <label
-                    htmlFor="borrower-last-name"
-                    className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block"
-                  >
-                    Surname *
-                  </label>
-                  <Input
-                    id="borrower-last-name"
-                    type="text"
-                    required
-                    value={lastName}
-                    onChange={(e) => setLastName(e.target.value)}
-                    placeholder="e.g. Ben Mansour"
-                    className="min-h-[38px] text-xs"
-                  />
-                </div>
-              </div>
+                    <div className="space-y-1">
+                      <label
+                        htmlFor="borrower-last-name"
+                        className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block"
+                      >
+                        Surname *
+                      </label>
+                      <Input
+                        id="borrower-last-name"
+                        type="text"
+                        required
+                        value={lastName}
+                        onChange={(e) => setLastName(e.target.value)}
+                        placeholder="e.g. Ben Mansour"
+                        className="min-h-[38px] text-xs"
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
 
               <div className="space-y-1">
                 <label
@@ -265,54 +323,104 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
                 />
               </div>
 
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block">
-                  Affiliation *
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  {(
-                    [
-                      { id: "IEEE", label: "IEEE Member" },
-                      { id: "EXTERNAL", label: "External / Guest" },
-                    ] as const
-                  ).map((m) => {
-                    const isSelected = membership === m.id;
-                    return (
-                      <button
-                        key={m.id}
-                        type="button"
-                        onClick={() => setMembership(m.id)}
-                        className={cn(
-                          "h-9 rounded-xl text-xs font-semibold border transition-all flex items-center justify-center",
-                          isSelected
-                            ? "bg-primary text-primary-foreground border-primary shadow-xs font-bold"
-                            : "bg-background border-input text-foreground hover:bg-surface-subtle"
-                        )}
-                      >
-                        {m.label}
-                      </button>
-                    );
-                  })}
+              {borrowerAuthAction === "SIGN_UP" && (
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block">
+                    Affiliation *
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {(
+                      [
+                        { id: "IEEE", label: "IEEE Member" },
+                        { id: "EXTERNAL", label: "External / Guest" },
+                      ] as const
+                    ).map((m) => {
+                      const isSelected = membership === m.id;
+                      return (
+                        <button
+                          key={m.id}
+                          type="button"
+                          onClick={() => setMembership(m.id)}
+                          className={cn(
+                            "h-9 rounded-xl text-xs font-semibold border transition-all flex items-center justify-center",
+                            isSelected
+                              ? "bg-primary text-primary-foreground border-primary shadow-xs font-bold"
+                              : "bg-background border-input text-foreground hover:bg-surface-subtle"
+                          )}
+                        >
+                          {m.label}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
+              )}
+
+              {borrowerAuthAction === "SIGN_UP" && (
+                <div className="space-y-1">
+                  <label
+                    htmlFor="borrower-phone"
+                    className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block"
+                  >
+                    Phone Number *
+                  </label>
+                  <Input
+                    id="borrower-phone"
+                    type="tel"
+                    required
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    placeholder="+216 98 765 432"
+                    className="min-h-[38px] text-xs"
+                  />
+                </div>
+              )}
 
               <div className="space-y-1">
                 <label
-                  htmlFor="borrower-phone"
+                  htmlFor="borrower-password"
                   className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block"
                 >
-                  Phone Number *
+                  Password *
                 </label>
                 <Input
-                  id="borrower-phone"
-                  type="tel"
+                  id="borrower-password"
+                  type="password"
                   required
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  placeholder="+216 98 765 432"
+                  minLength={12}
+                  maxLength={128}
+                  autoComplete={
+                    borrowerAuthAction === "SIGN_UP" ? "new-password" : "current-password"
+                  }
+                  value={borrowerPassword}
+                  onChange={(e) => setBorrowerPassword(e.target.value)}
                   className="min-h-[38px] text-xs"
                 />
+                {borrowerAuthAction === "SIGN_UP" && (
+                  <p className="text-[10px] text-muted-foreground">Use at least 12 characters.</p>
+                )}
               </div>
+              {borrowerAuthAction === "SIGN_UP" && (
+                <div className="space-y-1">
+                  <label
+                    htmlFor="borrower-password-confirmation"
+                    className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block"
+                  >
+                    Confirm password *
+                  </label>
+                  <Input
+                    id="borrower-password-confirmation"
+                    type="password"
+                    required
+                    minLength={12}
+                    maxLength={128}
+                    autoComplete="new-password"
+                    value={borrowerPasswordConfirmation}
+                    onChange={(e) => setBorrowerPasswordConfirmation(e.target.value)}
+                    className="min-h-[38px] text-xs"
+                  />
+                </div>
+              )}
 
               {borrowerError && (
                 <div
@@ -330,7 +438,15 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
                 className="w-full h-10 text-xs font-bold gap-2 rounded-xl mt-3 shadow-xs"
               >
                 <Sparkles className="w-4 h-4" />
-                <span>{borrowerSubmitting ? "Signing in..." : "Continue to Reservations"}</span>
+                <span>
+                  {borrowerSubmitting
+                    ? borrowerAuthAction === "SIGN_UP"
+                      ? "Creating account..."
+                      : "Signing in..."
+                    : borrowerAuthAction === "SIGN_UP"
+                      ? "Create account"
+                      : "Sign in"}
+                </span>
               </Button>
 
               <div className="flex flex-col items-center gap-1.5 pt-2">
