@@ -2023,7 +2023,7 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
         </DialogContent>
       </Dialog>
 
-      {/* Force Delete Confirmation Dialog */}
+      {/* Delete Request Confirmation Dialog */}
       <Dialog
         open={Boolean(deleteTarget)}
         onOpenChange={(open) => {
@@ -2034,7 +2034,7 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
           <DialogHeader>
             <DialogTitle className="text-destructive flex items-center gap-2">
               <Trash2 className="w-5 h-5" />
-              <span>Force Delete Reservation?</span>
+              <span>Delete reservation request?</span>
             </DialogTitle>
             <DialogDescription>
               Are you sure you want to permanently delete the reservation request for{" "}
@@ -2045,10 +2045,7 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
 
           <div className="py-2 text-xs text-muted-foreground bg-destructive/10 border border-destructive/20 rounded-lg p-3 space-y-1">
             <p className="font-semibold text-destructive">⚠️ Permanent Action</p>
-            <p>
-              This will completely remove the reservation request from the system and automatically
-              release any allocated physical units back to available inventory.
-            </p>
+            <p>This permanently removes this reservation and its unfulfilled reservation data.</p>
           </div>
 
           <div className="flex justify-end gap-2 pt-4">
@@ -2068,7 +2065,7 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
               className="gap-1.5"
             >
               <Trash2 className="w-4 h-4" />
-              <span>{deleting ? "Deleting…" : "Force Delete"}</span>
+              <span>{deleting ? "Deleting…" : "Delete request"}</span>
             </Button>
           </div>
         </DialogContent>
@@ -2099,18 +2096,21 @@ function BoardCalendar() {
               r.derivedStatus === "OVERDUE"
           )
           .flatMap((r) => {
+            const isCompleted = r.status === "COMPLETED" || r.derivedStatus === "RETURNED";
             const isOverdue = r.derivedStatus === "OVERDUE";
-            const isReturningToday =
-              DateTime.fromISO(r.returnAt).setZone(TZ).toISODate() === todayStr;
             const isBorrowed =
-              ["ACTIVE", "BORROWED"].includes(r.status) || r.collectedCount > r.returnedCount;
-            const isCompleted = r.status === "COMPLETED" || r.derivedStatus === "COMPLETED";
+              !isCompleted &&
+              (["ACTIVE", "BORROWED"].includes(r.status) || r.collectedCount > r.returnedCount);
+            const isReturningToday =
+              !isCompleted &&
+              !isOverdue &&
+              DateTime.fromISO(r.returnAt).setZone(TZ).toISODate() === todayStr;
 
             let bgColor = "#00629B"; // default IEEE Blue
-            if (isOverdue)
-              bgColor = "#BA0C2F"; // Red
-            else if (isCompleted)
+            if (isCompleted)
               bgColor = "#506680"; // Completed slate
+            else if (isOverdue)
+              bgColor = "#BA0C2F"; // Red
             else if (isReturningToday)
               bgColor = "#00B5E2"; // IEEE Cyan
             else if (isBorrowed)
@@ -2678,17 +2678,11 @@ function BoardScan({
 }) {
   const [token, setToken] = useState(initialToken);
   const [reservation, setReservation] = useState<Reservation | null>(null);
-  const [operation, setOperation] = useState<"CHECKED_OUT" | "RETURNED">("CHECKED_OUT");
   const openReservation = useCallback(async (id: string) => {
     const detail = await api<Reservation>(`/api/v1/board/reservations/${encodeURIComponent(id)}`);
     if (!["APPROVED", "COMPLETED", "CANCELLED"].includes(detail.status))
       throw new Error("This reservation has not been approved.");
     setReservation(detail);
-    setOperation(
-      detail.items.some((item) => item.assignedAssets?.some((asset) => asset.state === "BORROWED"))
-        ? "RETURNED"
-        : "CHECKED_OUT"
-    );
     setToken("");
   }, []);
   useEffect(() => {
@@ -2712,20 +2706,26 @@ function BoardScan({
     reservations: Array<{
       id: string;
       borrowerName: string;
+      chapterName?: string | null;
       pickupAt: string;
       returnAt: string;
       quantity: number;
-      collectedCount: number;
+      uncollectedCount: number;
     }>;
   } | null>(null);
 
   const video = useRef<HTMLVideoElement>(null);
   const controls = useRef<{ stop: () => void } | null>(null);
   const reader = useRef<BrowserQRCodeReader | null>(null);
+  const isScanningRef = useRef(false);
+  const lastScannedRef = useRef<{ code: string; time: number } | null>(null);
+  const selectionPromptRef = useRef(selectionPrompt);
+  selectionPromptRef.current = selectionPrompt;
 
   const stop = () => {
     controls.current?.stop();
     controls.current = null;
+    isScanningRef.current = false;
     setCameraActive(false);
   };
   useEffect(() => () => stop(), []);
@@ -2745,6 +2745,9 @@ function BoardScan({
       if (reservationId) {
         await openReservation(reservationId);
         setNotice("Reservation opened. Scan equipment to record borrow or return.");
+        setTimeout(() => {
+          isScanningRef.current = false;
+        }, 1500);
         return;
       }
       const targetReservationId = explicitReservationId ?? reservation?.id;
@@ -2764,10 +2767,11 @@ function BoardScan({
             reservations: Array<{
               id: string;
               borrowerName: string;
+              chapterName?: string | null;
               pickupAt: string;
               returnAt: string;
               quantity: number;
-              collectedCount: number;
+              uncollectedCount: number;
             }>;
             operation?: undefined;
           }
@@ -2798,12 +2802,18 @@ function BoardScan({
           ? `${scanned.assetName} #${scanned.assetCode} returned to the desk.`
           : `${scanned.assetName} #${scanned.assetCode} checked out to ${scanned.borrowerName || "borrower"}.`
       );
+      setTimeout(() => {
+        isScanningRef.current = false;
+      }, 1500);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Scan could not be processed.";
       setScanError({
         title: msg.includes("cooldown") ? "Scan cooldown active" : "Handover rejected",
         message: msg,
       });
+      setTimeout(() => {
+        isScanningRef.current = false;
+      }, 2000);
     } finally {
       setBusy(false);
     }
@@ -2818,11 +2828,24 @@ function BoardScan({
         video.current,
         (decoded) => {
           if (!decoded) return;
+          if (isScanningRef.current || selectionPromptRef.current) return;
+
           const text = decoded.getText();
           const matched = text.match(/(?:^|\/)([a-f0-9]{64})(?:\?.*)?$/i);
           const code = matched?.[1] ?? text;
+
+          const now = Date.now();
+          if (
+            lastScannedRef.current &&
+            lastScannedRef.current.code === code &&
+            now - lastScannedRef.current.time < 3000
+          ) {
+            return;
+          }
+
+          isScanningRef.current = true;
+          lastScannedRef.current = { code, time: now };
           setToken(code);
-          stop();
           void executeScan(code);
         }
       );
@@ -2850,7 +2873,7 @@ function BoardScan({
           </div>
           <h1 className="text-2xl font-bold tracking-tight text-foreground">Scan equipment</h1>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Scan the borrower’s reservation QR, then scan each material for pickup or return.
+            Scan an equipment QR to record its checkout or return.
           </p>
         </div>
         <Button asChild variant="outline" size="sm" className="gap-1.5">
@@ -2873,20 +2896,11 @@ function BoardScan({
           </p>
           <div className="flex gap-2">
             <Button
-              variant={operation === "CHECKED_OUT" ? "default" : "outline"}
+              variant="outline"
+              size="sm"
               disabled={busy}
-              onClick={() => setOperation("CHECKED_OUT")}
+              onClick={() => setReservation(null)}
             >
-              Pickup
-            </Button>
-            <Button
-              variant={operation === "RETURNED" ? "default" : "outline"}
-              disabled={busy}
-              onClick={() => setOperation("RETURNED")}
-            >
-              Return
-            </Button>
-            <Button variant="ghost" disabled={busy} onClick={() => setReservation(null)}>
               Close reservation
             </Button>
           </div>
@@ -2911,8 +2925,8 @@ function BoardScan({
             )}
           </ul>
           <p className="text-xs text-muted-foreground">
-            Scan every material. The Board member and time are saved for each pickup and return. All
-            materials must be returned before the reservation is completed.
+            Scan equipment QR to record checkout or return. All materials must be returned before
+            the reservation is completed.
           </p>
         </section>
       )}
@@ -2974,7 +2988,7 @@ function BoardScan({
             disabled={busy || !token.trim()}
             className="shrink-0"
           >
-            {busy ? "Processing…" : "Record Handover"}
+            {busy ? "Processing…" : "Process equipment"}
           </Button>
         </form>
 
@@ -3020,7 +3034,14 @@ function BoardScan({
       {/* Disambiguation Dialog when multiple reservations match */}
       <Dialog
         open={Boolean(selectionPrompt)}
-        onOpenChange={(open) => !open && setSelectionPrompt(null)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSelectionPrompt(null);
+            setTimeout(() => {
+              isScanningRef.current = false;
+            }, 500);
+          }
+        }}
       >
         <DialogContent className="max-w-md p-6 bg-card border-border sm:rounded-2xl space-y-4">
           <DialogHeader>
@@ -3043,20 +3064,31 @@ function BoardScan({
                 className="w-full text-left p-3 rounded-xl border border-border hover:border-primary/50 hover:bg-surface-subtle transition-all space-y-1"
               >
                 <div className="flex items-center justify-between font-semibold text-xs text-foreground">
-                  <span>{r.borrowerName}</span>
+                  <span>
+                    {r.chapterName ? `${r.chapterName} — ` : ""}
+                    {r.borrowerName}
+                  </span>
                   <span className="text-[11px] text-primary">
-                    {r.collectedCount}/{r.quantity} collected
+                    {r.uncollectedCount} {r.uncollectedCount === 1 ? "unit" : "units"} remaining
                   </span>
                 </div>
                 <div className="text-[11px] text-muted-foreground">
-                  {fmtDay(r.pickupAt)} {fmtTime(r.pickupAt)} → {fmtDay(r.returnAt)}{" "}
-                  {fmtTime(r.returnAt)}
+                  Return {fmtTime(r.returnAt)}
                 </div>
               </button>
             ))}
           </div>
           <div className="flex justify-end pt-2">
-            <Button variant="outline" size="sm" onClick={() => setSelectionPrompt(null)}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setSelectionPrompt(null);
+                setTimeout(() => {
+                  isScanningRef.current = false;
+                }, 500);
+              }}
+            >
               Cancel
             </Button>
           </div>

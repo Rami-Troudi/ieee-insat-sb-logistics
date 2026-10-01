@@ -821,6 +821,63 @@ async function listCatalogue(env, pickupAt, returnAt) {
     }))
   );
 }
+async function finalizeReservationIfFinished(tx, reservationId, now = Date.now()) {
+  const reservation = await one(
+    tx,
+    `SELECT r.id, r.status, r.return_at,
+      COALESCE((SELECT SUM(quantity) FROM reservation_lines WHERE reservation_id = r.id), 0) AS total_requested,
+      COALESCE((SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = r.id AND state = 'BORROWED'), 0) AS borrowed_count,
+      COALESCE((SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = r.id AND state = 'RETURNED'), 0) AS returned_count,
+      COALESCE((SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = r.id AND state NOT IN ('RESERVED', 'RELEASED')), 0) AS collected_count
+     FROM reservations r
+     WHERE r.id = ?`,
+    [reservationId]
+  );
+  if (!reservation || reservation.status !== "APPROVED") {
+    return false;
+  }
+  const returnAt = Number(reservation.return_at);
+  const borrowedCount = Number(reservation.borrowed_count);
+  const returnedCount = Number(reservation.returned_count);
+  const totalRequested = Number(reservation.total_requested);
+  const collectedCount = Number(reservation.collected_count);
+  let shouldComplete = false;
+  if (totalRequested > 0 && collectedCount === totalRequested && returnedCount === totalRequested) {
+    shouldComplete = true;
+  } else if (now >= returnAt && borrowedCount === 0) {
+    shouldComplete = true;
+  }
+  if (shouldComplete) {
+    await tx.execute({
+      sql: "UPDATE reservations SET status='COMPLETED', updated_at=? WHERE id=? AND status='APPROVED'",
+      args: [now, reservationId]
+    });
+    return true;
+  }
+  return false;
+}
+async function reconcileExpiredReservations(env, now = Date.now()) {
+  await write(env, async (tx) => {
+    await tx.execute({
+      sql: `UPDATE reservations
+            SET status = 'COMPLETED', updated_at = ?
+            WHERE status = 'APPROVED'
+              AND return_at <= ?
+              AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state = 'BORROWED') = 0`,
+      args: [now, now]
+    });
+    await tx.execute({
+      sql: `UPDATE reservations
+            SET status = 'COMPLETED', updated_at = ?
+            WHERE status = 'APPROVED'
+              AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state = 'BORROWED') = 0
+              AND (SELECT COALESCE(SUM(quantity), 0) FROM reservation_lines WHERE reservation_id = reservations.id) > 0
+              AND (SELECT COALESCE(SUM(quantity), 0) FROM reservation_lines WHERE reservation_id = reservations.id) = (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state = 'RETURNED')
+              AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state NOT IN ('RESERVED', 'RELEASED')) = (SELECT COALESCE(SUM(quantity), 0) FROM reservation_lines WHERE reservation_id = reservations.id)`,
+      args: [now]
+    });
+  });
+}
 async function getReservation(env, reservationId, includeAssets = false) {
   const executor = env.CLIENT;
   const reservation = await one(
@@ -836,6 +893,12 @@ async function getReservation(env, reservationId, includeAssets = false) {
     [reservationId]
   );
   if (!reservation) return null;
+  if (reservation.status === "APPROVED") {
+    const finalized = await finalizeReservationIfFinished(executor, reservationId);
+    if (finalized) {
+      reservation.status = "COMPLETED";
+    }
+  }
   const lineRows = await rows(
     executor,
     `SELECT l.id,l.equipment_item_id,e.name AS equipment_name,l.quantity,
@@ -916,6 +979,7 @@ async function getReservation(env, reservationId, includeAssets = false) {
   };
 }
 async function listReservations(env, ownerId) {
+  await reconcileExpiredReservations(env);
   const ids = await rows(
     env.CLIENT,
     "SELECT id FROM reservations WHERE requested_by_user_id=? ORDER BY pickup_at DESC LIMIT 200",
@@ -924,6 +988,7 @@ async function listReservations(env, ownerId) {
   return Promise.all(ids.map(({ id: reservationId }) => getReservation(env, reservationId)));
 }
 async function listBoardReservations(env) {
+  await reconcileExpiredReservations(env);
   const ids = await rows(
     env.CLIENT,
     "SELECT id FROM reservations ORDER BY CASE status WHEN 'PENDING' THEN 0 WHEN 'APPROVED' THEN 1 ELSE 2 END,pickup_at ASC LIMIT 500"
@@ -1100,6 +1165,7 @@ async function refreshReturnNotificationsForUser(env, userId, now = Date.now()) 
   });
 }
 async function refreshAllReturnNotifications(env, now = Date.now()) {
+  await reconcileExpiredReservations(env, now);
   const borrowers = await rows(
     env.CLIENT,
     "SELECT DISTINCT r.requested_by_user_id AS user_id FROM reservations r INNER JOIN reservation_assets ra ON ra.reservation_id=r.id WHERE r.status='APPROVED' AND ra.state='BORROWED'"
@@ -1530,17 +1596,7 @@ async function scanAsset(env, actor, qrToken, idempotencyKey, reservationId, ope
         sql: "UPDATE assets SET state='AVAILABLE',last_scan_at=?,updated_at=? WHERE id=?",
         args: [timestamp, timestamp, asset.id]
       });
-      const unfinished = await one(
-        tx,
-        "SELECT (SELECT COALESCE(SUM(quantity),0) FROM reservation_lines WHERE reservation_id=?) - (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id=? AND state='RETURNED') AS count",
-        [assignment.reservation_id, assignment.reservation_id]
-      );
-      if (Number(unfinished?.count ?? 0) === 0) {
-        await tx.execute({
-          sql: "UPDATE reservations SET status='COMPLETED',updated_at=? WHERE id=? AND status IN ('APPROVED','CANCELLED')",
-          args: [timestamp, assignment.reservation_id]
-        });
-      }
+      await finalizeReservationIfFinished(tx, assignment.reservation_id, timestamp);
       await audit(tx, actor.id, "ASSET", asset.id, "ASSET_RETURNED", {
         reservationId: assignment.reservation_id
       });
@@ -1697,6 +1753,7 @@ async function calendarEvents(env, start, end, filters = {}) {
   if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end || end - start > 93 * 864e5) {
     throw new DomainError(400, "INVALID_TIME_RANGE", "Choose a calendar range under 93 days.");
   }
+  await reconcileExpiredReservations(env);
   const ids = await rows(
     env.CLIENT,
     `SELECT DISTINCT r.id FROM reservations r
@@ -1838,6 +1895,14 @@ app.post("/api/v1/auth/borrower", async (c) => {
   let userId;
   let user;
   if (existing.length > 0) {
+    if (existing[0].role !== "USER") {
+      return jsonError(
+        c,
+        403,
+        "PRIVILEGED_ACCOUNT",
+        "Privileged accounts cannot use borrower sign-in."
+      );
+    }
     userId = existing[0].id;
     await c.env.DB.update(schema_exports.authUsers).set({ name, phone: phone ?? existing[0].phone, updatedAt: now }).where(eq2(schema_exports.authUsers.id, userId));
     user = { ...existing[0], name, phone: phone ?? existing[0].phone, updatedAt: now };

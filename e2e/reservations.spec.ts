@@ -52,8 +52,7 @@ test("member requests equipment, Board approves it, and the reservation appears 
     (entry: { borrower: { name: string } }) => entry.borrower.name === "Alex Member"
   );
   await page.goto("/board/scan?res=" + reservation.id);
-  await expect(page.getByRole("button", { name: "Pickup", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Return", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Scan equipment" })).toBeVisible();
   await expect(page.getByText("0/1 collected · 0/1 returned")).toBeVisible();
   await page.goto("/board/calendar");
   await expect(page.getByText(/1× E2E Digital Multimeter/)).toBeVisible();

@@ -123,6 +123,35 @@ describe("reservation API against a real libSQL database", () => {
       args: [json.user.id],
     });
     expect(hashes.rows.length).toBe(0);
+
+    // Existing USER email -> borrower auth works and creates session
+    const userAuth = await request(
+      "/api/v1/auth/borrower",
+      sendJson({ name: "Existing Member", email: "member@example.test" })
+    );
+    expect(userAuth.status).toBe(200);
+    expect(userAuth.headers.get("set-cookie")).toContain("session_token");
+
+    // Existing BOARD email -> borrower auth rejected with 403 PRIVILEGED_ACCOUNT and no session
+    const boardReject = await request(
+      "/api/v1/auth/borrower",
+      sendJson({ name: "Board Member", email: "board@example.test" })
+    );
+    expect(boardReject.status).toBe(403);
+    const boardRejectJson = await boardReject.json();
+    expect(boardRejectJson.error.code).toBe("PRIVILEGED_ACCOUNT");
+    expect(boardReject.headers.get("set-cookie")).toBeNull();
+
+    // Existing SUPERADMIN email -> borrower auth rejected with 403 PRIVILEGED_ACCOUNT and no session
+    await seedUser("superadmin", "SUPERADMIN");
+    const adminReject = await request(
+      "/api/v1/auth/borrower",
+      sendJson({ name: "Super Admin", email: "superadmin@example.test" })
+    );
+    expect(adminReject.status).toBe(403);
+    const adminRejectJson = await adminReject.json();
+    expect(adminRejectJson.error.code).toBe("PRIVILEGED_ACCOUNT");
+    expect(adminReject.headers.get("set-cookie")).toBeNull();
   });
 
   it("notifies the Board on requests and borrowers before and after the return deadline", async () => {
@@ -879,7 +908,25 @@ describe("reservation API against a real libSQL database", () => {
     const checkFinal = await request(`/api/v1/board/reservations/${res.id}`, {}, boardCookie).then(
       (r) => r.json()
     );
-    expect(["COMPLETED", "RETURNED"]).toContain(checkFinal.derivedStatus);
+    expect(checkFinal.status).toBe("COMPLETED");
+    expect(checkFinal.derivedStatus).toBe("RETURNED");
+
+    // Board filter for APPROVED must no longer include this completed reservation
+    const boardReservations = (await request("/api/v1/board/reservations", {}, boardCookie).then(
+      (r) => r.json()
+    )) as Array<{ id: string; status: string }>;
+    const foundInBoard = boardReservations.find((r) => r.id === res.id);
+    expect(foundInBoard?.status).toBe("COMPLETED");
+
+    // Calendar events query includes completed reservation with status 'RETURNED'
+    const cal = (await request(
+      `/api/v1/board/calendar?start=${new Date(now - 86400000).toISOString()}&end=${new Date(now + 86400000).toISOString()}`,
+      {},
+      boardCookie
+    ).then((r) => r.json())) as Array<{ reservationId: string; status: string }>;
+    const calEvent = cal.find((e) => e.reservationId === res.id);
+    expect(calEvent).toBeDefined();
+    expect(calEvent?.status).toBe("RETURNED");
 
     const catRes = (await request("/api/v1/catalogue").then((r) => r.json())) as Array<{
       id: string;
@@ -887,6 +934,77 @@ describe("reservation API against a real libSQL database", () => {
     }>;
     const meterCat = catRes.find((i) => i.id === itemId);
     expect(meterCat?.availableQuantity).toBe(3);
+  });
+
+  it("keeps overdue reservation as APPROVED and derived OVERDUE until all borrowed assets are returned, then finalizes as COMPLETED", async () => {
+    const now = Date.now();
+    const token2 = "b".repeat(64);
+    await client.execute({
+      sql: "INSERT INTO assets(id,equipment_item_id,asset_code,qr_token,state,active,created_at,updated_at) VALUES('asset-two',?,'SB-METER-02',?,'AVAILABLE',1,?,?)",
+      args: [itemId, token2, now, now],
+    });
+
+    const pickupAt = new Date(now + 10_000).toISOString();
+    const returnAt = new Date(now + 3600_000).toISOString();
+
+    const res = await request(
+      "/api/v1/reservations",
+      sendJson({
+        borrowerType: "PERSON",
+        pickupAt,
+        returnAt,
+        items: [{ equipmentItemId: itemId, quantity: 2 }],
+      }),
+      memberCookie
+    ).then((r) => r.json());
+
+    const approve = await request(
+      `/api/v1/board/reservations/${res.id}/approve`,
+      sendJson({}),
+      boardCookie
+    );
+    expect(approve.status).toBe(200);
+
+    // Set pickup_at to past so window is active
+    await client.execute({
+      sql: "UPDATE reservations SET pickup_at = ? WHERE id = ?",
+      args: [now - 1000, res.id],
+    });
+
+    // Collect 1 unit
+    const scanRes = await request(
+      "/api/v1/board/scan",
+      sendJson({ qrToken, reservationId: res.id }),
+      boardCookie
+    );
+    expect(scanRes.status).toBe(200);
+
+    // Simulate return deadline passing while 1 asset is still borrowed
+    await client.execute({
+      sql: "UPDATE reservations SET return_at = ? WHERE id = ?",
+      args: [now - 500, res.id],
+    });
+
+    // Check reservation status: must NOT be COMPLETED, must be OVERDUE
+    const checkOverdue = await request(
+      `/api/v1/board/reservations/${res.id}`,
+      {},
+      boardCookie
+    ).then((r) => r.json());
+    expect(checkOverdue.status).toBe("APPROVED");
+    expect(checkOverdue.derivedStatus).toBe("OVERDUE");
+
+    // Return the remaining borrowed asset
+    await client.execute("UPDATE assets SET last_scan_at = NULL WHERE id = 'asset-one'");
+    const returnScan = await request("/api/v1/board/scan", sendJson({ qrToken }), boardCookie);
+    expect(returnScan.status).toBe(200);
+
+    // Now that borrowed count is 0 and deadline passed, reservation is COMPLETED
+    const checkFinal = await request(`/api/v1/board/reservations/${res.id}`, {}, boardCookie).then(
+      (r) => r.json()
+    );
+    expect(checkFinal.status).toBe("COMPLETED");
+    expect(checkFinal.derivedStatus).toBe("RETURNED");
   });
 
   it("prompts for reservation selection when multiple eligible approved reservations exist for an asset", async () => {
@@ -942,6 +1060,9 @@ describe("reservation API against a real libSQL database", () => {
     const scanBody = await disambiguateScan.json();
     expect(scanBody.code).toBe("RESERVATION_SELECTION_REQUIRED");
     expect(scanBody.reservations.length).toBe(2);
+    expect(scanBody.reservations[0]).toHaveProperty("uncollectedCount");
+    expect(scanBody.reservations[0].uncollectedCount).toBe(1);
+    expect(typeof scanBody.reservations[0].uncollectedCount).toBe("number");
 
     // Clear duplicate scan cooldown
     await client.execute("UPDATE assets SET last_scan_at = NULL WHERE id = 'asset-one'");

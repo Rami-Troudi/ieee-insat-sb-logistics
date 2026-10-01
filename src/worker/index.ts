@@ -157,6 +157,14 @@ app.post("/api/v1/auth/borrower", async (c) => {
   let userId: string;
   let user: typeof schema.authUsers.$inferSelect;
   if (existing.length > 0) {
+    if (existing[0].role !== "USER") {
+      return jsonError(
+        c,
+        403,
+        "PRIVILEGED_ACCOUNT",
+        "Privileged accounts cannot use borrower sign-in."
+      );
+    }
     userId = existing[0].id;
     await c.env.DB.update(schema.authUsers)
       .set({ name, phone: phone ?? existing[0].phone, updatedAt: now })

@@ -334,6 +334,88 @@ export interface ReservationDTO {
   createdAt: string;
 }
 
+export async function finalizeReservationIfFinished(
+  tx: SqlExecutor,
+  reservationId: string,
+  now = Date.now()
+): Promise<boolean> {
+  const reservation = await one<{
+    id: string;
+    status: string;
+    return_at: number;
+    total_requested: number;
+    borrowed_count: number;
+    returned_count: number;
+    collected_count: number;
+  }>(
+    tx,
+    `SELECT r.id, r.status, r.return_at,
+      COALESCE((SELECT SUM(quantity) FROM reservation_lines WHERE reservation_id = r.id), 0) AS total_requested,
+      COALESCE((SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = r.id AND state = 'BORROWED'), 0) AS borrowed_count,
+      COALESCE((SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = r.id AND state = 'RETURNED'), 0) AS returned_count,
+      COALESCE((SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = r.id AND state NOT IN ('RESERVED', 'RELEASED')), 0) AS collected_count
+     FROM reservations r
+     WHERE r.id = ?`,
+    [reservationId]
+  );
+
+  if (!reservation || reservation.status !== "APPROVED") {
+    return false;
+  }
+
+  const returnAt = Number(reservation.return_at);
+  const borrowedCount = Number(reservation.borrowed_count);
+  const returnedCount = Number(reservation.returned_count);
+  const totalRequested = Number(reservation.total_requested);
+  const collectedCount = Number(reservation.collected_count);
+
+  let shouldComplete = false;
+
+  // 1. If all requested units were collected and all are returned -> COMPLETED immediately
+  if (totalRequested > 0 && collectedCount === totalRequested && returnedCount === totalRequested) {
+    shouldComplete = true;
+  } else if (now >= returnAt && borrowedCount === 0) {
+    // 2. If returnAt <= now and currently borrowed == 0 -> COMPLETED
+    shouldComplete = true;
+  }
+
+  if (shouldComplete) {
+    await tx.execute({
+      sql: "UPDATE reservations SET status='COMPLETED', updated_at=? WHERE id=? AND status='APPROVED'",
+      args: [now, reservationId],
+    });
+    return true;
+  }
+
+  return false;
+}
+
+export async function reconcileExpiredReservations(env: Env, now = Date.now()) {
+  await write(env, async (tx) => {
+    // 1. Expired approved reservations with 0 currently borrowed units -> COMPLETED
+    await tx.execute({
+      sql: `UPDATE reservations
+            SET status = 'COMPLETED', updated_at = ?
+            WHERE status = 'APPROVED'
+              AND return_at <= ?
+              AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state = 'BORROWED') = 0`,
+      args: [now, now],
+    });
+
+    // 2. Approved reservations where all requested units are collected and returned -> COMPLETED
+    await tx.execute({
+      sql: `UPDATE reservations
+            SET status = 'COMPLETED', updated_at = ?
+            WHERE status = 'APPROVED'
+              AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state = 'BORROWED') = 0
+              AND (SELECT COALESCE(SUM(quantity), 0) FROM reservation_lines WHERE reservation_id = reservations.id) > 0
+              AND (SELECT COALESCE(SUM(quantity), 0) FROM reservation_lines WHERE reservation_id = reservations.id) = (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state = 'RETURNED')
+              AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state NOT IN ('RESERVED', 'RELEASED')) = (SELECT COALESCE(SUM(quantity), 0) FROM reservation_lines WHERE reservation_id = reservations.id)`,
+      args: [now],
+    });
+  });
+}
+
 export async function getReservation(
   env: Env,
   reservationId: string,
@@ -353,6 +435,14 @@ export async function getReservation(
     [reservationId]
   );
   if (!reservation) return null;
+
+  if (reservation.status === "APPROVED") {
+    const finalized = await finalizeReservationIfFinished(executor, reservationId);
+    if (finalized) {
+      reservation.status = "COMPLETED";
+    }
+  }
+
   const lineRows = await rows<ReservationLineRow>(
     executor,
     `SELECT l.id,l.equipment_item_id,e.name AS equipment_name,l.quantity,
@@ -447,6 +537,7 @@ export async function getReservation(
 }
 
 export async function listReservations(env: Env, ownerId: string) {
+  await reconcileExpiredReservations(env);
   const ids = await rows<{ id: string }>(
     env.CLIENT as unknown as SqlExecutor,
     "SELECT id FROM reservations WHERE requested_by_user_id=? ORDER BY pickup_at DESC LIMIT 200",
@@ -456,6 +547,7 @@ export async function listReservations(env: Env, ownerId: string) {
 }
 
 export async function listBoardReservations(env: Env) {
+  await reconcileExpiredReservations(env);
   const ids = await rows<{ id: string }>(
     env.CLIENT as unknown as SqlExecutor,
     "SELECT id FROM reservations ORDER BY CASE status WHEN 'PENDING' THEN 0 WHEN 'APPROVED' THEN 1 ELSE 2 END,pickup_at ASC LIMIT 500"
@@ -667,6 +759,7 @@ export async function refreshReturnNotificationsForUser(
 }
 
 export async function refreshAllReturnNotifications(env: Env, now = Date.now()) {
+  await reconcileExpiredReservations(env, now);
   const borrowers = await rows<{ user_id: string }>(
     env.CLIENT as unknown as SqlExecutor,
     "SELECT DISTINCT r.requested_by_user_id AS user_id " +
@@ -1237,17 +1330,7 @@ export async function scanAsset(
         sql: "UPDATE assets SET state='AVAILABLE',last_scan_at=?,updated_at=? WHERE id=?",
         args: [timestamp, timestamp, asset.id],
       });
-      const unfinished = await one<{ count: number }>(
-        tx,
-        "SELECT (SELECT COALESCE(SUM(quantity),0) FROM reservation_lines WHERE reservation_id=?) - (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id=? AND state='RETURNED') AS count",
-        [assignment.reservation_id, assignment.reservation_id]
-      );
-      if (Number(unfinished?.count ?? 0) === 0) {
-        await tx.execute({
-          sql: "UPDATE reservations SET status='COMPLETED',updated_at=? WHERE id=? AND status IN ('APPROVED','CANCELLED')",
-          args: [timestamp, assignment.reservation_id],
-        });
-      }
+      await finalizeReservationIfFinished(tx, assignment.reservation_id, timestamp);
       await audit(tx, actor.id, "ASSET", asset.id, "ASSET_RETURNED", {
         reservationId: assignment.reservation_id,
       });
@@ -1431,6 +1514,7 @@ export async function calendarEvents(
   ) {
     throw new DomainError(400, "INVALID_TIME_RANGE", "Choose a calendar range under 93 days.");
   }
+  await reconcileExpiredReservations(env);
   const ids = await rows<{ id: string }>(
     env.CLIENT as unknown as SqlExecutor,
     `SELECT DISTINCT r.id FROM reservations r
