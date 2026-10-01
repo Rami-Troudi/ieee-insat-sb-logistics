@@ -349,7 +349,7 @@ function AppFrame() {
       {/* Mobile Bottom Navigation */}
       <MobileBottomNav isBoard={isBoardPath} cartCount={cartCount} user={user} />
 
-      {/* Borrower & Board Staff Auth Modal (Identical to RAS) */}
+      {/* Borrower & Board Staff Auth Modal */}
       <BorrowerAuthModal
         isOpen={showAuthModal}
         onClose={() => setShowAuthModal(false)}
@@ -1822,16 +1822,21 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
               </div>
 
               <div className="flex items-center justify-between gap-2 pt-2 border-t border-border/50">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setDeleteTarget(r)}
-                  className="text-xs text-destructive hover:text-destructive hover:bg-destructive/10 gap-1.5 h-8 px-2.5"
-                  title="Force delete this reservation request"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Force delete</span>
-                </Button>
+                {r.collectedCount === 0 &&
+                !["BORROWED", "RETURNED", "ACTIVE"].includes(r.status) ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setDeleteTarget(r)}
+                    className="text-xs text-muted-foreground hover:text-destructive hover:bg-destructive/10 gap-1 h-7 px-2"
+                    title="Delete this uncollected reservation request"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    <span className="text-[11px]">Delete request</span>
+                  </Button>
+                ) : (
+                  <span />
+                )}
 
                 <div className="flex items-center gap-2">
                   {r.status === "APPROVED" && r.collectedCount < r.totalQuantity && (
@@ -2080,50 +2085,63 @@ function BoardCalendar() {
   useEffect(() => {
     api<Reservation[]>("/api/v1/board/reservations")
       .then((reservations) => {
-        // Section 20 Calendar Event State Colors:
+        // Calendar Event State Colors:
         // APPROVED → IEEE Blue (#00629B)
         // BORROWED / ACTIVE → INSAT Violet (#981D97)
         // RETURNING / due today → IEEE Cyan (#00B5E2)
         // OVERDUE → Red (#BA0C2F)
+        // COMPLETED → Slate (#506680)
         const todayStr = DateTime.now().setZone(TZ).toISODate();
-        const calEvents: EventInput[] = reservations.map((r) => {
-          const isOverdue = r.derivedStatus === "OVERDUE";
-          const isReturningToday =
-            DateTime.fromISO(r.returnAt).setZone(TZ).toISODate() === todayStr;
-          const isBorrowed = ["ACTIVE", "BORROWED"].includes(r.status);
-          const isApproved = r.status === "APPROVED";
+        const calEvents: EventInput[] = reservations
+          .filter(
+            (r) =>
+              ["APPROVED", "COMPLETED", "ACTIVE", "BORROWED"].includes(r.status) ||
+              r.derivedStatus === "OVERDUE"
+          )
+          .flatMap((r) => {
+            const isOverdue = r.derivedStatus === "OVERDUE";
+            const isReturningToday =
+              DateTime.fromISO(r.returnAt).setZone(TZ).toISODate() === todayStr;
+            const isBorrowed =
+              ["ACTIVE", "BORROWED"].includes(r.status) || r.collectedCount > r.returnedCount;
+            const isCompleted = r.status === "COMPLETED" || r.derivedStatus === "COMPLETED";
 
-          let bgColor = "#00629B"; // default IEEE Blue
-          if (isOverdue)
-            bgColor = "#BA0C2F"; // Red
-          else if (isBorrowed)
-            bgColor = "#981D97"; // INSAT Violet
-          else if (isReturningToday)
-            bgColor = "#00B5E2"; // IEEE Cyan
-          else if (isApproved) bgColor = "#00629B"; // IEEE Blue
+            let bgColor = "#00629B"; // default IEEE Blue
+            if (isOverdue)
+              bgColor = "#BA0C2F"; // Red
+            else if (isCompleted)
+              bgColor = "#506680"; // Completed slate
+            else if (isReturningToday)
+              bgColor = "#00B5E2"; // IEEE Cyan
+            else if (isBorrowed)
+              bgColor = "#981D97"; // INSAT Violet
+            else bgColor = "#00629B"; // IEEE Blue
 
-          const itemCodes = r.items
-            .map((i) =>
-              `${i.name} ${i.assignedAssets?.map((a) => a.assetCode).join(" ") || ""}`.trim()
-            )
-            .join(", ");
-
-          return {
-            id: r.id,
-            title: `${r.borrower.name} (${itemCodes})`,
-            start: r.pickupAt,
-            end: r.returnAt,
-            backgroundColor: bgColor,
-            borderColor: "transparent",
-            textColor: "#FFFFFF",
-            extendedProps: {
-              reservation: r,
-              borrower: r.borrower.name,
-              items: itemCodes,
-              status: r.derivedStatus,
-            },
-          };
-        });
+            return r.items.map((item) => {
+              const assignedCodes = (item.assignedAssets || []).map((a) => a.assetCode).join(", ");
+              const itemLabel = `${item.quantity}× ${item.name}`;
+              const title = `${itemLabel} · ${r.borrower.name}${assignedCodes ? ` (${assignedCodes})` : ""}`;
+              return {
+                id: `${r.id}-${item.lineId}`,
+                title,
+                start: r.pickupAt,
+                end: r.returnAt,
+                backgroundColor: bgColor,
+                borderColor: "transparent",
+                textColor: "#FFFFFF",
+                extendedProps: {
+                  reservation: r,
+                  borrower: r.borrower.name,
+                  itemName: item.name,
+                  quantity: item.quantity,
+                  assignedCodes,
+                  collectedCount: r.collectedCount,
+                  returnedCount: r.returnedCount,
+                  status: r.derivedStatus,
+                },
+              };
+            });
+          });
         setEvents(calEvents);
       })
       .catch(() => setEvents([]))
@@ -2139,7 +2157,7 @@ function BoardCalendar() {
       <PageHeading
         eyebrow="BOARD · SCHEDULE"
         title="Reservation Calendar"
-        description="Temporal view of all approved, active, and pending equipment loans."
+        description="Temporal view of all approved, active, and completed equipment loans."
       />
 
       {/* Calendar Legend: Section 20 */}
@@ -2160,6 +2178,10 @@ function BoardCalendar() {
         <div className="flex items-center gap-1.5">
           <span className="w-3 h-3 rounded-full bg-[#BA0C2F]" />
           <span>Overdue</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="w-3 h-3 rounded-full bg-[#506680]" />
+          <span>Completed</span>
         </div>
       </div>
 
@@ -2197,8 +2219,27 @@ function BoardCalendar() {
                 <StatusBadge status={selectedEvent.status as DomainStatus} className="mt-1" />
               </div>
               <div>
-                <span className="text-muted-foreground block font-medium">Equipment Assigned</span>
-                <p className="font-semibold text-sm mt-0.5">{selectedEvent.items}</p>
+                <span className="text-muted-foreground block font-medium">
+                  Equipment & Quantity
+                </span>
+                <p className="font-semibold text-sm mt-0.5">
+                  {selectedEvent.quantity}× {selectedEvent.itemName}
+                </p>
+                {selectedEvent.assignedCodes && (
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Physical units: {selectedEvent.assignedCodes}
+                  </p>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div>
+                  <span className="text-muted-foreground block font-medium">Collected</span>
+                  <p className="font-semibold mt-0.5">{selectedEvent.collectedCount} units</p>
+                </div>
+                <div>
+                  <span className="text-muted-foreground block font-medium">Returned</span>
+                  <p className="font-semibold mt-0.5">{selectedEvent.returnedCount} units</p>
+                </div>
               </div>
               <div>
                 <span className="text-muted-foreground block font-medium">Window</span>
@@ -2655,6 +2696,7 @@ function BoardScan({
     if (id) void openReservation(id).catch((e: Error) => setNotice(e.message));
   }, [openReservation, setNotice]);
   const [busy, setBusy] = useState(false);
+  const [cameraActive, setCameraActive] = useState(false);
   const [scanError, setScanError] = useState<{ title: string; message: string } | null>(null);
   const [result, setResult] = useState<{
     operation: string;
@@ -2663,6 +2705,20 @@ function BoardScan({
     borrowerName?: string;
     returnAt?: string;
   } | null>(null);
+  const [selectionPrompt, setSelectionPrompt] = useState<{
+    qrToken: string;
+    assetName: string;
+    assetCode: string;
+    reservations: Array<{
+      id: string;
+      borrowerName: string;
+      pickupAt: string;
+      returnAt: string;
+      quantity: number;
+      collectedCount: number;
+    }>;
+  } | null>(null);
+
   const video = useRef<HTMLVideoElement>(null);
   const controls = useRef<{ stop: () => void } | null>(null);
   const reader = useRef<BrowserQRCodeReader | null>(null);
@@ -2670,8 +2726,88 @@ function BoardScan({
   const stop = () => {
     controls.current?.stop();
     controls.current = null;
+    setCameraActive(false);
   };
   useEffect(() => () => stop(), []);
+
+  const executeScan = async (rawCode: string, explicitReservationId?: string) => {
+    setBusy(true);
+    setResult(null);
+    setScanError(null);
+    const value = rawCode.match(/[a-f0-9]{64}/i)?.[0] ?? rawCode.trim();
+    try {
+      let reservationId: string | null = null;
+      try {
+        reservationId = new URL(rawCode.trim(), window.location.origin).searchParams.get("res");
+      } catch {
+        /* A raw material token is also accepted. */
+      }
+      if (reservationId) {
+        await openReservation(reservationId);
+        setNotice("Reservation opened. Scan equipment to record borrow or return.");
+        return;
+      }
+      const targetReservationId = explicitReservationId ?? reservation?.id;
+      const scanned = await api<
+        | {
+            operation: string;
+            assetName: string;
+            assetCode: string;
+            borrowerName?: string;
+            returnAt?: string;
+            code?: undefined;
+          }
+        | {
+            code: "RESERVATION_SELECTION_REQUIRED";
+            assetName: string;
+            assetCode: string;
+            reservations: Array<{
+              id: string;
+              borrowerName: string;
+              pickupAt: string;
+              returnAt: string;
+              quantity: number;
+              collectedCount: number;
+            }>;
+            operation?: undefined;
+          }
+      >("/api/v1/board/scan", {
+        ...post({
+          qrToken: value,
+          ...(targetReservationId ? { reservationId: targetReservationId } : {}),
+        }),
+        headers: { "Idempotency-Key": crypto.randomUUID() },
+      });
+
+      if (scanned && scanned.code === "RESERVATION_SELECTION_REQUIRED") {
+        setSelectionPrompt({
+          qrToken: value,
+          assetName: scanned.assetName,
+          assetCode: scanned.assetCode,
+          reservations: scanned.reservations,
+        });
+        return;
+      }
+
+      setResult(scanned);
+      setToken("");
+      if (reservation)
+        setReservation(await api<Reservation>(`/api/v1/board/reservations/${reservation.id}`));
+      setNotice(
+        scanned?.operation === "RETURNED"
+          ? `${scanned.assetName} #${scanned.assetCode} returned to the desk.`
+          : `${scanned.assetName} #${scanned.assetCode} checked out to ${scanned.borrowerName || "borrower"}.`
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Scan could not be processed.";
+      setScanError({
+        title: msg.includes("cooldown") ? "Scan cooldown active" : "Handover rejected",
+        message: msg,
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const beginCamera = async () => {
     if (!video.current) return;
@@ -2684,10 +2820,13 @@ function BoardScan({
           if (!decoded) return;
           const text = decoded.getText();
           const matched = text.match(/(?:^|\/)([a-f0-9]{64})(?:\?.*)?$/i);
-          setToken(matched?.[1] ?? text);
+          const code = matched?.[1] ?? text;
+          setToken(code);
           stop();
+          void executeScan(code);
         }
       );
+      setCameraActive(true);
     } catch (e) {
       setNotice(
         e instanceof Error ? e.message : "Camera is unavailable. Use manual token entry below."
@@ -2697,47 +2836,8 @@ function BoardScan({
 
   const scan = async (event?: FormEvent) => {
     event?.preventDefault();
-    setBusy(true);
-    setResult(null);
-    setScanError(null);
-    const value = token.match(/[a-f0-9]{64}/i)?.[0] ?? token.trim();
-    try {
-      let reservationId: string | null = null;
-      try {
-        reservationId = new URL(token.trim(), window.location.origin).searchParams.get("res");
-      } catch {
-        /* A raw material token is also accepted. */
-      }
-      if (reservationId) {
-        await openReservation(reservationId);
-        setNotice("Reservation opened. Choose pickup or return, then scan each material.");
-        return;
-      }
-      const scanned = await api<typeof result>("/api/v1/board/scan", {
-        ...post({
-          qrToken: value,
-          ...(reservation ? { reservationId: reservation.id, operation } : {}),
-        }),
-        headers: { "Idempotency-Key": crypto.randomUUID() },
-      });
-      setResult(scanned);
-      setToken("");
-      if (reservation)
-        setReservation(await api<Reservation>(`/api/v1/board/reservations/${reservation.id}`));
-      setNotice(
-        scanned?.operation === "RETURNED"
-          ? "Equipment returned to the desk."
-          : "Equipment checked out."
-      );
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Scan could not be processed.";
-      setScanError({
-        title: msg.includes("cooldown") ? "Scan cooldown active" : "Handover rejected",
-        message: msg,
-      });
-    } finally {
-      setBusy(false);
-    }
+    if (!token.trim()) return;
+    await executeScan(token);
   };
 
   return (
@@ -2833,7 +2933,7 @@ function BoardScan({
               <span className="w-6 h-6 border-t-2 border-l-2 border-[#00B5E2]" />
               <span className="w-6 h-6 border-t-2 border-r-2 border-[#00B5E2]" />
             </div>
-            {!controls.current && (
+            {!cameraActive && (
               <div className="text-center space-y-1">
                 <QrCode className="w-10 h-10 text-[#00B5E2] mx-auto animate-pulse" />
                 <p className="text-xs text-white/90 font-medium">Keep QR code inside frame</p>
@@ -2851,11 +2951,11 @@ function BoardScan({
           <Button
             variant="scanner"
             size="sm"
-            onClick={controls.current ? stop : beginCamera}
+            onClick={cameraActive ? stop : beginCamera}
             className="gap-2 px-5 min-h-[44px]"
           >
             <QrCode className="w-4 h-4" />
-            <span>{controls.current ? "Stop Camera" : "Start Camera"}</span>
+            <span>{cameraActive ? "Stop Camera" : "Start Camera"}</span>
           </Button>
         </div>
 
@@ -2916,6 +3016,52 @@ function BoardScan({
           </div>
         )}
       </div>
+
+      {/* Disambiguation Dialog when multiple reservations match */}
+      <Dialog
+        open={Boolean(selectionPrompt)}
+        onOpenChange={(open) => !open && setSelectionPrompt(null)}
+      >
+        <DialogContent className="max-w-md p-6 bg-card border-border sm:rounded-2xl space-y-4">
+          <DialogHeader>
+            <DialogTitle className="text-base font-bold">Select Eligible Reservation</DialogTitle>
+            <DialogDescription className="text-xs">
+              Multiple approved reservations qualify for {selectionPrompt?.assetName} #
+              {selectionPrompt?.assetCode}. Select which reservation to allocate this asset to:
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            {selectionPrompt?.reservations.map((r) => (
+              <button
+                key={r.id}
+                type="button"
+                onClick={() => {
+                  const pendingToken = selectionPrompt.qrToken;
+                  setSelectionPrompt(null);
+                  void executeScan(pendingToken, r.id);
+                }}
+                className="w-full text-left p-3 rounded-xl border border-border hover:border-primary/50 hover:bg-surface-subtle transition-all space-y-1"
+              >
+                <div className="flex items-center justify-between font-semibold text-xs text-foreground">
+                  <span>{r.borrowerName}</span>
+                  <span className="text-[11px] text-primary">
+                    {r.collectedCount}/{r.quantity} collected
+                  </span>
+                </div>
+                <div className="text-[11px] text-muted-foreground">
+                  {fmtDay(r.pickupAt)} {fmtTime(r.pickupAt)} → {fmtDay(r.returnAt)}{" "}
+                  {fmtTime(r.returnAt)}
+                </div>
+              </button>
+            ))}
+          </div>
+          <div className="flex justify-end pt-2">
+            <Button variant="outline" size="sm" onClick={() => setSelectionPrompt(null)}>
+              Cancel
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -3233,7 +3379,7 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-6">
       <PageHeading
         eyebrow="SUPERADMIN · SECURITY"
-        title="User Accounts & Role Clearances"
+        title="User Accounts & Roles"
         description="Server-enforced role assignments. Coordinate an initial password with the new account owner, then share the account email with them."
         action={
           <Button variant="default" size="sm" onClick={openAddModal} className="gap-2">
@@ -3616,7 +3762,7 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
               Are you sure you want to permanently delete the account for{" "}
               <strong>{deleteUserTarget?.name}</strong> (
               <code className="text-xs font-mono">{deleteUserTarget?.email}</code>
-              )? This will revoke clearances, remove credentials, and terminate all active sessions.
+              )? This will revoke access, remove credentials, and terminate all active sessions.
             </DialogDescription>
           </DialogHeader>
           <div className="flex justify-end gap-2 pt-4">

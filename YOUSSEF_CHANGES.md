@@ -4,15 +4,12 @@ Branch: `Youssef`
 
 This document explains the changes added to the logistics application and what to check when integrating them.
 
-## 1. Account passwords
+## 1. Authentication & Borrower Identification
 
-- Borrowers choose their own password and confirm it when creating an account.
-- Borrowers can sign in again using their email and password.
-- Passwords must contain between 12 and 128 characters and are stored as hashes.
-- An existing account with a password cannot have its password replaced through public signup.
-- Passwordless legacy borrower accounts can establish a password through signup.
-- The Board/Superadmin account creation form accepts an initial password and confirmation. The administrator should coordinate this password with the account owner.
-- The password reset form allows the administrator to edit and confirm the replacement password.
+- Borrowers remain strictly passwordless (fast name, email, phone entry).
+- Sessions are maintained seamlessly without requiring credentials or passwords.
+- Board/Superadmin accounts continue using their established administrative password authentication.
+- Board/Superadmin password provisioning and resets are coordinated securely by administrators.
 
 Main files: `src/components/auth/BorrowerAuthModal.tsx`, `src/app/App.tsx`, `src/worker/index.ts`.
 
@@ -119,7 +116,7 @@ The tracked serverless API bundle in `api/[...path].js` was rebuilt.
 - Fixed Windows quoting in the build command.
 - Made the browser test database path check work on Windows.
 - Browser tests use API port `8789`; normal local development uses `8787`. Vite reads `API_PORT` for its proxy.
-- Updated existing test fixtures for password signup and quantity-only approval.
+- Updated existing test fixtures for passwordless identification and quantity-only approval.
 
 Before the borrower-details and quantity-only changes, 8 API tests and 2 browser tests passed, along with TypeScript, lint and the production build. After the latest changes, TypeScript and the production build passed; the automated test suites were not rerun. Physical camera scanning still needs a hands-on check.
 

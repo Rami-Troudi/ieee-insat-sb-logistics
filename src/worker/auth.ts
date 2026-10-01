@@ -23,7 +23,8 @@ export function isAllowedOrigin(origin: string, env: Env, requestUrl: string): b
 
     if (
       originUrl.hostname.endsWith(".vercel.app") &&
-      (trustedUrl.hostname.endsWith(".vercel.app") || Boolean(env.APP_ORIGIN?.includes(".vercel.app")))
+      (trustedUrl.hostname.endsWith(".vercel.app") ||
+        Boolean(env.APP_ORIGIN?.includes(".vercel.app")))
     ) {
       return true;
     }

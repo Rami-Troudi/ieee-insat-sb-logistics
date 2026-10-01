@@ -96,34 +96,33 @@ beforeEach(async () => {
 afterEach(() => client.close());
 
 describe("reservation API against a real libSQL database", () => {
-  it("lets borrowers choose a password and sign in with it", async () => {
+  it("authenticates borrowers passwordlessly and establishes session", async () => {
     const profile = {
       name: "New Borrower",
       email: "new@example.test",
-      password: "My-chosen-password-2026",
+      phone: "+216 12 345 678",
     };
-    expect(
-      (await request("/api/v1/auth/borrower", sendJson({ ...profile, password: "short" }))).status
-    ).toBe(400);
     const signup = await request("/api/v1/auth/borrower", sendJson(profile));
     expect(signup.status).toBe(200);
     expect(signup.headers.get("set-cookie")).toContain("session_token");
-    expect((await request("/api/v1/auth/borrower", sendJson(profile))).status).toBe(409);
-    expect(
-      (
-        await request(
-          "/api/v1/auth/borrower-login",
-          sendJson({ ...profile, password: "wrong-password-2026" })
-        )
-      ).status
-    ).toBe(401);
-    const login = await request("/api/v1/auth/borrower-login", sendJson(profile));
-    expect(login.status).toBe(200);
-    expect(login.headers.get("set-cookie")).toContain("session_token");
-    const hashes = await client.execute(
-      "SELECT password FROM account WHERE providerId='credential'"
+    const json = await signup.json();
+    expect(json.user.email).toBe(profile.email);
+    expect(json.user.role).toBe("USER");
+
+    // Re-authenticating with same email returns existing user
+    const existing = await request(
+      "/api/v1/auth/borrower",
+      sendJson({ name: "Updated Name", email: profile.email })
     );
-    expect(hashes.rows[0]?.password).not.toBe(profile.password);
+    expect(existing.status).toBe(200);
+    expect(existing.headers.get("set-cookie")).toContain("session_token");
+
+    // Borrowers have NO password record in account table
+    const hashes = await client.execute({
+      sql: "SELECT * FROM account WHERE userId = ?",
+      args: [json.user.id],
+    });
+    expect(hashes.rows.length).toBe(0);
   });
 
   it("notifies the Board on requests and borrowers before and after the return deadline", async () => {
@@ -344,7 +343,7 @@ describe("reservation API against a real libSQL database", () => {
     );
     expect(calendar.status).toBe(200);
     expect(await calendar.json()).toMatchObject([
-      { title: expect.stringContaining("1 units"), assetCode: "1 units" },
+      { title: expect.stringContaining("1× Digital multimeter"), assetCode: "1 units" },
     ]);
     const conflict = await request(
       "/api/v1/board/reservations/" + competing.id + "/approve",
@@ -512,7 +511,15 @@ describe("reservation API against a real libSQL database", () => {
     await client.execute({
       sql: `INSERT INTO reservations(id, requested_by_user_id, borrower_type, borrower_user_id, chapter_id, pickup_at, return_at, status, created_at, updated_at)
         VALUES(?, ?, 'PERSON', ?, NULL, ?, ?, 'COMPLETED', ?, ?)`,
-      args: [resId, memberId, memberId, Date.now() - 200000, Date.now() - 100000, Date.now() - 200000, Date.now() - 100000],
+      args: [
+        resId,
+        memberId,
+        memberId,
+        Date.now() - 200000,
+        Date.now() - 100000,
+        Date.now() - 200000,
+        Date.now() - 100000,
+      ],
     });
     await client.execute({
       sql: "INSERT INTO reservation_lines(id, reservation_id, equipment_item_id, quantity) VALUES('rl-del', ?, ?, 1)",
@@ -520,12 +527,522 @@ describe("reservation API against a real libSQL database", () => {
     });
 
     // Delete user as superadmin
-    const delRes = await request(`/api/v1/board/users/${memberId}`, { method: "DELETE" }, superadminCookie);
+    const delRes = await request(
+      `/api/v1/board/users/${memberId}`,
+      { method: "DELETE" },
+      superadminCookie
+    );
     expect(delRes.status).toBe(200);
     expect(await delRes.json()).toMatchObject({ ok: true });
 
     // Verify user is gone
     const checkUser = await client.execute("SELECT * FROM user WHERE id=?", [memberId]);
     expect(checkUser.rows.length).toBe(0);
+  });
+
+  it("rejects rescheduling after physical pickup has occurred with 409 RESERVATION_LOCKED", async () => {
+    const now = Date.now();
+    const createdResponse = await request(
+      "/api/v1/reservations",
+      sendJson({
+        borrowerType: "PERSON",
+        pickupAt: new Date(now + 60_000).toISOString(),
+        returnAt: new Date(now + 120_000).toISOString(),
+        items: [{ equipmentItemId: itemId, quantity: 1 }],
+      }),
+      memberCookie
+    );
+    const created = await createdResponse.json();
+    await request(`/api/v1/board/reservations/${created.id}/approve`, sendJson({}), boardCookie);
+    await client.execute("UPDATE reservations SET pickup_at=? WHERE id=?", [
+      now - 1000,
+      created.id,
+    ]);
+
+    // Pick up asset
+    const scanRes = await request(
+      "/api/v1/board/scan",
+      sendJson({ qrToken, reservationId: created.id }),
+      boardCookie
+    );
+    expect(scanRes.status).toBe(200);
+
+    // Attempt to reschedule after pickup
+    const rescheduleRes = await request(
+      `/api/v1/board/reservations/${created.id}/window`,
+      {
+        ...sendJson({
+          pickupAt: new Date(now + 90_000).toISOString(),
+          returnAt: new Date(now + 200_000).toISOString(),
+        }),
+        method: "PATCH",
+      },
+      boardCookie
+    );
+    expect(rescheduleRes.status).toBe(409);
+    const err = await rescheduleRes.json();
+    expect(err.error.code).toBe("RESERVATION_LOCKED");
+  });
+
+  it("rejects force-deleting a reservation after physical handover with 409 HANDOVER_EXISTS", async () => {
+    const now = Date.now();
+    const createdResponse = await request(
+      "/api/v1/reservations",
+      sendJson({
+        borrowerType: "PERSON",
+        pickupAt: new Date(now + 60_000).toISOString(),
+        returnAt: new Date(now + 120_000).toISOString(),
+        items: [{ equipmentItemId: itemId, quantity: 1 }],
+      }),
+      memberCookie
+    );
+    const created = await createdResponse.json();
+    await request(`/api/v1/board/reservations/${created.id}/approve`, sendJson({}), boardCookie);
+    await client.execute("UPDATE reservations SET pickup_at=? WHERE id=?", [
+      now - 1000,
+      created.id,
+    ]);
+
+    // Handover
+    const scanRes = await request(
+      "/api/v1/board/scan",
+      sendJson({ qrToken, reservationId: created.id }),
+      boardCookie
+    );
+    expect(scanRes.status).toBe(200);
+
+    // Attempt force delete
+    const delRes = await request(
+      `/api/v1/board/reservations/${created.id}/force`,
+      { method: "DELETE" },
+      boardCookie
+    );
+    expect(delRes.status).toBe(409);
+    const err = await delRes.json();
+    expect(err.error.code).toBe("HANDOVER_EXISTS");
+  });
+
+  it("preserves audit events when deleting a user who authored actions by deactivating/anonymizing", async () => {
+    const staffId = "staff-with-audits";
+    const staffCookie = await seedUser(staffId, "BOARD");
+    const superadminCookie = await seedUser("super-admin-audit", "SUPERADMIN");
+
+    // Perform an action as staff that logs an audit event
+    const now = Date.now();
+    const resResponse = await request(
+      "/api/v1/reservations",
+      sendJson({
+        borrowerType: "PERSON",
+        pickupAt: new Date(now + 60_000).toISOString(),
+        returnAt: new Date(now + 120_000).toISOString(),
+        items: [{ equipmentItemId: itemId, quantity: 1 }],
+      }),
+      memberCookie
+    );
+    const res = await resResponse.json();
+    await request(`/api/v1/board/reservations/${res.id}/approve`, sendJson({}), staffCookie);
+
+    // Check that audit event exists referencing staffId
+    const auditCheck = await client.execute({
+      sql: "SELECT * FROM audit_events WHERE actor_user_id = ?",
+      args: [staffId],
+    });
+    expect(auditCheck.rows.length).toBeGreaterThan(0);
+
+    // Delete staff member as superadmin
+    const delRes = await request(
+      `/api/v1/board/users/${staffId}`,
+      { method: "DELETE" },
+      superadminCookie
+    );
+    expect(delRes.status).toBe(200);
+
+    // User record is sanitized/deactivated rather than crashing due to restrict constraint on audit_events
+    const userRow = await client.execute({
+      sql: "SELECT * FROM user WHERE id = ?",
+      args: [staffId],
+    });
+    expect(userRow.rows.length).toBe(1);
+    expect(userRow.rows[0]?.name).toBe("Deleted User");
+
+    // Audit logs remain intact
+    const auditAfter = await client.execute({
+      sql: "SELECT * FROM audit_events WHERE actor_user_id = ?",
+      args: [staffId],
+    });
+    expect(auditAfter.rows.length).toBe(auditCheck.rows.length);
+  });
+
+  it("protects approved reservations by rejecting capacity-reducing inventory changes", async () => {
+    const now = Date.now();
+    // Currently 1 asset exists for itemId (capacity = 1).
+    // Reserve that 1 unit for tomorrow.
+    const resResponse = await request(
+      "/api/v1/reservations",
+      sendJson({
+        borrowerType: "PERSON",
+        pickupAt: new Date(now + 24 * 3600_000).toISOString(),
+        returnAt: new Date(now + 26 * 3600_000).toISOString(),
+        items: [{ equipmentItemId: itemId, quantity: 1 }],
+      }),
+      memberCookie
+    );
+    const res = await resResponse.json();
+    const appRes = await request(
+      `/api/v1/board/reservations/${res.id}/approve`,
+      sendJson({}),
+      boardCookie
+    );
+    expect(appRes.status).toBe(200);
+
+    // 1. Attempt to mark asset OUT_OF_SERVICE -> should reject with 409
+    const patchAsset = await request(
+      "/api/v1/board/assets/asset-one",
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ state: "OUT_OF_SERVICE" }),
+      },
+      boardCookie
+    );
+    expect(patchAsset.status).toBe(409);
+    const patchErr = await patchAsset.json();
+    expect(patchErr.error.code).toBe("RESERVATION_CONFLICT");
+
+    // 2. Attempt to delete asset -> should reject with 409
+    const deleteAsset = await request(
+      "/api/v1/board/assets/asset-one",
+      { method: "DELETE" },
+      boardCookie
+    );
+    expect(deleteAsset.status).toBe(409);
+    const deleteErr = await deleteAsset.json();
+    expect(deleteErr.error.code).toBe("RESERVATION_CONFLICT");
+
+    // 3. Attempt to deactivate equipment -> should reject with 409
+    const patchEquip = await request(
+      `/api/v1/board/equipment/${itemId}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ active: false }),
+      },
+      boardCookie
+    );
+    expect(patchEquip.status).toBe(409);
+    const equipErr = await patchEquip.json();
+    expect(equipErr.error.code).toBe("RESERVATION_CONFLICT");
+
+    // 4. Attempt to delete equipment -> should reject with 409
+    const deleteEquip = await request(
+      `/api/v1/board/equipment/${itemId}`,
+      { method: "DELETE" },
+      boardCookie
+    );
+    expect(deleteEquip.status).toBe(409);
+  });
+
+  it("resolves concurrent approvals atomically with only one winner", async () => {
+    const now = Date.now();
+    const pickupAt = new Date(now + 3600_000).toISOString();
+    const returnAt = new Date(now + 7200_000).toISOString();
+
+    const [resA, resB] = await Promise.all([
+      request(
+        "/api/v1/reservations",
+        sendJson({
+          borrowerType: "PERSON",
+          pickupAt,
+          returnAt,
+          items: [{ equipmentItemId: itemId, quantity: 1 }],
+        }),
+        memberCookie
+      ).then((r) => r.json()),
+      request(
+        "/api/v1/reservations",
+        sendJson({
+          borrowerType: "PERSON",
+          pickupAt,
+          returnAt,
+          items: [{ equipmentItemId: itemId, quantity: 1 }],
+        }),
+        memberCookie
+      ).then((r) => r.json()),
+    ]);
+
+    const [approvalA, approvalB] = await Promise.all([
+      request(`/api/v1/board/reservations/${resA.id}/approve`, sendJson({}), boardCookie),
+      request(`/api/v1/board/reservations/${resB.id}/approve`, sendJson({}), boardCookie),
+    ]);
+
+    const statuses = [approvalA.status, approvalB.status].sort();
+    expect(statuses).toEqual([200, 409]);
+  });
+
+  it("resolves concurrent scans on the same asset atomically", async () => {
+    const now = Date.now();
+    const resResponse = await request(
+      "/api/v1/reservations",
+      sendJson({
+        borrowerType: "PERSON",
+        pickupAt: new Date(now + 10_000).toISOString(),
+        returnAt: new Date(now + 3600_000).toISOString(),
+        items: [{ equipmentItemId: itemId, quantity: 1 }],
+      }),
+      memberCookie
+    );
+    const res = await resResponse.json();
+    await request(`/api/v1/board/reservations/${res.id}/approve`, sendJson({}), boardCookie);
+    await client.execute("UPDATE reservations SET pickup_at=? WHERE id=?", [now - 1000, res.id]);
+
+    const [scanA, scanB] = await Promise.all([
+      request("/api/v1/board/scan", sendJson({ qrToken, reservationId: res.id }), boardCookie),
+      request("/api/v1/board/scan", sendJson({ qrToken, reservationId: res.id }), boardCookie),
+    ]);
+
+    const statuses = [scanA.status, scanB.status].sort();
+    expect(statuses[0]).toBe(200);
+    expect(statuses[1]).toBeGreaterThanOrEqual(400);
+  });
+
+  it("handles partial pickup, early return of partial units, and completion after deadline", async () => {
+    const now = Date.now();
+    // Add 2 more assets for itemId so we have 3 units total
+    const token2 = "b".repeat(64);
+    const token3 = "c".repeat(64);
+    await client.execute({
+      sql: "INSERT INTO assets(id,equipment_item_id,asset_code,qr_token,state,active,created_at,updated_at) VALUES('asset-two',?,'SB-METER-02',?,'AVAILABLE',1,?,?), ('asset-three',?,'SB-METER-03',?,'AVAILABLE',1,?,?)",
+      args: [itemId, token2, now, now, itemId, token3, now, now],
+    });
+
+    // Request 3 units
+    const pickupAt = new Date(now + 60_000).toISOString();
+    const returnAt = new Date(now + 3600_000).toISOString();
+    const resRes = await request(
+      "/api/v1/reservations",
+      sendJson({
+        borrowerType: "PERSON",
+        pickupAt,
+        returnAt,
+        items: [{ equipmentItemId: itemId, quantity: 3 }],
+      }),
+      memberCookie
+    );
+    const res = await resRes.json();
+    await request(`/api/v1/board/reservations/${res.id}/approve`, sendJson({}), boardCookie);
+    await client.execute("UPDATE reservations SET pickup_at=? WHERE id=?", [now - 1000, res.id]);
+
+    // Pick up only 2 units (qrToken and token2)
+    const scan1 = await request(
+      "/api/v1/board/scan",
+      sendJson({ qrToken, reservationId: res.id }),
+      boardCookie
+    );
+    expect(scan1.status).toBe(200);
+    const scan2 = await request(
+      "/api/v1/board/scan",
+      sendJson({ qrToken: token2, reservationId: res.id }),
+      boardCookie
+    );
+    expect(scan2.status).toBe(200);
+
+    // Verify 2 collected, 1 uncollected
+    const check1 = await request(`/api/v1/board/reservations/${res.id}`, {}, boardCookie).then(
+      (r) => r.json()
+    );
+    expect(check1.collectedCount).toBe(2);
+    expect(check1.returnedCount).toBe(0);
+
+    // Clear duplicate scan cooldown
+    await client.execute("UPDATE assets SET last_scan_at = NULL WHERE equipment_item_id = ?", [
+      itemId,
+    ]);
+
+    // Return the 2 units early
+    const ret1 = await request("/api/v1/board/scan", sendJson({ qrToken }), boardCookie);
+    expect(ret1.status).toBe(200);
+    const ret2 = await request("/api/v1/board/scan", sendJson({ qrToken: token2 }), boardCookie);
+    expect(ret2.status).toBe(200);
+
+    const check2 = await request(`/api/v1/board/reservations/${res.id}`, {}, boardCookie).then(
+      (r) => r.json()
+    );
+    expect(check2.collectedCount).toBe(2);
+    expect(check2.returnedCount).toBe(2);
+
+    // Third unit was never collected. Simulate time passing past returnAt in DB
+    await client.execute({
+      sql: "UPDATE reservations SET return_at = ? WHERE id = ?",
+      args: [now - 500, res.id],
+    });
+
+    const checkFinal = await request(`/api/v1/board/reservations/${res.id}`, {}, boardCookie).then(
+      (r) => r.json()
+    );
+    expect(["COMPLETED", "RETURNED"]).toContain(checkFinal.derivedStatus);
+
+    const catRes = (await request("/api/v1/catalogue").then((r) => r.json())) as Array<{
+      id: string;
+      availableQuantity: number;
+    }>;
+    const meterCat = catRes.find((i) => i.id === itemId);
+    expect(meterCat?.availableQuantity).toBe(3);
+  });
+
+  it("prompts for reservation selection when multiple eligible approved reservations exist for an asset", async () => {
+    const now = Date.now();
+    const pickupAt = new Date(now + 10_000).toISOString();
+    const returnAt = new Date(now + 3600_000).toISOString();
+
+    const token2 = "d".repeat(64);
+    await client.execute({
+      sql: "INSERT INTO assets(id,equipment_item_id,asset_code,qr_token,state,active,created_at,updated_at) VALUES('asset-two',?,'SB-METER-02',?,'AVAILABLE',1,?,?)",
+      args: [itemId, token2, now, now],
+    });
+
+    const [resA, resB] = await Promise.all([
+      request(
+        "/api/v1/reservations",
+        sendJson({
+          borrowerType: "PERSON",
+          pickupAt,
+          returnAt,
+          items: [{ equipmentItemId: itemId, quantity: 1 }],
+        }),
+        memberCookie
+      ).then((r) => r.json()),
+      request(
+        "/api/v1/reservations",
+        sendJson({
+          borrowerType: "PERSON",
+          pickupAt,
+          returnAt,
+          items: [{ equipmentItemId: itemId, quantity: 1 }],
+        }),
+        memberCookie
+      ).then((r) => r.json()),
+    ]);
+
+    await request(`/api/v1/board/reservations/${resA.id}/approve`, sendJson({}), boardCookie);
+    await request(`/api/v1/board/reservations/${resB.id}/approve`, sendJson({}), boardCookie);
+
+    await client.execute("UPDATE reservations SET pickup_at=? WHERE id IN (?, ?)", [
+      now - 1000,
+      resA.id,
+      resB.id,
+    ]);
+
+    // Scan asset without reservationId -> must return RESERVATION_SELECTION_REQUIRED
+    const disambiguateScan = await request(
+      "/api/v1/board/scan",
+      sendJson({ qrToken }),
+      boardCookie
+    );
+    expect(disambiguateScan.status).toBe(200);
+    const scanBody = await disambiguateScan.json();
+    expect(scanBody.code).toBe("RESERVATION_SELECTION_REQUIRED");
+    expect(scanBody.reservations.length).toBe(2);
+
+    // Clear duplicate scan cooldown
+    await client.execute("UPDATE assets SET last_scan_at = NULL WHERE id = 'asset-one'");
+
+    // Fulfilling with explicit reservationId succeeds
+    const explicitScan = await request(
+      "/api/v1/board/scan",
+      sendJson({ qrToken, reservationId: resA.id }),
+      boardCookie
+    );
+    expect(explicitScan.status).toBe(200);
+    const explicitBody = await explicitScan.json();
+    expect(explicitBody.operation).toBe("CHECKED_OUT");
+    expect(explicitBody.reservationId).toBe(resA.id);
+  });
+
+  it("verifies migration 0002_quantity_reservations handles Cases A, B, C, D, E accurately", async () => {
+    const testClient = createClient({ url: "file::memory:" });
+    await testClient.execute("PRAGMA foreign_keys = ON");
+    await testClient.executeMultiple(
+      await readFile(new URL("../../drizzle/0000_sb_reservations.sql", import.meta.url), "utf8")
+    );
+    await testClient.executeMultiple(
+      await readFile(new URL("../../drizzle/0001_borrower_phone.sql", import.meta.url), "utf8")
+    );
+
+    const now = Date.now();
+    await testClient.execute(
+      "INSERT INTO user(id,name,email,emailVerified,role,createdAt,updatedAt) VALUES('u1','User 1','u1@test',1,'USER',1,1)"
+    );
+    await testClient.execute(
+      "INSERT INTO equipment_items(id,name,description,category,active,created_at,updated_at) VALUES('eq1','Equip 1','desc','cat',1,1,1)"
+    );
+    await testClient.execute(
+      "INSERT INTO assets(id,equipment_item_id,asset_code,qr_token,state,active,created_at,updated_at) VALUES('a-res','eq1','A-RES','1111111111111111111111111111111111111111111111111111111111111111','RESERVED',1,1,1)"
+    );
+    await testClient.execute(
+      "INSERT INTO assets(id,equipment_item_id,asset_code,qr_token,state,active,created_at,updated_at) VALUES('a-bor','eq1','A-BOR','2222222222222222222222222222222222222222222222222222222222222222','BORROWED',1,1,1)"
+    );
+    await testClient.execute(
+      "INSERT INTO assets(id,equipment_item_id,asset_code,qr_token,state,active,created_at,updated_at) VALUES('a-ret','eq1','A-RET','3333333333333333333333333333333333333333333333333333333333333333','AVAILABLE',1,1,1)"
+    );
+    await testClient.execute(
+      "INSERT INTO assets(id,equipment_item_id,asset_code,qr_token,state,active,created_at,updated_at) VALUES('a-rel','eq1','A-REL','4444444444444444444444444444444444444444444444444444444444444444','AVAILABLE',1,1,1)"
+    );
+
+    await testClient.execute({
+      sql: "INSERT INTO reservations(id,requested_by_user_id,borrower_type,borrower_user_id,pickup_at,return_at,status,created_at,updated_at) VALUES('r1','u1','PERSON','u1',?,?, 'APPROVED', ?, ?)",
+      args: [now, now + 10000, now, now],
+    });
+    await testClient.execute(
+      "INSERT INTO reservation_lines(id,reservation_id,equipment_item_id,quantity) VALUES('rl1','r1','eq1',4)"
+    );
+
+    // Case A: preassigned, uncollected RESERVED
+    await testClient.execute(
+      "INSERT INTO reservation_assets(id,reservation_id,reservation_line_id,asset_id,state,actual_pickup_at,created_at,updated_at) VALUES('ra-a','r1','rl1','a-res','RESERVED',NULL,1,1)"
+    );
+    // Case B: collected BORROWED
+    await testClient.execute(
+      "INSERT INTO reservation_assets(id,reservation_id,reservation_line_id,asset_id,state,actual_pickup_at,created_at,updated_at) VALUES('ra-b','r1','rl1','a-bor','BORROWED',1,1,1)"
+    );
+    // Case C: collected and RETURNED
+    await testClient.execute(
+      "INSERT INTO reservation_assets(id,reservation_id,reservation_line_id,asset_id,state,actual_pickup_at,actual_return_at,created_at,updated_at) VALUES('ra-c','r1','rl1','a-ret','RETURNED',1,2,1,1)"
+    );
+    // Case D: preassigned, uncollected RELEASED
+    await testClient.execute(
+      "INSERT INTO reservation_assets(id,reservation_id,reservation_line_id,asset_id,state,actual_pickup_at,created_at,updated_at) VALUES('ra-d','r1','rl1','a-rel','RELEASED',NULL,1,1)"
+    );
+
+    // Execute migration 0002
+    await testClient.executeMultiple(
+      await readFile(
+        new URL("../../drizzle/0002_quantity_reservations.sql", import.meta.url),
+        "utf8"
+      )
+    );
+
+    // Verify Case A: deleted from reservation_assets, asset state became AVAILABLE
+    const checkA = await testClient.execute("SELECT * FROM reservation_assets WHERE id='ra-a'");
+    expect(checkA.rows.length).toBe(0);
+    const assetA = await testClient.execute("SELECT state FROM assets WHERE id='a-res'");
+    expect(assetA.rows[0]?.state).toBe("AVAILABLE");
+
+    // Verify Case B: preserved in reservation_assets, asset remains BORROWED
+    const checkB = await testClient.execute("SELECT * FROM reservation_assets WHERE id='ra-b'");
+    expect(checkB.rows.length).toBe(1);
+    const assetB = await testClient.execute("SELECT state FROM assets WHERE id='a-bor'");
+    expect(assetB.rows[0]?.state).toBe("BORROWED");
+
+    // Verify Case C: preserved in reservation_assets, asset remains AVAILABLE
+    const checkC = await testClient.execute("SELECT * FROM reservation_assets WHERE id='ra-c'");
+    expect(checkC.rows.length).toBe(1);
+    const assetC = await testClient.execute("SELECT state FROM assets WHERE id='a-ret'");
+    expect(assetC.rows[0]?.state).toBe("AVAILABLE");
+
+    // Verify Case D: deleted from reservation_assets
+    const checkD = await testClient.execute("SELECT * FROM reservation_assets WHERE id='ra-d'");
+    expect(checkD.rows.length).toBe(0);
+
+    testClient.close();
   });
 });

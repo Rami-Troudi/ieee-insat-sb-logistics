@@ -32,7 +32,9 @@ export async function resolveIdentity(c: AppContext): Promise<CurrentUser | null
             userId: schema.authSessions.userId,
           })
             .from(schema.authSessions)
-            .where(and(eq(schema.authSessions.token, token), gt(schema.authSessions.expiresAt, now)))
+            .where(
+              and(eq(schema.authSessions.token, token), gt(schema.authSessions.expiresAt, now))
+            )
             .limit(1);
 
           if (session?.userId) {

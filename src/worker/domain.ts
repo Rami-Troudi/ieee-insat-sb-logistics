@@ -20,11 +20,11 @@ async function rows<T>(executor: SqlExecutor, sql: string, args: SqlArg[] = []):
   return result.rows as unknown as T[];
 }
 
-async function one<T>(executor: SqlExecutor, sql: string, args: SqlArg[] = []) {
+export async function one<T>(executor: SqlExecutor, sql: string, args: SqlArg[] = []) {
   return (await rows<T>(executor, sql, args))[0] ?? null;
 }
 
-async function write<T>(env: Env, operation: (transaction: WriteTransaction) => Promise<T>) {
+export async function write<T>(env: Env, operation: (transaction: WriteTransaction) => Promise<T>) {
   const transaction = await env.CLIENT.transaction("write");
   try {
     const result = await operation(transaction);
@@ -161,6 +161,68 @@ export async function availableQuantity(
     peak = Math.max(peak, used);
   }
   return Math.max(0, Number(capacity?.count ?? 0) - peak);
+}
+
+export async function assertCanReduceCapacity(
+  tx: SqlExecutor,
+  equipmentItemId: string,
+  reductionCount: number,
+  actionDescription: string
+) {
+  if (reductionCount <= 0) return;
+
+  const currentCapacityRow = await one<{ count: number }>(
+    tx,
+    "SELECT COUNT(*) AS count FROM assets a JOIN equipment_items e ON e.id=a.equipment_item_id WHERE a.equipment_item_id=? AND a.active=1 AND e.active=1 AND a.state NOT IN ('OUT_OF_SERVICE','RETIRED')",
+    [equipmentItemId]
+  );
+  const currentCapacity = Number(currentCapacityRow?.count ?? 0);
+  const newCapacity = Math.max(0, currentCapacity - reductionCount);
+
+  const loans = await rows<{
+    id: string;
+    pickup_at: number;
+    return_at: number;
+    quantity: number;
+    returned: number;
+    borrowed: number;
+  }>(
+    tx,
+    "SELECT r.id, r.pickup_at, r.return_at, l.quantity, " +
+      "(SELECT COUNT(*) FROM reservation_assets ra WHERE ra.reservation_line_id=l.id AND ra.state='RETURNED') AS returned, " +
+      "(SELECT COUNT(*) FROM reservation_assets ra WHERE ra.reservation_line_id=l.id AND ra.state='BORROWED') AS borrowed " +
+      "FROM reservations r " +
+      "JOIN reservation_lines l ON l.reservation_id=r.id " +
+      "WHERE l.equipment_item_id=? AND (r.status='APPROVED' OR EXISTS (SELECT 1 FROM reservation_assets ra WHERE ra.reservation_line_id=l.id AND ra.state='BORROWED'))",
+    [equipmentItemId]
+  );
+
+  const now = Date.now();
+  const events: Array<{ time: number; delta: number }> = [];
+  for (const loan of loans) {
+    const returnAt = Number(loan.return_at);
+    if (returnAt <= now && Number(loan.borrowed) === 0) continue;
+    const held = Math.max(Number(loan.borrowed), Number(loan.quantity) - Number(loan.returned));
+    if (held <= 0) continue;
+    events.push({ time: Number(loan.pickup_at), delta: held });
+    events.push({ time: returnAt, delta: -held });
+  }
+
+  events.sort((a, b) => a.time - b.time || a.delta - b.delta);
+  let used = 0;
+  let peak = 0;
+  for (const event of events) {
+    used += event.delta;
+    peak = Math.max(peak, used);
+  }
+
+  if (newCapacity < peak) {
+    throw new DomainError(
+      409,
+      "RESERVATION_CONFLICT",
+      `Cannot ${actionDescription} because an approved reservation requires ${peak} units during this period and only ${newCapacity} usable units would remain.`
+    );
+  }
 }
 
 async function checkQuantities(
@@ -337,10 +399,21 @@ export async function getReservation(
   ).length;
   let derivedStatus: ReservationDTO["derivedStatus"] =
     reservation.status === "COMPLETED" ? "RETURNED" : reservation.status;
-  if (borrowedCount > 0 && now > Number(reservation.return_at)) derivedStatus = "OVERDUE";
-  else if (borrowedCount > 0 && returnedCount > 0) derivedStatus = "PARTIALLY_RETURNED";
-  else if (borrowedCount > 0) derivedStatus = "BORROWED";
-  else if (reservation.status === "COMPLETED") derivedStatus = "RETURNED";
+  if (borrowedCount > 0 && now > Number(reservation.return_at)) {
+    derivedStatus = "OVERDUE";
+  } else if (borrowedCount > 0 && returnedCount > 0) {
+    derivedStatus = "PARTIALLY_RETURNED";
+  } else if (borrowedCount > 0) {
+    derivedStatus = "BORROWED";
+  } else if (
+    reservation.status === "APPROVED" &&
+    now >= Number(reservation.return_at) &&
+    borrowedCount === 0
+  ) {
+    derivedStatus = "RETURNED";
+  } else if (reservation.status === "COMPLETED") {
+    derivedStatus = "RETURNED";
+  }
 
   return {
     id: reservation.id,
@@ -552,8 +625,8 @@ export async function refreshReturnNotificationsForUser(
       if (returnAt > now && returnAt <= now + 60 * 60_000) {
         const priorReminder = await one<{ id: string }>(
           tx,
-          "SELECT id FROM notifications WHERE user_id=? AND reservation_id=? AND type='RETURN_DUE_SOON' LIMIT 1",
-          [userId, loan.id]
+          "SELECT id FROM notifications WHERE user_id=? AND reservation_id=? AND type='RETURN_DUE_SOON' AND message LIKE ? LIMIT 1",
+          [userId, loan.id, `%${dueLabel}%`]
         );
         if (!priorReminder) {
           await notify(
@@ -762,13 +835,26 @@ export async function forceDeleteReservation(env: Env, actor: CurrentUser, reser
     }>(tx, "SELECT id,status,requested_by_user_id FROM reservations WHERE id=?", [reservationId]);
     if (!reservation) throw new DomainError(404, "NOT_FOUND", "Reservation not found.");
 
-    // Release any physical assets currently in RESERVED or BORROWED state
+    const handover = await one<{ count: number }>(
+      tx,
+      "SELECT COUNT(*) AS count FROM reservation_assets WHERE reservation_id=? AND (actual_pickup_at IS NOT NULL OR state IN ('BORROWED', 'RETURNED'))",
+      [reservationId]
+    );
+    if (Number(handover?.count ?? 0) > 0) {
+      throw new DomainError(
+        409,
+        "HANDOVER_EXISTS",
+        "Cannot force-delete a reservation that has physical handover history."
+      );
+    }
+
+    // Release any unused physical assets
     await tx.execute({
       sql: `UPDATE assets SET state='AVAILABLE', updated_at=?
             WHERE id IN (
               SELECT asset_id FROM reservation_assets
-              WHERE reservation_id=? AND state IN ('RESERVED', 'BORROWED')
-            ) AND state IN ('RESERVED', 'BORROWED')`,
+              WHERE reservation_id=? AND state='RESERVED'
+            ) AND state='RESERVED'`,
       args: [Date.now(), reservationId],
     });
 
@@ -855,6 +941,18 @@ export async function rescheduleReservation(
         "RESERVATION_CONFLICT",
         "Only an approved reservation can be rescheduled."
       );
+    const pickedUp = await one<{ count: number }>(
+      tx,
+      "SELECT COUNT(*) AS count FROM reservation_assets WHERE reservation_id=? AND actual_pickup_at IS NOT NULL",
+      [reservationId]
+    );
+    if (Number(pickedUp?.count ?? 0) > 0) {
+      throw new DomainError(
+        409,
+        "RESERVATION_LOCKED",
+        "Reservations cannot be rescheduled after equipment has been picked up."
+      );
+    }
     const borrowed = await one<{ count: number }>(
       tx,
       "SELECT COUNT(*) AS count FROM reservation_assets WHERE reservation_id=? AND state='BORROWED'",
@@ -866,6 +964,10 @@ export async function rescheduleReservation(
         "RESERVATION_CONFLICT",
         "Return checked-out equipment before changing the reservation time."
       );
+    await tx.execute({
+      sql: "DELETE FROM notifications WHERE reservation_id=? AND type='RETURN_DUE_SOON'",
+      args: [reservationId],
+    });
     await tx.execute({
       sql: "UPDATE reservation_assets SET state='RELEASED',updated_at=? WHERE reservation_id=? AND state='RESERVED'",
       args: [Date.now(), reservationId],
@@ -897,13 +999,29 @@ export async function rescheduleReservation(
   return getReservation(env, reservationId, true);
 }
 
-export interface ScanResult {
-  operation: "CHECKED_OUT" | "RETURNED";
-  assetName: string;
-  assetCode: string;
-  borrowerName?: string;
-  returnAt?: string;
-}
+export type ScanResult =
+  | {
+      operation: "CHECKED_OUT" | "RETURNED";
+      assetName: string;
+      assetCode: string;
+      reservationId?: string;
+      borrowerName?: string;
+      returnAt?: string;
+    }
+  | {
+      code: "RESERVATION_SELECTION_REQUIRED";
+      assetName: string;
+      assetCode: string;
+      reservations: Array<{
+        id: string;
+        borrowerName: string;
+        chapterName?: string | null;
+        pickupAt: string;
+        returnAt: string;
+        quantity: number;
+        uncollectedCount: number;
+      }>;
+    };
 
 async function collectMaterial(
   tx: WriteTransaction,
@@ -1115,15 +1233,9 @@ export async function scanAsset(
         sql: "UPDATE reservation_assets SET state='RETURNED',actual_return_at=?,checked_in_by_user_id=?,updated_at=? WHERE id=? AND state='BORROWED'",
         args: [timestamp, actor.id, timestamp, assignment.id],
       });
-      const nextReservation = await one<{ id: string }>(
-        tx,
-        `SELECT r.id FROM reservation_assets ra INNER JOIN reservations r ON r.id=ra.reservation_id
-          WHERE ra.asset_id=? AND ra.state='RESERVED' AND r.status='APPROVED' AND r.pickup_at<=? AND ?<r.return_at LIMIT 1`,
-        [asset.id, timestamp, timestamp]
-      );
       await tx.execute({
-        sql: "UPDATE assets SET state=?,last_scan_at=?,updated_at=? WHERE id=?",
-        args: [nextReservation ? "RESERVED" : "AVAILABLE", timestamp, timestamp, asset.id],
+        sql: "UPDATE assets SET state='AVAILABLE',last_scan_at=?,updated_at=? WHERE id=?",
+        args: [timestamp, timestamp, asset.id],
       });
       const unfinished = await one<{ count: number }>(
         tx,
@@ -1151,16 +1263,78 @@ export async function scanAsset(
         operation: "RETURNED",
         assetName: asset.equipment_name,
         assetCode: asset.asset_code,
+        reservationId: assignment.reservation_id,
       };
     } else {
-      if (!reservationId)
-        throw new DomainError(
-          400,
-          "RESERVATION_REQUIRED",
-          "Scan the borrower's reservation QR before collecting materials."
+      if (operation === "RETURNED") {
+        throw new DomainError(409, "ALREADY_RETURNED", "This asset has no active checkout.");
+      }
+      const equipment = await one<{ active: number }>(
+        tx,
+        "SELECT active FROM equipment_items WHERE id=?",
+        [asset.equipment_item_id]
+      );
+      if (!equipment || !equipment.active) {
+        throw new DomainError(409, "ASSET_UNAVAILABLE", "This equipment is currently inactive.");
+      }
+
+      let targetReservationId = reservationId;
+      if (!targetReservationId) {
+        const eligible = await rows<{
+          id: string;
+          pickup_at: number;
+          return_at: number;
+          quantity: number;
+          collected: number;
+          borrower_name: string;
+          chapter_name: string | null;
+        }>(
+          tx,
+          `SELECT r.id, r.pickup_at, r.return_at, l.quantity,
+                  (SELECT COUNT(*) FROM reservation_assets ra WHERE ra.reservation_line_id=l.id AND ra.actual_pickup_at IS NOT NULL) AS collected,
+                  CASE WHEN r.borrower_type='PERSON' THEN bu.name ELSE ch.name END AS borrower_name,
+                  ch.name AS chapter_name
+             FROM reservations r
+             JOIN reservation_lines l ON l.reservation_id=r.id
+             LEFT JOIN user bu ON bu.id=r.borrower_user_id
+             LEFT JOIN chapters ch ON ch.id=r.chapter_id
+            WHERE r.status='APPROVED'
+              AND r.pickup_at <= ? AND ? < r.return_at
+              AND l.equipment_item_id = ?`,
+          [timestamp, timestamp, asset.equipment_item_id]
         );
-      const collected = await collectMaterial(tx, actor, reservationId, asset.id, timestamp);
-      const activeAssignment = { ...collected, reservation_id: reservationId };
+
+        const needed = eligible.filter((r) => Number(r.collected) < Number(r.quantity));
+
+        if (needed.length === 0) {
+          throw new DomainError(
+            409,
+            "NO_ELIGIBLE_RESERVATION",
+            "No approved reservation is currently awaiting this equipment."
+          );
+        }
+        if (needed.length > 1) {
+          return {
+            code: "RESERVATION_SELECTION_REQUIRED",
+            assetName: asset.equipment_name,
+            assetCode: asset.asset_code,
+            reservations: needed.map((r) => ({
+              id: r.id,
+              borrowerName: r.borrower_name,
+              chapterName: r.chapter_name,
+              pickupAt: new Date(Number(r.pickup_at)).toISOString(),
+              returnAt: new Date(Number(r.return_at)).toISOString(),
+              quantity: Number(r.quantity),
+              uncollectedCount: Number(r.quantity) - Number(r.collected),
+            })),
+          };
+        }
+
+        targetReservationId = needed[0].id;
+      }
+
+      const collected = await collectMaterial(tx, actor, targetReservationId, asset.id, timestamp);
+      const activeAssignment = { ...collected, reservation_id: targetReservationId };
       await notify(
         tx,
         activeAssignment.requested_by_user_id,
@@ -1173,6 +1347,7 @@ export async function scanAsset(
         operation: "CHECKED_OUT",
         assetName: asset.equipment_name,
         assetCode: asset.asset_code,
+        reservationId: targetReservationId,
         borrowerName: activeAssignment.borrower_name,
         returnAt: new Date(Number(activeAssignment.return_at)).toISOString(),
       };
@@ -1260,7 +1435,7 @@ export async function calendarEvents(
     env.CLIENT as unknown as SqlExecutor,
     `SELECT DISTINCT r.id FROM reservations r
        LEFT JOIN reservation_assets ra ON ra.reservation_id=r.id
-      WHERE ((r.status='APPROVED' AND r.pickup_at < ? AND ? < r.return_at) OR ra.state='BORROWED')
+      WHERE ((r.status IN ('APPROVED', 'COMPLETED') AND r.pickup_at < ? AND ? < r.return_at) OR ra.state='BORROWED')
       ORDER BY r.pickup_at`,
     [end, start]
   );
@@ -1270,36 +1445,32 @@ export async function calendarEvents(
   return reservations
     .filter((reservation): reservation is ReservationDTO => Boolean(reservation))
     .flatMap((reservation) =>
-      reservation.items.flatMap((item) =>
-        (item.assignedAssets?.length
-          ? item.assignedAssets
-          : [{ id: item.lineId, assetCode: String(item.quantity) + " units", state: "RESERVED" }]
+      reservation.items
+        .filter(
+          (item) => !filters.equipmentItemId || item.equipmentItemId === filters.equipmentItemId
         )
-          .filter((asset) => asset.state === "RESERVED" || asset.state === "BORROWED")
-          .filter(
-            () => !filters.equipmentItemId || item.equipmentItemId === filters.equipmentItemId
-          )
-          .filter(() => !filters.borrower || reservation.borrower.id === filters.borrower)
-          .filter(
-            () =>
-              !filters.status ||
-              reservation.derivedStatus === filters.status ||
-              reservation.status === filters.status
-          )
-          .map((asset) => ({
-            id: `${reservation.id}:${asset.id}`,
-            reservationId: reservation.id,
-            assetId: asset.id,
-            title: `${item.name} ${asset.assetCode} · ${reservation.borrower.name}`,
-            equipmentName: item.name,
-            assetCode: asset.assetCode,
-            borrowerName: reservation.borrower.name,
-            requesterName: reservation.requestedBy.name,
-            start: reservation.pickupAt,
-            end: reservation.returnAt,
-            status: reservation.derivedStatus,
-          }))
-      )
+        .filter(() => !filters.borrower || reservation.borrower.id === filters.borrower)
+        .filter(
+          () =>
+            !filters.status ||
+            reservation.derivedStatus === filters.status ||
+            reservation.status === filters.status
+        )
+        .map((item) => ({
+          id: `${reservation.id}:${item.lineId}`,
+          reservationId: reservation.id,
+          lineId: item.lineId,
+          assetId: item.lineId,
+          title: `${item.quantity}× ${item.name} · ${reservation.borrower.name}`,
+          equipmentName: item.name,
+          assetCode: `${item.quantity} units`,
+          quantity: item.quantity,
+          borrowerName: reservation.borrower.name,
+          requesterName: reservation.requestedBy.name,
+          start: reservation.pickupAt,
+          end: reservation.returnAt,
+          status: reservation.derivedStatus,
+        }))
     );
 }
 

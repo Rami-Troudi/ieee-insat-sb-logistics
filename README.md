@@ -19,7 +19,7 @@ Start the API and web app in separate terminals:
     npm run dev:api
     npm run dev
 
-Open <http://127.0.0.1:5173/app>. The first screen lets members create an account with a name, email, and password. Members can also browse equipment and select several types and quantities before signing in. Passwords are hashed by Better Auth. Optional one-time email links need the Brevo variables in .env.
+Open <http://127.0.0.1:5173/app>. The first screen lets members identify themselves passwordlessly with their name and email. Members can also browse equipment and select several types and quantities before providing their details. Optional one-time email links need the Brevo variables in .env.
 
 To create the initial Superadmin account and generate its password, set SUPERADMIN_EMAIL in .env, then run:
 
