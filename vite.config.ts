@@ -14,7 +14,7 @@ export default defineConfig({
     host: true,
     allowedHosts: true,
     proxy: {
-      "/api": "http://127.0.0.1:8787",
+      "/api": "http://127.0.0.1:" + (process.env.API_PORT ?? "8787"),
     },
   },
 });

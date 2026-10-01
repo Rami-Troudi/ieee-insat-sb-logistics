@@ -11,6 +11,7 @@ import { hashPassword } from "better-auth/crypto";
 import { requireBoard, requireSuperadmin, requireUser, resolveIdentity } from "./identity";
 import {
   approveReservation,
+  assertCanReduceCapacity,
   boardDashboard,
   calendarEvents,
   cancelReservation,
@@ -20,13 +21,18 @@ import {
   findAvailableAssets,
   forceDeleteReservation,
   getReservation,
+  handoverReservation,
   listBoardAudit,
   listBoardReservations,
   listCatalogue,
   listReservations,
+  one,
   randomId,
+  refreshAllReturnNotifications,
+  refreshReturnNotificationsForUser,
   rescheduleReservation,
   scanAsset,
+  write,
 } from "./domain";
 import type { SqlExecutor } from "./domain";
 import { DomainError, isRateLimited, jsonError, requestIp, sameOrigin } from "./security";
@@ -97,6 +103,16 @@ app.get("/api/health", async (c) => {
   return c.json({ status: "ok" });
 });
 
+app.get("/api/cron/return-reminders", async (c) => {
+  if (!c.env.CRON_SECRET) {
+    return jsonError(c, 503, "CRON_NOT_CONFIGURED", "The reminder job is not configured.");
+  }
+  if (c.req.header("Authorization") !== "Bearer " + c.env.CRON_SECRET) {
+    return jsonError(c, 401, "UNAUTHENTICATED", "Invalid cron authorization.");
+  }
+  return c.json(await refreshAllReturnNotifications(c.env));
+});
+
 app.all("/api/auth/*", async (c) => {
   if (await isRateLimited(c.env, `auth:${requestIp(c)}`, c.env.AUTH_RATE_LIMIT_PER_MINUTE)) {
     return jsonError(c, 429, "RATE_LIMITED", "Too many sign-in attempts. Try again shortly.");
@@ -107,6 +123,9 @@ app.all("/api/auth/*", async (c) => {
 });
 
 app.post("/api/v1/auth/borrower", async (c) => {
+  if (await isRateLimited(c.env, "auth:" + requestIp(c), c.env.AUTH_RATE_LIMIT_PER_MINUTE)) {
+    return jsonError(c, 429, "RATE_LIMITED", "Too many sign-in attempts. Try again shortly.");
+  }
   const body = await c.req
     .json<{
       firstName?: string;
@@ -114,7 +133,6 @@ app.post("/api/v1/auth/borrower", async (c) => {
       name?: string;
       email?: string;
       phone?: string;
-      membership?: string;
     }>()
     .catch(() => null);
   if (
@@ -128,6 +146,7 @@ app.post("/api/v1/auth/borrower", async (c) => {
   }
   const email = body.email.trim().toLowerCase();
   const name = body.name.trim();
+  const phone = typeof body.phone === "string" ? body.phone.trim().slice(0, 50) || null : null;
   const now = new Date();
 
   const existing = await c.env.DB.select()
@@ -138,11 +157,19 @@ app.post("/api/v1/auth/borrower", async (c) => {
   let userId: string;
   let user: typeof schema.authUsers.$inferSelect;
   if (existing.length > 0) {
+    if (existing[0].role !== "USER") {
+      return jsonError(
+        c,
+        403,
+        "PRIVILEGED_ACCOUNT",
+        "Privileged accounts cannot use borrower sign-in."
+      );
+    }
     userId = existing[0].id;
-    user = existing[0];
     await c.env.DB.update(schema.authUsers)
-      .set({ name, updatedAt: now })
+      .set({ name, phone: phone ?? existing[0].phone, updatedAt: now })
       .where(eq(schema.authUsers.id, userId));
+    user = { ...existing[0], name, phone: phone ?? existing[0].phone, updatedAt: now };
   } else {
     userId = crypto.randomUUID();
     const [newUser] = await c.env.DB.insert(schema.authUsers)
@@ -150,6 +177,7 @@ app.post("/api/v1/auth/borrower", async (c) => {
         id: userId,
         name,
         email,
+        phone,
         emailVerified: true,
         role: "USER",
         createdAt: now,
@@ -221,7 +249,9 @@ app.post("/api/v1/auth/board-login", async (c) => {
   const setCookies =
     typeof res.headers.getSetCookie === "function"
       ? res.headers.getSetCookie()
-      : (res.headers.get("set-cookie") ? [res.headers.get("set-cookie")!] : []);
+      : res.headers.get("set-cookie")
+        ? [res.headers.get("set-cookie")!]
+        : [];
   for (const cookie of setCookies) {
     response.headers.append("Set-Cookie", cookie);
   }
@@ -266,7 +296,9 @@ app.post("/api/v1/auth/sign-out", async (c) => {
   // 4. If user was identified, delete all active sessions for this user
   if (currentUserId) {
     try {
-      await c.env.DB.delete(schema.authSessions).where(eq(schema.authSessions.userId, currentUserId));
+      await c.env.DB.delete(schema.authSessions).where(
+        eq(schema.authSessions.userId, currentUserId)
+      );
     } catch {
       // Ignore DB delete error
     }
@@ -414,7 +446,12 @@ app.delete("/api/v1/reservations/:id", async (c) => {
       return jsonError(c, 404, "NOT_FOUND", "Reservation not found.");
     }
     if (res.status !== "PENDING") {
-      return jsonError(c, 400, "BAD_REQUEST", "Only pending reservation requests can be force deleted.");
+      return jsonError(
+        c,
+        400,
+        "BAD_REQUEST",
+        "Only pending reservation requests can be force deleted."
+      );
     }
     return c.json(await forceDeleteReservation(c.env, c.get("actor"), c.req.param("id")));
   }
@@ -440,6 +477,14 @@ app.get("/api/v1/notifications", async (c) => {
   return c.json(notifications);
 });
 
+app.post("/api/v1/notifications/refresh", async (c) => {
+  const actor = await resolveIdentity(c);
+  if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue.");
+  const created =
+    actor.role === "USER" ? await refreshReturnNotificationsForUser(c.env, actor.id) : 0;
+  return c.json({ ok: true, notificationsCreated: created });
+});
+
 app.patch("/api/v1/notifications/:id/read", async (c) => {
   const actor = await resolveIdentity(c);
   if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue.");
@@ -457,6 +502,36 @@ app.use("/api/v1/board/*", requireBoard);
 app.get("/api/v1/board/dashboard", async (c) => c.json(await boardDashboard(c.env)));
 app.get("/api/v1/board/reservations", async (c) => c.json(await listBoardReservations(c.env)));
 
+app.get("/api/v1/board/reservations/:id/borrower", async (c) => {
+  const reservation = await getReservation(c.env, c.req.param("id"));
+  if (!reservation) return jsonError(c, 404, "NOT_FOUND", "Reservation not found.");
+  const userId =
+    reservation.borrower.type === "PERSON" ? reservation.borrower.id : reservation.requestedBy.id;
+  const [person] = await c.env.DB.select({
+    name: schema.authUsers.name,
+    email: schema.authUsers.email,
+    phone: schema.authUsers.phone,
+  })
+    .from(schema.authUsers)
+    .where(eq(schema.authUsers.id, userId))
+    .limit(1);
+  if (!person) return jsonError(c, 404, "NOT_FOUND", "Borrower not found.");
+  const count = await c.env.CLIENT.execute({
+    sql:
+      "SELECT COUNT(DISTINCT r.id) AS count FROM reservations r WHERE " +
+      (reservation.borrower.type === "PERSON"
+        ? "r.borrower_type='PERSON' AND r.borrower_user_id=?"
+        : "r.borrower_type='CHAPTER' AND r.chapter_id=?") +
+      " AND EXISTS (SELECT 1 FROM reservation_assets ra WHERE ra.reservation_id=r.id AND ra.actual_pickup_at IS NOT NULL)",
+    args: [reservation.borrower.id],
+  });
+  return c.json({
+    ...person,
+    borrowingCount: Number(count.rows[0]?.count ?? 0),
+    chapterName: reservation.borrower.type === "CHAPTER" ? reservation.borrower.name : null,
+  });
+});
+
 app.get("/api/v1/board/reservations/:id", async (c) => {
   const reservation = await getReservation(c.env, c.req.param("id"), true);
   if (!reservation) return jsonError(c, 404, "NOT_FOUND", "Reservation not found.");
@@ -464,7 +539,7 @@ app.get("/api/v1/board/reservations/:id", async (c) => {
     reservation.items.map(async (item) => ({
       lineId: item.lineId,
       assets:
-        reservation.status === "PENDING"
+        reservation.status === "APPROVED"
           ? (
               await findAvailableAssets(
                 c.env.CLIENT as unknown as SqlExecutor,
@@ -472,12 +547,16 @@ app.get("/api/v1/board/reservations/:id", async (c) => {
                 Date.parse(reservation.pickupAt),
                 Date.parse(reservation.returnAt)
               )
-            ).map((asset) => ({
-              id: asset.id,
-              assetCode: asset.asset_code,
-              serialNumber: asset.serial_number,
-              state: asset.state,
-            }))
+            )
+              .filter(
+                (asset) => !item.assignedAssets?.some((collected) => collected.id === asset.id)
+              )
+              .map((asset) => ({
+                id: asset.id,
+                assetCode: asset.asset_code,
+                serialNumber: asset.serial_number,
+                state: asset.state,
+              }))
           : [],
     }))
   );
@@ -485,6 +564,17 @@ app.get("/api/v1/board/reservations/:id", async (c) => {
 });
 
 const assignmentsSchema = z.record(z.string(), z.array(z.string()));
+app.post("/api/v1/board/reservations/:id/handover", async (c) => {
+  const parsed = z
+    .object({ assetIds: z.array(z.string().min(1)).min(1).max(500) })
+    .safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success)
+    return jsonError(c, 400, "VALIDATION", "Select the material labels actually handed over.");
+  return c.json(
+    await handoverReservation(c.env, c.get("actor"), c.req.param("id"), parsed.data.assetIds)
+  );
+});
+
 app.post("/api/v1/board/reservations/:id/approve", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const parsed = z.object({ assignments: assignmentsSchema.optional() }).safeParse(body);
@@ -552,11 +642,24 @@ app.post("/api/v1/board/scan", async (c) => {
   if (await isRateLimited(c.env, `scan:${actor.id}`, 180))
     return jsonError(c, 429, "RATE_LIMITED", "Scanner is busy. Wait a moment and try again.");
   const parsed = z
-    .object({ qrToken: z.string().min(1).max(256) })
+    .object({
+      qrToken: z.string().min(1).max(256),
+      reservationId: z.string().min(1).optional(),
+      operation: z.enum(["CHECKED_OUT", "RETURNED"]).optional(),
+    })
     .safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return jsonError(c, 400, "INVALID_ASSET", "This QR code is not valid.");
-  const idempotencyKey = c.req.header("Idempotency-Key") ?? "";
-  return c.json(await scanAsset(c.env, actor, parsed.data.qrToken, idempotencyKey));
+  const idempotencyKey = c.req.header("Idempotency-Key") || crypto.randomUUID();
+  return c.json(
+    await scanAsset(
+      c.env,
+      actor,
+      parsed.data.qrToken,
+      idempotencyKey,
+      parsed.data.reservationId,
+      parsed.data.operation
+    )
+  );
 });
 
 app.get("/api/v1/board/inventory", async (c) => {
@@ -665,64 +768,97 @@ app.patch("/api/v1/board/equipment/:id", async (c) => {
     .safeParse(await c.req.json().catch(() => null));
   if (!parsed.success)
     return jsonError(c, 400, "VALIDATION", "Choose whether this equipment is active.");
-  const result = await c.env.DB.update(schema.equipmentItems)
-    .set({ active: parsed.data.active, updatedAt: Date.now() })
-    .where(eq(schema.equipmentItems.id, c.req.param("id")));
-  if (!result.rowsAffected) return jsonError(c, 404, "NOT_FOUND", "Equipment not found.");
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("audit"),
-      c.get("actor").id,
-      "EQUIPMENT",
-      c.req.param("id"),
-      parsed.data.active ? "EQUIPMENT_ACTIVATED" : "EQUIPMENT_DISABLED",
-      Date.now(),
-      JSON.stringify({ active: parsed.data.active }),
-    ],
-  });
-  return c.json({ ok: true });
+  const id = c.req.param("id");
+
+  return c.json(
+    await write(c.env, async (tx) => {
+      const equipment = await one<{ id: string; active: number }>(
+        tx,
+        "SELECT id, active FROM equipment_items WHERE id=?",
+        [id]
+      );
+      if (!equipment) throw new DomainError(404, "NOT_FOUND", "Equipment not found.");
+
+      if (!parsed.data.active && equipment.active) {
+        const capacityRow = await one<{ count: number }>(
+          tx,
+          "SELECT COUNT(*) AS count FROM assets WHERE equipment_item_id=? AND active=1 AND state NOT IN ('OUT_OF_SERVICE','RETIRED')",
+          [id]
+        );
+        const usableCount = Number(capacityRow?.count ?? 0);
+        await assertCanReduceCapacity(tx, id, usableCount, "deactivate this equipment");
+      }
+
+      const timestamp = Date.now();
+      await tx.execute({
+        sql: "UPDATE equipment_items SET active=?, updated_at=? WHERE id=?",
+        args: [parsed.data.active ? 1 : 0, timestamp, id],
+      });
+      await tx.execute({
+        sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+        args: [
+          randomId("audit"),
+          c.get("actor").id,
+          "EQUIPMENT",
+          id,
+          parsed.data.active ? "EQUIPMENT_ACTIVATED" : "EQUIPMENT_DISABLED",
+          timestamp,
+          JSON.stringify({ active: parsed.data.active }),
+        ],
+      });
+      return { ok: true };
+    })
+  );
 });
 
 app.delete("/api/v1/board/equipment/:id", requireBoard, async (c) => {
   const id = c.req.param("id");
-  // Check if any tracked assets are currently borrowed or reserved
-  const activeAssets = await c.env.DB.select({ id: schema.assets.id, state: schema.assets.state })
-    .from(schema.assets)
-    .where(
-      and(
-        eq(schema.assets.equipmentItemId, id),
-        inArray(schema.assets.state, ["BORROWED", "RESERVED"])
-      )
-    )
-    .limit(1);
-  if (activeAssets.length > 0)
-    return jsonError(
-      c,
-      409,
-      "RESERVATION_CONFLICT",
-      "Cannot delete equipment while some of its assets are currently borrowed or reserved."
-    );
-  // Delete all tracked assets for this equipment type
-  await c.env.DB.delete(schema.assets).where(eq(schema.assets.equipmentItemId, id));
-  // Delete the equipment item
-  const result = await c.env.DB.delete(schema.equipmentItems).where(
-    eq(schema.equipmentItems.id, id)
+
+  return c.json(
+    await write(c.env, async (tx) => {
+      const equipment = await one<{ id: string }>(tx, "SELECT id FROM equipment_items WHERE id=?", [
+        id,
+      ]);
+      if (!equipment) throw new DomainError(404, "NOT_FOUND", "Equipment not found.");
+
+      const borrowed = await one<{ count: number }>(
+        tx,
+        "SELECT COUNT(*) AS count FROM assets WHERE equipment_item_id=? AND state='BORROWED'",
+        [id]
+      );
+      if (Number(borrowed?.count ?? 0) > 0) {
+        throw new DomainError(
+          409,
+          "RESERVATION_CONFLICT",
+          "Cannot delete equipment while some of its assets are currently borrowed."
+        );
+      }
+
+      const capacityRow = await one<{ count: number }>(
+        tx,
+        "SELECT COUNT(*) AS count FROM assets WHERE equipment_item_id=? AND active=1 AND state NOT IN ('OUT_OF_SERVICE','RETIRED')",
+        [id]
+      );
+      const usableCount = Number(capacityRow?.count ?? 0);
+      await assertCanReduceCapacity(tx, id, usableCount, "delete this equipment");
+
+      await tx.execute({ sql: "DELETE FROM assets WHERE equipment_item_id=?", args: [id] });
+      await tx.execute({ sql: "DELETE FROM equipment_items WHERE id=?", args: [id] });
+      await tx.execute({
+        sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+        args: [
+          randomId("audit"),
+          c.get("actor").id,
+          "EQUIPMENT",
+          id,
+          "EQUIPMENT_DELETED",
+          Date.now(),
+          "{}",
+        ],
+      });
+      return { ok: true };
+    })
   );
-  if (!result.rowsAffected) return jsonError(c, 404, "NOT_FOUND", "Equipment not found.");
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("audit"),
-      c.get("actor").id,
-      "EQUIPMENT",
-      id,
-      "EQUIPMENT_DELETED",
-      Date.now(),
-      "{}",
-    ],
-  });
-  return c.json({ ok: true });
 });
 
 app.post("/api/v1/board/equipment/:id/assets", async (c) => {
@@ -790,70 +926,103 @@ app.patch("/api/v1/board/assets/:id", async (c) => {
     .strict()
     .safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return jsonError(c, 400, "VALIDATION", "Choose a valid asset state.");
-  const asset = await c.env.DB.select({ state: schema.assets.state, active: schema.assets.active })
-    .from(schema.assets)
-    .where(eq(schema.assets.id, c.req.param("id")))
-    .limit(1);
-  if (!asset[0]) return jsonError(c, 404, "NOT_FOUND", "Asset not found.");
-  if (asset[0].state === "BORROWED" || asset[0].state === "RESERVED")
-    return jsonError(
-      c,
-      409,
-      "RESERVATION_CONFLICT",
-      "Return or release the asset before changing its state."
-    );
-  if (asset[0].state === "RETIRED" && parsed.data.state !== "RETIRED")
-    return jsonError(c, 409, "INVALID_ASSET", "Retired assets cannot be restored.");
-  await c.env.DB.update(schema.assets)
-    .set({
-      state: parsed.data.state,
-      active: parsed.data.state !== "RETIRED",
-      updatedAt: Date.now(),
+  const assetId = c.req.param("id");
+
+  return c.json(
+    await write(c.env, async (tx) => {
+      const asset = await one<{
+        id: string;
+        equipment_item_id: string;
+        state: string;
+        active: number;
+      }>(tx, "SELECT id, equipment_item_id, state, active FROM assets WHERE id=?", [assetId]);
+      if (!asset) throw new DomainError(404, "NOT_FOUND", "Asset not found.");
+      if (asset.state === "BORROWED") {
+        throw new DomainError(
+          409,
+          "RESERVATION_CONFLICT",
+          "Return the asset before changing its state."
+        );
+      }
+      if (asset.state === "RETIRED" && parsed.data.state !== "RETIRED") {
+        throw new DomainError(409, "INVALID_ASSET", "Retired assets cannot be restored.");
+      }
+
+      if (
+        asset.active &&
+        asset.state === "AVAILABLE" &&
+        ["OUT_OF_SERVICE", "RETIRED"].includes(parsed.data.state)
+      ) {
+        await assertCanReduceCapacity(
+          tx,
+          asset.equipment_item_id,
+          1,
+          parsed.data.state === "RETIRED" ? "retire this asset" : "mark this asset out of service"
+        );
+      }
+
+      const timestamp = Date.now();
+      await tx.execute({
+        sql: "UPDATE assets SET state=?, active=?, updated_at=? WHERE id=?",
+        args: [parsed.data.state, parsed.data.state !== "RETIRED" ? 1 : 0, timestamp, assetId],
+      });
+      await tx.execute({
+        sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+        args: [
+          randomId("audit"),
+          c.get("actor").id,
+          "ASSET",
+          assetId,
+          parsed.data.state === "RETIRED" ? "ASSET_DISABLED" : "ASSET_STATE_CHANGED",
+          timestamp,
+          JSON.stringify({ state: parsed.data.state }),
+        ],
+      });
+      return { ok: true };
     })
-    .where(eq(schema.assets.id, c.req.param("id")));
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("audit"),
-      c.get("actor").id,
-      "ASSET",
-      c.req.param("id"),
-      parsed.data.state === "RETIRED" ? "ASSET_DISABLED" : "ASSET_STATE_CHANGED",
-      Date.now(),
-      JSON.stringify({ state: parsed.data.state }),
-    ],
-  });
-  return c.json({ ok: true });
+  );
 });
 
 app.delete("/api/v1/board/assets/:id", requireBoard, async (c) => {
-  const id = c.req.param("id");
-  const asset = await c.env.DB.select({ state: schema.assets.state })
-    .from(schema.assets)
-    .where(eq(schema.assets.id, id))
-    .limit(1);
-  if (!asset[0]) return jsonError(c, 404, "NOT_FOUND", "Asset not found.");
-  if (asset[0].state === "BORROWED" || asset[0].state === "RESERVED")
-    return jsonError(
-      c,
-      409,
-      "RESERVATION_CONFLICT",
-      "Cannot delete an asset that is currently borrowed or reserved."
-    );
-  await c.env.DB.delete(schema.assets).where(eq(schema.assets.id, id));
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("audit"),
-      c.get("actor").id,
-      "ASSET",
-      id,
-      "ASSET_DELETED",
-      Date.now(),
-      "{}",
-    ],
-  });
-  return c.json({ ok: true });
+  const assetId = c.req.param("id");
+
+  return c.json(
+    await write(c.env, async (tx) => {
+      const asset = await one<{
+        id: string;
+        equipment_item_id: string;
+        state: string;
+        active: number;
+      }>(tx, "SELECT id, equipment_item_id, state, active FROM assets WHERE id=?", [assetId]);
+      if (!asset) throw new DomainError(404, "NOT_FOUND", "Asset not found.");
+      if (asset.state === "BORROWED") {
+        throw new DomainError(
+          409,
+          "RESERVATION_CONFLICT",
+          "Cannot delete an asset that is currently borrowed."
+        );
+      }
+
+      if (asset.active && asset.state === "AVAILABLE") {
+        await assertCanReduceCapacity(tx, asset.equipment_item_id, 1, "delete this asset");
+      }
+
+      await tx.execute({ sql: "DELETE FROM assets WHERE id=?", args: [assetId] });
+      await tx.execute({
+        sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+        args: [
+          randomId("audit"),
+          c.get("actor").id,
+          "ASSET",
+          assetId,
+          "ASSET_DELETED",
+          Date.now(),
+          "{}",
+        ],
+      });
+      return { ok: true };
+    })
+  );
 });
 
 app.get("/api/v1/board/chapters", async (c) => {
@@ -995,7 +1164,7 @@ app.post("/api/v1/board/users", requireSuperadmin, async (c) => {
     sql: "INSERT INTO account(id,accountId,providerId,userId,password,createdAt,updatedAt) VALUES(?,?,?,?,?,?,?)",
     args: [
       randomId("account"),
-      userId,  // accountId must equal userId for credential provider
+      userId, // accountId must equal userId for credential provider
       "credential",
       userId,
       passwordHash,
@@ -1057,7 +1226,7 @@ app.put("/api/v1/board/users/:id/password", requireSuperadmin, async (c) => {
       sql: "INSERT INTO account(id,accountId,providerId,userId,password,createdAt,updatedAt) VALUES(?,?,?,?,?,?,?)",
       args: [
         randomId("account"),
-        targetId,  // accountId must equal userId for credential provider
+        targetId, // accountId must equal userId for credential provider
         "credential",
         targetId,
         passwordHash,
@@ -1142,7 +1311,12 @@ app.delete("/api/v1/board/users/:id", requireSuperadmin, async (c) => {
     )
     .limit(1);
   if (activeRes.length > 0) {
-    return jsonError(c, 409, "ACTIVE_RESERVATIONS", "Cannot delete a user with active or pending reservations.");
+    return jsonError(
+      c,
+      409,
+      "ACTIVE_RESERVATIONS",
+      "Cannot delete a user with active or pending reservations."
+    );
   }
 
   // 1. Delete notifications for this user
@@ -1169,8 +1343,12 @@ app.delete("/api/v1/board/users/:id", requireSuperadmin, async (c) => {
       )
     );
   for (const r of userReservations) {
-    await c.env.DB.delete(schema.reservationAssets).where(eq(schema.reservationAssets.reservationId, r.id));
-    await c.env.DB.delete(schema.reservationLines).where(eq(schema.reservationLines.reservationId, r.id));
+    await c.env.DB.delete(schema.reservationAssets).where(
+      eq(schema.reservationAssets.reservationId, r.id)
+    );
+    await c.env.DB.delete(schema.reservationLines).where(
+      eq(schema.reservationLines.reservationId, r.id)
+    );
     await c.env.DB.delete(schema.reservations).where(eq(schema.reservations.id, r.id));
   }
 
@@ -1183,8 +1361,28 @@ app.delete("/api/v1/board/users/:id", requireSuperadmin, async (c) => {
     args: [targetId],
   });
 
-  // 7. Delete user record
-  await c.env.DB.delete(schema.authUsers).where(eq(schema.authUsers.id, targetId));
+  // 6. Check if user has authored any immutable audit events
+  const hasAudit = await c.env.DB.select({ id: schema.auditEvents.id })
+    .from(schema.auditEvents)
+    .where(eq(schema.auditEvents.actorUserId, targetId))
+    .limit(1);
+
+  if (hasAudit.length > 0) {
+    // Preserve immutable audit trail without foreign key violation: deactivate and anonymize
+    await c.env.DB.update(schema.authUsers)
+      .set({
+        name: "Deleted User",
+        email: `disabled_${targetId}@deleted.local`,
+        phone: null,
+        role: "USER",
+        emailVerified: false,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.authUsers.id, targetId));
+  } else {
+    // Safe to hard delete user record
+    await c.env.DB.delete(schema.authUsers).where(eq(schema.authUsers.id, targetId));
+  }
 
   await c.env.CLIENT.execute({
     sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",

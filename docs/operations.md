@@ -15,8 +15,11 @@ Configure these Vercel environment variables for Production and Preview:
 | BREVO_API_KEY      | Optional; needed only for email sign-in links                         |
 | BREVO_SENDER_EMAIL | Verified sender address for magic links                               |
 | BREVO_SENDER_NAME  | IEEE INSAT Student Branch                                             |
+| CRON_SECRET        | Secret used to authorize the scheduled return reminder job            |
 
 Account creation and password sign-in work without Brevo. Email links need a valid sender and API key. Keep provider credentials in Vercel only; never commit them.
+
+The Vercel cron job checks once daily for loans due within an hour and loans that are overdue. Borrowers signed in to the app also refresh their reminders while the app is open. On Vercel Hobby, the daily background schedule is intentional; the platform permits only daily cron runs.
 
 ## Apply schema and establish access
 

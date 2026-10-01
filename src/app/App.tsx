@@ -205,7 +205,9 @@ function AppFrame() {
         const parsed = JSON.parse(saved);
         if (parsed.start && parsed.end) return parsed.start;
       }
-    } catch {}
+    } catch {
+      /* Fall back to the default reservation window. */
+    }
     return dateInput(startInitial);
   });
   const [end, setEnd] = useState<string>(() => {
@@ -215,14 +217,18 @@ function AppFrame() {
         const parsed = JSON.parse(saved);
         if (parsed.start && parsed.end) return parsed.end;
       }
-    } catch {}
+    } catch {
+      /* Fall back to the default reservation window. */
+    }
     return dateInput(startInitial.plus({ hours: 2 }));
   });
 
   useEffect(() => {
     try {
       sessionStorage.setItem("sb-reservation-window", JSON.stringify({ start, end }));
-    } catch {}
+    } catch {
+      /* Reservation selection still works if storage is unavailable. */
+    }
   }, [start, end]);
 
   const { notice, setNotice } = useNotice();
@@ -343,7 +349,7 @@ function AppFrame() {
       {/* Mobile Bottom Navigation */}
       <MobileBottomNav isBoard={isBoardPath} cartCount={cartCount} user={user} />
 
-      {/* Borrower & Board Staff Auth Modal (Identical to RAS) */}
+      {/* Borrower & Board Staff Auth Modal */}
       <BorrowerAuthModal
         isOpen={showAuthModal}
         onClose={() => setShowAuthModal(false)}
@@ -592,9 +598,7 @@ function DateWindow({
               <CalendarDays className="w-4 h-4" />
             </div>
             <div>
-              <div className="text-xs font-bold text-foreground">
-                Time Window
-              </div>
+              <div className="text-xs font-bold text-foreground">Time Window</div>
               <div className="text-[11px] text-muted-foreground">
                 Availability checks full period
               </div>
@@ -1043,7 +1047,9 @@ function SelectionPage({
                     <p className="text-xs text-muted-foreground">{item.category}</p>
                     <h3 className="font-semibold text-sm text-foreground truncate">{item.name}</h3>
                     <p className="text-[11px] text-muted-foreground mt-0.5">
-                      {item.availableQuantity} available for this window
+                      {item.availableQuantity > 0
+                        ? "Available for this window"
+                        : "Unavailable for this window"}
                     </p>
                   </div>
                   <div className="flex items-center border border-border rounded-lg bg-surface-subtle p-1">
@@ -1394,7 +1400,8 @@ function MyReservations({ user }: { user: User }) {
           <DialogHeader>
             <DialogTitle>Desk Handover QR</DialogTitle>
             <DialogDescription>
-              Present this QR code to the Board desk staff to collect or return your equipment.
+              Present this reservation QR to the Board for pickup or return. They will scan each
+              material to record the handover.
             </DialogDescription>
           </DialogHeader>
           {selectedQr && (
@@ -1578,11 +1585,41 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
   const [reservations, setReservations] = useState<Reservation[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("ALL");
-  const [assigningReservation, setAssigningReservation] = useState<Reservation | null>(null);
   const [candidates, setCandidates] = useState<AllocationCandidate[]>([]);
   const [selectedAssets, setSelectedAssets] = useState<Record<string, string[]>>({});
   const [deleteTarget, setDeleteTarget] = useState<Reservation | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [handoverTarget, setHandoverTarget] = useState<Reservation | null>(null);
+  const [handingOver, setHandingOver] = useState(false);
+  const [borrowerInfo, setBorrowerInfo] = useState<{
+    name: string;
+    email: string;
+    phone: string | null;
+    borrowingCount: number;
+    chapterName: string | null;
+  } | null>(null);
+  const [borrowerOpen, setBorrowerOpen] = useState(false);
+  const [borrowerLoading, setBorrowerLoading] = useState(false);
+  const [borrowerError, setBorrowerError] = useState("");
+  const borrowerRequest = useRef(0);
+  const openBorrower = async (reservationId: string) => {
+    const requestId = ++borrowerRequest.current;
+    setBorrowerInfo(null);
+    setBorrowerError("");
+    setBorrowerLoading(true);
+    setBorrowerOpen(true);
+    try {
+      const info = await api<NonNullable<typeof borrowerInfo>>(
+        `/api/v1/board/reservations/${reservationId}/borrower`
+      );
+      if (requestId === borrowerRequest.current) setBorrowerInfo(info);
+    } catch (e) {
+      if (requestId === borrowerRequest.current)
+        setBorrowerError(e instanceof Error ? e.message : "Could not load borrower details.");
+    } finally {
+      if (requestId === borrowerRequest.current) setBorrowerLoading(false);
+    }
+  };
 
   const refresh = useCallback(
     () =>
@@ -1617,17 +1654,9 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
       const detail = await api<Reservation & { allocationCandidates: AllocationCandidate[] }>(
         `/api/v1/board/reservations/${reservation.id}`
       );
-      const defaults = Object.fromEntries(
-        detail.items.map((item) => [
-          item.lineId,
-          (detail.allocationCandidates.find((line) => line.lineId === item.lineId)?.assets ?? [])
-            .slice(0, item.quantity)
-            .map((asset) => asset.id),
-        ])
-      );
       setCandidates(detail.allocationCandidates);
-      setSelectedAssets(defaults);
-      setAssigningReservation(reservation);
+      setSelectedAssets({});
+      setHandoverTarget(detail);
     } catch (e) {
       setNotice(e instanceof Error ? e.message : "Could not load available assets.");
     }
@@ -1636,16 +1665,14 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
   const act = async (id: string, action: "approve" | "decline") => {
     try {
       if (action === "approve") {
-        await api(
-          `/api/v1/board/reservations/${id}/approve`,
-          post({ assignments: selectedAssets })
-        );
-        setAssigningReservation(null);
+        await api(`/api/v1/board/reservations/${id}/approve`, post());
       } else {
         await api(`/api/v1/board/reservations/${id}/decline`, post());
       }
       setNotice(
-        action === "approve" ? "Reservation approved and assets assigned." : "Reservation declined."
+        action === "approve"
+          ? "Reservation approved. Material labels will be recorded at pickup."
+          : "Reservation declined."
       );
       refresh();
     } catch (e) {
@@ -1654,13 +1681,34 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
   };
 
   const shown = reservations.filter((r) => filter === "ALL" || r.status === filter);
+  const confirmHandover = async () => {
+    if (!handoverTarget || handingOver) return;
+    setHandingOver(true);
+    try {
+      const result = await api<{ handedOverCount: number }>(
+        `/api/v1/board/reservations/${handoverTarget.id}/handover`,
+        post({ assetIds: Object.values(selectedAssets).flat() })
+      );
+      setNotice(
+        result.handedOverCount
+          ? "Equipment marked as handed over."
+          : "Equipment was already handed over."
+      );
+      setHandoverTarget(null);
+      await refresh();
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : "Could not record handover.");
+    } finally {
+      setHandingOver(false);
+    }
+  };
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-6">
       <PageHeading
         eyebrow="BOARD · RESERVATIONS"
         title="Reservation requests"
-        description="Review the requested window and assign actual physical assets before approving."
+        description="Approve equipment quantities for the requested window. Record specific material labels at pickup."
         action={
           <Button asChild variant="outline" size="sm" className="gap-2">
             <Link to="/board/calendar">
@@ -1718,7 +1766,16 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
                     </span>
                   </div>
                   <div>
-                    <h3 className="font-bold text-sm text-foreground">{r.borrower.name}</h3>
+                    <h3 className="font-bold text-sm text-foreground">
+                      <button
+                        type="button"
+                        onClick={() => openBorrower(r.id)}
+                        className="text-primary hover:underline rounded focus-visible:ring-2 focus-visible:ring-primary"
+                        aria-label={"View borrower details for " + r.borrower.name}
+                      >
+                        {r.borrower.name}
+                      </button>
+                    </h3>
                     <p className="text-xs text-muted-foreground">
                       Requested by <strong className="text-foreground">{r.requestedBy.name}</strong>{" "}
                       ({r.requestedBy.email})
@@ -1765,18 +1822,36 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
               </div>
 
               <div className="flex items-center justify-between gap-2 pt-2 border-t border-border/50">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setDeleteTarget(r)}
-                  className="text-xs text-destructive hover:text-destructive hover:bg-destructive/10 gap-1.5 h-8 px-2.5"
-                  title="Force delete this reservation request"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Force delete</span>
-                </Button>
+                {r.collectedCount === 0 &&
+                !["BORROWED", "RETURNED", "ACTIVE"].includes(r.status) ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setDeleteTarget(r)}
+                    className="text-xs text-muted-foreground hover:text-destructive hover:bg-destructive/10 gap-1 h-7 px-2"
+                    title="Delete this uncollected reservation request"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    <span className="text-[11px]">Delete request</span>
+                  </Button>
+                ) : (
+                  <span />
+                )}
 
                 <div className="flex items-center gap-2">
+                  {r.status === "APPROVED" && r.collectedCount < r.totalQuantity && (
+                    <>
+                      <Button asChild variant="outline" size="sm" className="gap-1.5">
+                        <Link to={"/board/scan?res=" + r.id}>
+                          <QrCode className="w-3.5 h-3.5" />
+                          Scan QR
+                        </Link>
+                      </Button>
+                      <Button size="sm" onClick={() => openAllocation(r)}>
+                        Mark as handed over
+                      </Button>
+                    </>
+                  )}
                   {r.status === "PENDING" && (
                     <>
                       <Button
@@ -1790,11 +1865,11 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
                       <Button
                         variant="default"
                         size="sm"
-                        onClick={() => openAllocation(r)}
+                        onClick={() => act(r.id, "approve")}
                         className="text-xs gap-1.5"
                       >
                         <Check className="w-3.5 h-3.5" />
-                        <span>Assign assets</span>
+                        <span>Approve reservation</span>
                       </Button>
                     </>
                   )}
@@ -1812,90 +1887,143 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
       )}
 
       {/* Asset Allocation Dialog: Matches E2E test selectors & accessible dialog */}
-      <Dialog
-        open={Boolean(assigningReservation)}
-        onOpenChange={() => setAssigningReservation(null)}
-      >
-        <DialogContent className="max-w-lg p-6 bg-card border-border sm:rounded-2xl space-y-4">
+      <Dialog open={borrowerOpen} onOpenChange={setBorrowerOpen}>
+        <DialogContent>
           <DialogHeader>
-            <DialogTitle>Assign assets</DialogTitle>
+            <DialogTitle>Borrower information</DialogTitle>
             <DialogDescription>
-              Choose the physical units to allocate for {assigningReservation?.borrower.name}.
+              {borrowerInfo?.chapterName
+                ? "Contact details of the member who requested equipment for " +
+                  borrowerInfo.chapterName +
+                  "."
+                : "Contact details and borrowing history."}
             </DialogDescription>
           </DialogHeader>
-
-          {assigningReservation && (
-            <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-1">
-              {assigningReservation.items.map((item) => {
-                const lineCandidates =
-                  candidates.find((c) => c.lineId === item.lineId)?.assets ?? [];
-                const currentAssigned = selectedAssets[item.lineId] ?? [];
-
-                return (
-                  <div
-                    key={item.lineId}
-                    className="p-3.5 rounded-xl border border-border bg-surface-subtle space-y-2"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-xs text-foreground">
-                        {item.quantity} × {item.name}
-                      </span>
-                      <span className="text-[11px] text-muted-foreground">
-                        Selected {currentAssigned.length} of {item.quantity}
-                      </span>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2 pt-1">
-                      {lineCandidates.map((asset) => {
-                        const isChecked = currentAssigned.includes(asset.id);
-                        return (
-                          <label
-                            key={asset.id}
-                            className={cn(
-                              "allocation-option flex items-center gap-2 p-2 rounded-lg border text-xs font-mono cursor-pointer transition-colors",
-                              isChecked
-                                ? "bg-primary/10 border-primary text-primary font-bold"
-                                : "bg-card border-input text-foreground hover:bg-muted"
-                            )}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={isChecked}
-                              onChange={(e) => {
-                                const next = e.target.checked
-                                  ? [...currentAssigned, asset.id]
-                                  : currentAssigned.filter((id) => id !== asset.id);
-                                setSelectedAssets({ ...selectedAssets, [item.lineId]: next });
-                              }}
-                              className="rounded text-primary focus:ring-primary"
-                            />
-                            <span>{asset.assetCode}</span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+          {borrowerLoading && <p className="text-sm">Loading borrower details…</p>}
+          {borrowerError && (
+            <p role="alert" className="text-sm text-destructive">
+              {borrowerError}
+            </p>
           )}
+          {borrowerInfo && (
+            <dl className="space-y-3 text-sm">
+              <div>
+                <dt className="text-muted-foreground">Full name</dt>
+                <dd className="font-medium">{borrowerInfo.name}</dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">Email</dt>
+                <dd>
+                  <a
+                    className="text-primary break-all hover:underline"
+                    href={"mailto:" + borrowerInfo.email}
+                  >
+                    {borrowerInfo.email}
+                  </a>
+                </dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">Phone number</dt>
+                <dd>
+                  {borrowerInfo.phone ? (
+                    <a className="text-primary hover:underline" href={"tel:" + borrowerInfo.phone}>
+                      {borrowerInfo.phone}
+                    </a>
+                  ) : (
+                    "Not provided"
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">
+                  {borrowerInfo.chapterName
+                    ? "Times this chapter borrowed equipment"
+                    : "Times borrowed equipment"}
+                </dt>
+                <dd className="font-medium">{borrowerInfo.borrowingCount}</dd>
+              </div>
+            </dl>
+          )}
+          <p className="text-xs text-muted-foreground">
+            Counts reservations with at least one material collected, including current loans.
+            Requests without pickup are excluded.
+          </p>
+        </DialogContent>
+      </Dialog>
 
-          <div className="flex items-center justify-end gap-2 pt-2 border-t border-border">
-            <Button variant="outline" size="sm" onClick={() => setAssigningReservation(null)}>
+      <Dialog
+        open={Boolean(handoverTarget)}
+        onOpenChange={(open) => {
+          if (!open && !handingOver) setHandoverTarget(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirm equipment handover</DialogTitle>
+            <DialogDescription>
+              Select the labels of the materials actually given to {handoverTarget?.borrower.name}.
+              You can record a partial pickup.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 max-h-[50vh] overflow-y-auto">
+            {handoverTarget?.items.map((item) => {
+              const collected = (item.assignedAssets ?? []).filter((asset) =>
+                ["BORROWED", "RETURNED"].includes(asset.state)
+              ).length;
+              const remaining = item.quantity - collected;
+              if (remaining <= 0) return null;
+              return (
+                <div key={item.lineId} className="space-y-2">
+                  <p className="text-sm font-medium">
+                    {item.name}: {remaining} remaining to collect
+                  </p>
+                  {(candidates.find((line) => line.lineId === item.lineId)?.assets ?? []).map(
+                    (asset) => (
+                      <label key={asset.id} className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          disabled={handingOver}
+                          checked={(selectedAssets[item.lineId] ?? []).includes(asset.id)}
+                          onChange={(event) =>
+                            setSelectedAssets((current) => ({
+                              ...current,
+                              [item.lineId]: event.target.checked
+                                ? [...(current[item.lineId] ?? []), asset.id]
+                                : (current[item.lineId] ?? []).filter((id) => id !== asset.id),
+                            }))
+                          }
+                        />
+                        {asset.assetCode}
+                      </label>
+                    )
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <p className="text-sm text-muted-foreground">
+            Return deadline:{" "}
+            {handoverTarget && fmtWindow(handoverTarget.pickupAt, handoverTarget.returnAt)}
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="outline"
+              disabled={handingOver}
+              onClick={() => setHandoverTarget(null)}
+            >
               Cancel
             </Button>
             <Button
-              variant="default"
-              size="sm"
-              onClick={() => assigningReservation && act(assigningReservation.id, "approve")}
+              disabled={handingOver || !Object.values(selectedAssets).flat().length}
+              onClick={confirmHandover}
             >
-              Confirm allocation
+              {handingOver ? "Saving…" : "Confirm handover"}
             </Button>
           </div>
         </DialogContent>
       </Dialog>
 
-      {/* Force Delete Confirmation Dialog */}
+      {/* Delete Request Confirmation Dialog */}
       <Dialog
         open={Boolean(deleteTarget)}
         onOpenChange={(open) => {
@@ -1906,7 +2034,7 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
           <DialogHeader>
             <DialogTitle className="text-destructive flex items-center gap-2">
               <Trash2 className="w-5 h-5" />
-              <span>Force Delete Reservation?</span>
+              <span>Delete reservation request?</span>
             </DialogTitle>
             <DialogDescription>
               Are you sure you want to permanently delete the reservation request for{" "}
@@ -1917,10 +2045,7 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
 
           <div className="py-2 text-xs text-muted-foreground bg-destructive/10 border border-destructive/20 rounded-lg p-3 space-y-1">
             <p className="font-semibold text-destructive">⚠️ Permanent Action</p>
-            <p>
-              This will completely remove the reservation request from the system and automatically release any
-              allocated physical units back to available inventory.
-            </p>
+            <p>This permanently removes this reservation and its unfulfilled reservation data.</p>
           </div>
 
           <div className="flex justify-end gap-2 pt-4">
@@ -1940,7 +2065,7 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
               className="gap-1.5"
             >
               <Trash2 className="w-4 h-4" />
-              <span>{deleting ? "Deleting…" : "Force Delete"}</span>
+              <span>{deleting ? "Deleting…" : "Delete request"}</span>
             </Button>
           </div>
         </DialogContent>
@@ -1957,50 +2082,66 @@ function BoardCalendar() {
   useEffect(() => {
     api<Reservation[]>("/api/v1/board/reservations")
       .then((reservations) => {
-        // Section 20 Calendar Event State Colors:
+        // Calendar Event State Colors:
         // APPROVED → IEEE Blue (#00629B)
         // BORROWED / ACTIVE → INSAT Violet (#981D97)
         // RETURNING / due today → IEEE Cyan (#00B5E2)
         // OVERDUE → Red (#BA0C2F)
+        // COMPLETED → Slate (#506680)
         const todayStr = DateTime.now().setZone(TZ).toISODate();
-        const calEvents: EventInput[] = reservations.map((r) => {
-          const isOverdue = r.derivedStatus === "OVERDUE";
-          const isReturningToday =
-            DateTime.fromISO(r.returnAt).setZone(TZ).toISODate() === todayStr;
-          const isBorrowed = ["ACTIVE", "BORROWED"].includes(r.status);
-          const isApproved = r.status === "APPROVED";
+        const calEvents: EventInput[] = reservations
+          .filter(
+            (r) =>
+              ["APPROVED", "COMPLETED", "ACTIVE", "BORROWED"].includes(r.status) ||
+              r.derivedStatus === "OVERDUE"
+          )
+          .flatMap((r) => {
+            const isCompleted = r.status === "COMPLETED" || r.derivedStatus === "RETURNED";
+            const isOverdue = r.derivedStatus === "OVERDUE";
+            const isBorrowed =
+              !isCompleted &&
+              (["ACTIVE", "BORROWED"].includes(r.status) || r.collectedCount > r.returnedCount);
+            const isReturningToday =
+              !isCompleted &&
+              !isOverdue &&
+              DateTime.fromISO(r.returnAt).setZone(TZ).toISODate() === todayStr;
 
-          let bgColor = "#00629B"; // default IEEE Blue
-          if (isOverdue)
-            bgColor = "#BA0C2F"; // Red
-          else if (isBorrowed)
-            bgColor = "#981D97"; // INSAT Violet
-          else if (isReturningToday)
-            bgColor = "#00B5E2"; // IEEE Cyan
-          else if (isApproved) bgColor = "#00629B"; // IEEE Blue
+            let bgColor = "#00629B"; // default IEEE Blue
+            if (isCompleted)
+              bgColor = "#506680"; // Completed slate
+            else if (isOverdue)
+              bgColor = "#BA0C2F"; // Red
+            else if (isReturningToday)
+              bgColor = "#00B5E2"; // IEEE Cyan
+            else if (isBorrowed)
+              bgColor = "#981D97"; // INSAT Violet
+            else bgColor = "#00629B"; // IEEE Blue
 
-          const itemCodes = r.items
-            .map((i) =>
-              `${i.name} ${i.assignedAssets?.map((a) => a.assetCode).join(" ") || ""}`.trim()
-            )
-            .join(", ");
-
-          return {
-            id: r.id,
-            title: `${r.borrower.name} (${itemCodes})`,
-            start: r.pickupAt,
-            end: r.returnAt,
-            backgroundColor: bgColor,
-            borderColor: "transparent",
-            textColor: "#FFFFFF",
-            extendedProps: {
-              reservation: r,
-              borrower: r.borrower.name,
-              items: itemCodes,
-              status: r.derivedStatus,
-            },
-          };
-        });
+            return r.items.map((item) => {
+              const assignedCodes = (item.assignedAssets || []).map((a) => a.assetCode).join(", ");
+              const itemLabel = `${item.quantity}× ${item.name}`;
+              const title = `${itemLabel} · ${r.borrower.name}${assignedCodes ? ` (${assignedCodes})` : ""}`;
+              return {
+                id: `${r.id}-${item.lineId}`,
+                title,
+                start: r.pickupAt,
+                end: r.returnAt,
+                backgroundColor: bgColor,
+                borderColor: "transparent",
+                textColor: "#FFFFFF",
+                extendedProps: {
+                  reservation: r,
+                  borrower: r.borrower.name,
+                  itemName: item.name,
+                  quantity: item.quantity,
+                  assignedCodes,
+                  collectedCount: r.collectedCount,
+                  returnedCount: r.returnedCount,
+                  status: r.derivedStatus,
+                },
+              };
+            });
+          });
         setEvents(calEvents);
       })
       .catch(() => setEvents([]))
@@ -2016,7 +2157,7 @@ function BoardCalendar() {
       <PageHeading
         eyebrow="BOARD · SCHEDULE"
         title="Reservation Calendar"
-        description="Temporal view of all approved, active, and pending equipment loans."
+        description="Temporal view of all approved, active, and completed equipment loans."
       />
 
       {/* Calendar Legend: Section 20 */}
@@ -2037,6 +2178,10 @@ function BoardCalendar() {
         <div className="flex items-center gap-1.5">
           <span className="w-3 h-3 rounded-full bg-[#BA0C2F]" />
           <span>Overdue</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="w-3 h-3 rounded-full bg-[#506680]" />
+          <span>Completed</span>
         </div>
       </div>
 
@@ -2074,8 +2219,27 @@ function BoardCalendar() {
                 <StatusBadge status={selectedEvent.status as DomainStatus} className="mt-1" />
               </div>
               <div>
-                <span className="text-muted-foreground block font-medium">Equipment Assigned</span>
-                <p className="font-semibold text-sm mt-0.5">{selectedEvent.items}</p>
+                <span className="text-muted-foreground block font-medium">
+                  Equipment & Quantity
+                </span>
+                <p className="font-semibold text-sm mt-0.5">
+                  {selectedEvent.quantity}× {selectedEvent.itemName}
+                </p>
+                {selectedEvent.assignedCodes && (
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Physical units: {selectedEvent.assignedCodes}
+                  </p>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div>
+                  <span className="text-muted-foreground block font-medium">Collected</span>
+                  <p className="font-semibold mt-0.5">{selectedEvent.collectedCount} units</p>
+                </div>
+                <div>
+                  <span className="text-muted-foreground block font-medium">Returned</span>
+                  <p className="font-semibold mt-0.5">{selectedEvent.returnedCount} units</p>
+                </div>
               </div>
               <div>
                 <span className="text-muted-foreground block font-medium">Window</span>
@@ -2178,7 +2342,6 @@ function BoardInventory({ setNotice }: { setNotice: (message: string) => void })
     }
   };
 
-
   const filtered = inventory.filter(
     (item) =>
       item.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -2277,7 +2440,9 @@ function BoardInventory({ setNotice }: { setNotice: (message: string) => void })
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => setDeleteConfirm({ type: "equipment", id: item.id, name: item.name })}
+                    onClick={() =>
+                      setDeleteConfirm({ type: "equipment", id: item.id, name: item.name })
+                    }
                     className="text-xs text-destructive border-destructive/30 hover:bg-destructive/10 hover:text-destructive gap-1"
                     title="Permanently delete this equipment type"
                   >
@@ -2362,7 +2527,13 @@ function BoardInventory({ setNotice }: { setNotice: (message: string) => void })
                             type="button"
                             variant="outline"
                             size="sm"
-                            onClick={() => setDeleteConfirm({ type: "asset", id: asset.id, name: asset.assetCode })}
+                            onClick={() =>
+                              setDeleteConfirm({
+                                type: "asset",
+                                id: asset.id,
+                                name: asset.assetCode,
+                              })
+                            }
                             className="text-[11px] h-7 px-2 text-destructive border-destructive/30 hover:bg-destructive/10 hover:text-destructive gap-1"
                             title="Permanently delete this asset"
                           >
@@ -2506,7 +2677,20 @@ function BoardScan({
   setNotice: (message: string) => void;
 }) {
   const [token, setToken] = useState(initialToken);
+  const [reservation, setReservation] = useState<Reservation | null>(null);
+  const openReservation = useCallback(async (id: string) => {
+    const detail = await api<Reservation>(`/api/v1/board/reservations/${encodeURIComponent(id)}`);
+    if (!["APPROVED", "COMPLETED", "CANCELLED"].includes(detail.status))
+      throw new Error("This reservation has not been approved.");
+    setReservation(detail);
+    setToken("");
+  }, []);
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get("res");
+    if (id) void openReservation(id).catch((e: Error) => setNotice(e.message));
+  }, [openReservation, setNotice]);
   const [busy, setBusy] = useState(false);
+  const [cameraActive, setCameraActive] = useState(false);
   const [scanError, setScanError] = useState<{ title: string; message: string } | null>(null);
   const [result, setResult] = useState<{
     operation: string;
@@ -2515,15 +2699,125 @@ function BoardScan({
     borrowerName?: string;
     returnAt?: string;
   } | null>(null);
+  const [selectionPrompt, setSelectionPrompt] = useState<{
+    qrToken: string;
+    assetName: string;
+    assetCode: string;
+    reservations: Array<{
+      id: string;
+      borrowerName: string;
+      chapterName?: string | null;
+      pickupAt: string;
+      returnAt: string;
+      quantity: number;
+      uncollectedCount: number;
+    }>;
+  } | null>(null);
+
   const video = useRef<HTMLVideoElement>(null);
   const controls = useRef<{ stop: () => void } | null>(null);
   const reader = useRef<BrowserQRCodeReader | null>(null);
+  const isScanningRef = useRef(false);
+  const lastScannedRef = useRef<{ code: string; time: number } | null>(null);
+  const selectionPromptRef = useRef(selectionPrompt);
+  selectionPromptRef.current = selectionPrompt;
 
   const stop = () => {
     controls.current?.stop();
     controls.current = null;
+    isScanningRef.current = false;
+    setCameraActive(false);
   };
   useEffect(() => () => stop(), []);
+
+  const executeScan = async (rawCode: string, explicitReservationId?: string) => {
+    setBusy(true);
+    setResult(null);
+    setScanError(null);
+    const value = rawCode.match(/[a-f0-9]{64}/i)?.[0] ?? rawCode.trim();
+    try {
+      let reservationId: string | null = null;
+      try {
+        reservationId = new URL(rawCode.trim(), window.location.origin).searchParams.get("res");
+      } catch {
+        /* A raw material token is also accepted. */
+      }
+      if (reservationId) {
+        await openReservation(reservationId);
+        setNotice("Reservation opened. Scan equipment to record borrow or return.");
+        setTimeout(() => {
+          isScanningRef.current = false;
+        }, 1500);
+        return;
+      }
+      const targetReservationId = explicitReservationId ?? reservation?.id;
+      const scanned = await api<
+        | {
+            operation: string;
+            assetName: string;
+            assetCode: string;
+            borrowerName?: string;
+            returnAt?: string;
+            code?: undefined;
+          }
+        | {
+            code: "RESERVATION_SELECTION_REQUIRED";
+            assetName: string;
+            assetCode: string;
+            reservations: Array<{
+              id: string;
+              borrowerName: string;
+              chapterName?: string | null;
+              pickupAt: string;
+              returnAt: string;
+              quantity: number;
+              uncollectedCount: number;
+            }>;
+            operation?: undefined;
+          }
+      >("/api/v1/board/scan", {
+        ...post({
+          qrToken: value,
+          ...(targetReservationId ? { reservationId: targetReservationId } : {}),
+        }),
+        headers: { "Idempotency-Key": crypto.randomUUID() },
+      });
+
+      if (scanned && scanned.code === "RESERVATION_SELECTION_REQUIRED") {
+        setSelectionPrompt({
+          qrToken: value,
+          assetName: scanned.assetName,
+          assetCode: scanned.assetCode,
+          reservations: scanned.reservations,
+        });
+        return;
+      }
+
+      setResult(scanned);
+      setToken("");
+      if (reservation)
+        setReservation(await api<Reservation>(`/api/v1/board/reservations/${reservation.id}`));
+      setNotice(
+        scanned?.operation === "RETURNED"
+          ? `${scanned.assetName} #${scanned.assetCode} returned to the desk.`
+          : `${scanned.assetName} #${scanned.assetCode} checked out to ${scanned.borrowerName || "borrower"}.`
+      );
+      setTimeout(() => {
+        isScanningRef.current = false;
+      }, 1500);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Scan could not be processed.";
+      setScanError({
+        title: msg.includes("cooldown") ? "Scan cooldown active" : "Handover rejected",
+        message: msg,
+      });
+      setTimeout(() => {
+        isScanningRef.current = false;
+      }, 2000);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const beginCamera = async () => {
     if (!video.current) return;
@@ -2534,12 +2828,28 @@ function BoardScan({
         video.current,
         (decoded) => {
           if (!decoded) return;
+          if (isScanningRef.current || selectionPromptRef.current) return;
+
           const text = decoded.getText();
           const matched = text.match(/(?:^|\/)([a-f0-9]{64})(?:\?.*)?$/i);
-          setToken(matched?.[1] ?? text);
-          stop();
+          const code = matched?.[1] ?? text;
+
+          const now = Date.now();
+          if (
+            lastScannedRef.current &&
+            lastScannedRef.current.code === code &&
+            now - lastScannedRef.current.time < 3000
+          ) {
+            return;
+          }
+
+          isScanningRef.current = true;
+          lastScannedRef.current = { code, time: now };
+          setToken(code);
+          void executeScan(code);
         }
       );
+      setCameraActive(true);
     } catch (e) {
       setNotice(
         e instanceof Error ? e.message : "Camera is unavailable. Use manual token entry below."
@@ -2549,30 +2859,8 @@ function BoardScan({
 
   const scan = async (event?: FormEvent) => {
     event?.preventDefault();
-    setBusy(true);
-    setResult(null);
-    setScanError(null);
-    const value = token.match(/[a-f0-9]{64}/i)?.[0] ?? token.trim();
-    try {
-      const scanned = await api<typeof result>("/api/v1/board/scan", {
-        ...post({ qrToken: value }),
-        headers: { "Idempotency-Key": crypto.randomUUID() },
-      });
-      setResult(scanned);
-      setNotice(
-        scanned?.operation === "RETURNED"
-          ? "Equipment returned to the desk."
-          : "Equipment checked out."
-      );
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Scan could not be processed.";
-      setScanError({
-        title: msg.includes("cooldown") ? "Scan cooldown active" : "Handover rejected",
-        message: msg,
-      });
-    } finally {
-      setBusy(false);
-    }
+    if (!token.trim()) return;
+    await executeScan(token);
   };
 
   return (
@@ -2585,7 +2873,7 @@ function BoardScan({
           </div>
           <h1 className="text-2xl font-bold tracking-tight text-foreground">Scan equipment</h1>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Operational scanner for equipment checkouts and returns.
+            Scan an equipment QR to record its checkout or return.
           </p>
         </div>
         <Button asChild variant="outline" size="sm" className="gap-1.5">
@@ -2597,6 +2885,51 @@ function BoardScan({
       </div>
 
       {/* Section 21: Scanner Visual Identity (Base Navy #002855, Viewfinder Cyan #00B5E2) */}
+      {reservation && (
+        <section className="rounded-xl border border-border bg-card p-4 space-y-3">
+          <h2 className="font-semibold">
+            {reservation.borrower.name} · {titleCase(reservation.derivedStatus)}
+          </h2>
+          <p className="text-sm">
+            {reservation.collectedCount}/{reservation.totalQuantity} collected ·{" "}
+            {reservation.returnedCount}/{reservation.totalQuantity} returned
+          </p>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              onClick={() => setReservation(null)}
+            >
+              Close reservation
+            </Button>
+          </div>
+          <ul className="text-sm space-y-1">
+            {reservation.items.map((item) => (
+              <li key={item.lineId}>
+                {item.quantity} × {item.name} ·{" "}
+                {
+                  (item.assignedAssets ?? []).filter((asset) =>
+                    ["BORROWED", "RETURNED"].includes(asset.state)
+                  ).length
+                }{" "}
+                collected
+              </li>
+            ))}
+            {reservation.items.flatMap((item) =>
+              (item.assignedAssets ?? []).map((asset) => (
+                <li key={asset.id}>
+                  {item.name} · {asset.assetCode} · {titleCase(asset.state)}
+                </li>
+              ))
+            )}
+          </ul>
+          <p className="text-xs text-muted-foreground">
+            Scan equipment QR to record checkout or return. All materials must be returned before
+            the reservation is completed.
+          </p>
+        </section>
+      )}
       <div className="rounded-2xl bg-[#002855] text-white p-6 shadow-elevation space-y-5 border border-[#003B7A]">
         {/* Camera Viewport with Dominant Viewfinder */}
         <div className="relative aspect-video w-full rounded-xl bg-black/80 overflow-hidden flex items-center justify-center border-2 border-[#00B5E2]/40">
@@ -2614,7 +2947,7 @@ function BoardScan({
               <span className="w-6 h-6 border-t-2 border-l-2 border-[#00B5E2]" />
               <span className="w-6 h-6 border-t-2 border-r-2 border-[#00B5E2]" />
             </div>
-            {!controls.current && (
+            {!cameraActive && (
               <div className="text-center space-y-1">
                 <QrCode className="w-10 h-10 text-[#00B5E2] mx-auto animate-pulse" />
                 <p className="text-xs text-white/90 font-medium">Keep QR code inside frame</p>
@@ -2632,11 +2965,11 @@ function BoardScan({
           <Button
             variant="scanner"
             size="sm"
-            onClick={controls.current ? stop : beginCamera}
+            onClick={cameraActive ? stop : beginCamera}
             className="gap-2 px-5 min-h-[44px]"
           >
             <QrCode className="w-4 h-4" />
-            <span>{controls.current ? "Stop Camera" : "Start Camera"}</span>
+            <span>{cameraActive ? "Stop Camera" : "Start Camera"}</span>
           </Button>
         </div>
 
@@ -2645,7 +2978,7 @@ function BoardScan({
           <Input
             value={token}
             onChange={(e) => setToken(e.target.value)}
-            placeholder="Paste 64-char QR token or label URL..."
+            placeholder="Paste reservation QR URL or material QR token..."
             className="font-mono text-xs flex-1 bg-white/10 text-white placeholder:text-white/50 border-white/20 focus-visible:ring-[#00B5E2]"
           />
           <Button
@@ -2655,7 +2988,7 @@ function BoardScan({
             disabled={busy || !token.trim()}
             className="shrink-0"
           >
-            {busy ? "Processing…" : "Record Handover"}
+            {busy ? "Processing…" : "Process equipment"}
           </Button>
         </form>
 
@@ -2697,12 +3030,78 @@ function BoardScan({
           </div>
         )}
       </div>
+
+      {/* Disambiguation Dialog when multiple reservations match */}
+      <Dialog
+        open={Boolean(selectionPrompt)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSelectionPrompt(null);
+            setTimeout(() => {
+              isScanningRef.current = false;
+            }, 500);
+          }
+        }}
+      >
+        <DialogContent className="max-w-md p-6 bg-card border-border sm:rounded-2xl space-y-4">
+          <DialogHeader>
+            <DialogTitle className="text-base font-bold">Select Eligible Reservation</DialogTitle>
+            <DialogDescription className="text-xs">
+              Multiple approved reservations qualify for {selectionPrompt?.assetName} #
+              {selectionPrompt?.assetCode}. Select which reservation to allocate this asset to:
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            {selectionPrompt?.reservations.map((r) => (
+              <button
+                key={r.id}
+                type="button"
+                onClick={() => {
+                  const pendingToken = selectionPrompt.qrToken;
+                  setSelectionPrompt(null);
+                  void executeScan(pendingToken, r.id);
+                }}
+                className="w-full text-left p-3 rounded-xl border border-border hover:border-primary/50 hover:bg-surface-subtle transition-all space-y-1"
+              >
+                <div className="flex items-center justify-between font-semibold text-xs text-foreground">
+                  <span>
+                    {r.chapterName ? `${r.chapterName} — ` : ""}
+                    {r.borrowerName}
+                  </span>
+                  <span className="text-[11px] text-primary">
+                    {r.uncollectedCount} {r.uncollectedCount === 1 ? "unit" : "units"} remaining
+                  </span>
+                </div>
+                <div className="text-[11px] text-muted-foreground">
+                  Return {fmtTime(r.returnAt)}
+                </div>
+              </button>
+            ))}
+          </div>
+          <div className="flex justify-end pt-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setSelectionPrompt(null);
+                setTimeout(() => {
+                  isScanningRef.current = false;
+                }, 500);
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
 function BoardChapters({ setNotice }: { setNotice: (message: string) => void }) {
-  const [chapters, setChapters] = useState<Array<{ id: string; name: string; shortCode: string; active: boolean }>>([]);
+  const [chapters, setChapters] = useState<
+    Array<{ id: string; name: string; shortCode: string; active: boolean }>
+  >([]);
   const [name, setName] = useState("");
   const [shortCode, setShortCode] = useState("");
   const [loading, setLoading] = useState(true);
@@ -2784,7 +3183,12 @@ function BoardChapters({ setNotice }: { setNotice: (message: string) => void }) 
               className="p-4 rounded-xl border border-border bg-card shadow-xs flex items-center justify-between gap-2"
             >
               <div className="min-w-0">
-                <h3 className={cn("font-bold text-sm", ch.active ? "text-foreground" : "text-muted-foreground line-through")}>
+                <h3
+                  className={cn(
+                    "font-bold text-sm",
+                    ch.active ? "text-foreground" : "text-muted-foreground line-through"
+                  )}
+                >
                   {ch.name}
                 </h3>
                 <span className="font-mono text-xs text-primary font-bold">{ch.shortCode}</span>
@@ -2827,7 +3231,8 @@ function BoardChapters({ setNotice }: { setNotice: (message: string) => void }) 
               <span>Delete Chapter?</span>
             </DialogTitle>
             <DialogDescription>
-              Are you sure you want to permanently delete chapter &ldquo;{deleteTarget?.name}&rdquo;? This cannot be undone.
+              Are you sure you want to permanently delete chapter &ldquo;{deleteTarget?.name}
+              &rdquo;? This cannot be undone.
             </DialogDescription>
           </DialogHeader>
           <div className="flex justify-end gap-2 pt-4">
@@ -2878,8 +3283,8 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
   const [newEmail, setNewEmail] = useState("");
   const [newRole, setNewRole] = useState<"BOARD" | "SUPERADMIN">("BOARD");
   const [newPassword, setNewPassword] = useState("");
+  const [newPasswordConfirmation, setNewPasswordConfirmation] = useState("");
   const [showPass, setShowPass] = useState(false);
-  const [copiedPass, setCopiedPass] = useState(false);
   const [addBusy, setAddBusy] = useState(false);
   const [createdCreds, setCreatedCreds] = useState<{
     name: string;
@@ -2891,6 +3296,7 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
 
   // Reset password form state
   const [resetPassword, setResetPassword] = useState("");
+  const [resetPasswordConfirmation, setResetPasswordConfirmation] = useState("");
   const [showResetPass, setShowResetPass] = useState(false);
   const [copiedResetPass, setCopiedResetPass] = useState(false);
   const [resetBusy, setResetBusy] = useState(false);
@@ -2913,15 +3319,17 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
     setNewName("");
     setNewEmail("");
     setNewRole("BOARD");
-    setNewPassword(generateSecurePassword(16));
+    setNewPassword("");
+    setNewPasswordConfirmation("");
     setShowPass(false);
-    setCopiedPass(false);
     setShowAddModal(true);
   };
 
   const openResetModal = (u: User) => {
     setResetTarget(u);
-    setResetPassword(generateSecurePassword(16));
+    const password = generateSecurePassword(16);
+    setResetPassword(password);
+    setResetPasswordConfirmation(password);
     setShowResetPass(false);
     setCopiedResetPass(false);
   };
@@ -2938,6 +3346,14 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
 
   const createUser = async (e: FormEvent) => {
     e.preventDefault();
+    if (newPassword.length < 12 || newPassword.length > 128) {
+      setNotice("Choose a password between 12 and 128 characters.");
+      return;
+    }
+    if (newPassword !== newPasswordConfirmation) {
+      setNotice("The passwords do not match.");
+      return;
+    }
     setAddBusy(true);
     try {
       await api(
@@ -2968,6 +3384,14 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
   const doResetPassword = async (e: FormEvent) => {
     e.preventDefault();
     if (!resetTarget) return;
+    if (resetPassword.length < 12 || resetPassword.length > 128) {
+      setNotice("Choose a password between 12 and 128 characters.");
+      return;
+    }
+    if (resetPassword !== resetPasswordConfirmation) {
+      setNotice("The passwords do not match.");
+      return;
+    }
     setResetBusy(true);
     try {
       await api(`/api/v1/board/users/${resetTarget.id}/password`, {
@@ -2987,8 +3411,8 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-6">
       <PageHeading
         eyebrow="SUPERADMIN · SECURITY"
-        title="User Accounts & Role Clearances"
-        description="Server-enforced role assignments. Board and Superadmin accounts sign in using their autogenerated secure credentials."
+        title="User Accounts & Roles"
+        description="Server-enforced role assignments. Coordinate an initial password with the new account owner, then share the account email with them."
         action={
           <Button variant="default" size="sm" onClick={openAddModal} className="gap-2">
             <Plus className="w-4 h-4" />
@@ -3070,7 +3494,7 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
           <DialogHeader>
             <DialogTitle>Add Board Member</DialogTitle>
             <DialogDescription>
-              Create a new Board or Superadmin account. A secure password is automatically generated.
+              Create a Board or Superadmin account and choose its initial password.
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={createUser} className="space-y-4 pt-2">
@@ -3105,30 +3529,22 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
               </select>
             </div>
 
-            {/* Autogenerated Secure Password Box */}
+            {/* Initial Password */}
             <div className="space-y-1.5 p-3 rounded-xl bg-surface-subtle border border-border">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-semibold text-foreground">
-                  Autogenerated Secure Password
-                </label>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setNewPassword(generateSecurePassword(16));
-                    setCopiedPass(false);
-                  }}
-                  className="text-[11px] text-primary hover:underline flex items-center gap-1 font-semibold"
-                >
-                  <RefreshCw className="w-3 h-3" />
-                  <span>Regenerate</span>
-                </button>
-              </div>
+              <label htmlFor="new-board-password" className="text-xs font-semibold text-foreground">
+                Initial Password
+              </label>
               <div className="flex items-center gap-2">
                 <div className="relative flex-1">
                   <Input
-                    readOnly
+                    id="new-board-password"
                     type={showPass ? "text" : "password"}
                     value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    minLength={12}
+                    maxLength={128}
+                    autoComplete="new-password"
+                    required
                     className="font-mono text-xs pr-9 bg-card select-all font-semibold tracking-wider text-foreground"
                   />
                   <button
@@ -3136,30 +3552,33 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
                     onClick={() => setShowPass(!showPass)}
                     className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                   >
-                    {showPass ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    {showPass ? (
+                      <EyeOff className="w-3.5 h-3.5" />
+                    ) : (
+                      <Eye className="w-3.5 h-3.5" />
+                    )}
                   </button>
                 </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    void navigator.clipboard.writeText(newPassword);
-                    setCopiedPass(true);
-                    setTimeout(() => setCopiedPass(false), 2000);
-                  }}
-                  className="text-xs shrink-0 gap-1.5 h-9"
-                >
-                  {copiedPass ? (
-                    <Check className="w-3.5 h-3.5 text-emerald-600" />
-                  ) : (
-                    <Copy className="w-3.5 h-3.5" />
-                  )}
-                  <span>{copiedPass ? "Copied" : "Copy"}</span>
-                </Button>
               </div>
+              <label
+                htmlFor="new-board-password-confirmation"
+                className="block pt-2 text-xs font-semibold text-foreground"
+              >
+                Confirm password
+              </label>
+              <Input
+                id="new-board-password-confirmation"
+                type="password"
+                value={newPasswordConfirmation}
+                onChange={(e) => setNewPasswordConfirmation(e.target.value)}
+                minLength={12}
+                maxLength={128}
+                autoComplete="new-password"
+                required
+                className="font-mono text-xs bg-card"
+              />
               <p className="text-[10px] text-muted-foreground">
-                16-character high-entropy passphrase with uppercase, lowercase, numbers, and symbols.
+                Use at least 12 characters and coordinate this password with the new account owner.
               </p>
             </div>
 
@@ -3252,20 +3671,26 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
           <DialogHeader>
             <DialogTitle>Set New Password</DialogTitle>
             <DialogDescription>
-              Set a new autogenerated secure password for <strong>{resetTarget?.name}</strong>. Existing sessions will be invalidated.
+              Set a password to coordinate with <strong>{resetTarget?.name}</strong>. Existing
+              sessions will be invalidated.
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={doResetPassword} className="space-y-4 pt-2">
-            {/* Autogenerated Secure Password Box */}
+            {/* New Password */}
             <div className="space-y-1.5 p-3 rounded-xl bg-surface-subtle border border-border">
               <div className="flex items-center justify-between">
-                <label className="text-xs font-semibold text-foreground">
-                  Autogenerated Secure Password
+                <label
+                  htmlFor="reset-user-password"
+                  className="text-xs font-semibold text-foreground"
+                >
+                  New Password
                 </label>
                 <button
                   type="button"
                   onClick={() => {
-                    setResetPassword(generateSecurePassword(16));
+                    const password = generateSecurePassword(16);
+                    setResetPassword(password);
+                    setResetPasswordConfirmation(password);
                     setCopiedResetPass(false);
                   }}
                   className="text-[11px] text-primary hover:underline flex items-center gap-1 font-semibold"
@@ -3277,9 +3702,14 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
               <div className="flex items-center gap-2">
                 <div className="relative flex-1">
                   <Input
-                    readOnly
+                    id="reset-user-password"
                     type={showResetPass ? "text" : "password"}
                     value={resetPassword}
+                    onChange={(e) => setResetPassword(e.target.value)}
+                    minLength={12}
+                    maxLength={128}
+                    autoComplete="new-password"
+                    required
                     className="font-mono text-xs pr-9 bg-card select-all font-semibold tracking-wider text-foreground"
                   />
                   <button
@@ -3287,7 +3717,11 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
                     onClick={() => setShowResetPass(!showResetPass)}
                     className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                   >
-                    {showResetPass ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    {showResetPass ? (
+                      <EyeOff className="w-3.5 h-3.5" />
+                    ) : (
+                      <Eye className="w-3.5 h-3.5" />
+                    )}
                   </button>
                 </div>
                 <Button
@@ -3309,6 +3743,26 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
                   <span>{copiedResetPass ? "Copied" : "Copy"}</span>
                 </Button>
               </div>
+              <label
+                htmlFor="reset-user-password-confirmation"
+                className="block pt-2 text-xs font-semibold text-foreground"
+              >
+                Confirm password
+              </label>
+              <Input
+                id="reset-user-password-confirmation"
+                type="password"
+                value={resetPasswordConfirmation}
+                onChange={(e) => setResetPasswordConfirmation(e.target.value)}
+                minLength={12}
+                maxLength={128}
+                autoComplete="new-password"
+                required
+                className="font-mono text-xs bg-card"
+              />
+              <p className="text-[10px] text-muted-foreground">
+                Use at least 12 characters. You can edit the generated password before saving.
+              </p>
             </div>
 
             <div className="flex justify-end gap-2 pt-2">
@@ -3340,7 +3794,7 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
               Are you sure you want to permanently delete the account for{" "}
               <strong>{deleteUserTarget?.name}</strong> (
               <code className="text-xs font-mono">{deleteUserTarget?.email}</code>
-              )? This will revoke clearances, remove credentials, and terminate all active sessions.
+              )? This will revoke access, remove credentials, and terminate all active sessions.
             </DialogDescription>
           </DialogHeader>
           <div className="flex justify-end gap-2 pt-4">

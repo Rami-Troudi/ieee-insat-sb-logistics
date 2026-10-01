@@ -56,6 +56,7 @@ var authUsers = sqliteTable(
     id: text("id").primaryKey(),
     name: text("name").notNull(),
     email: text("email").notNull(),
+    phone: text("phone"),
     emailVerified: integer("emailVerified", { mode: "boolean" }).notNull().default(false),
     image: text("image"),
     role: text("role", { enum: ["USER", "BOARD", "SUPERADMIN"] }).notNull().default("USER"),
@@ -559,7 +560,9 @@ async function resolveIdentity(c) {
           const now = /* @__PURE__ */ new Date();
           const [session] = await c.env.DB.select({
             userId: schema_exports.authSessions.userId
-          }).from(schema_exports.authSessions).where(and(eq(schema_exports.authSessions.token, token), gt(schema_exports.authSessions.expiresAt, now))).limit(1);
+          }).from(schema_exports.authSessions).where(
+            and(eq(schema_exports.authSessions.token, token), gt(schema_exports.authSessions.expiresAt, now))
+          ).limit(1);
           if (session?.userId) {
             userId = session.userId;
           }
@@ -714,6 +717,93 @@ async function findAvailableAssets(executor, equipmentItemId, pickupAt, returnAt
     [equipmentItemId, returnAt, pickupAt]
   );
 }
+async function availableQuantity(tx, equipmentId, pickupAt, returnAt, excludeReservationId = "") {
+  const capacity = await one(
+    tx,
+    "SELECT COUNT(*) AS count FROM assets a JOIN equipment_items e ON e.id=a.equipment_item_id WHERE a.equipment_item_id=? AND a.active=1 AND e.active=1 AND a.state NOT IN ('OUT_OF_SERVICE','RETIRED')",
+    [equipmentId]
+  );
+  const loans = await rows(
+    tx,
+    "SELECT r.id,r.pickup_at,r.return_at,l.quantity,(SELECT COUNT(*) FROM reservation_assets ra WHERE ra.reservation_line_id=l.id AND ra.state='RETURNED') AS returned,(SELECT COUNT(*) FROM reservation_assets ra WHERE ra.reservation_line_id=l.id AND ra.state='BORROWED') AS borrowed FROM reservations r JOIN reservation_lines l ON l.reservation_id=r.id WHERE l.equipment_item_id=? AND r.id<>? AND (r.status='APPROVED' OR EXISTS (SELECT 1 FROM reservation_assets ra WHERE ra.reservation_line_id=l.id AND ra.state='BORROWED'))",
+    [equipmentId, excludeReservationId]
+  );
+  const events = [];
+  for (const loan of loans) {
+    const overlaps = Number(loan.pickup_at) < returnAt && pickupAt < Number(loan.return_at);
+    const held = overlaps ? Math.max(Number(loan.borrowed), Number(loan.quantity) - Number(loan.returned)) : Number(loan.borrowed);
+    if (!held) continue;
+    events.push({
+      time: overlaps ? Math.max(pickupAt, Number(loan.pickup_at)) : pickupAt,
+      delta: held
+    });
+    events.push({
+      time: overlaps ? Math.min(returnAt, Number(loan.return_at)) : returnAt,
+      delta: -held
+    });
+  }
+  events.sort((a, b) => a.time - b.time || a.delta - b.delta);
+  let used = 0, peak = 0;
+  for (const event of events) {
+    used += event.delta;
+    peak = Math.max(peak, used);
+  }
+  return Math.max(0, Number(capacity?.count ?? 0) - peak);
+}
+async function assertCanReduceCapacity(tx, equipmentItemId, reductionCount, actionDescription) {
+  if (reductionCount <= 0) return;
+  const currentCapacityRow = await one(
+    tx,
+    "SELECT COUNT(*) AS count FROM assets a JOIN equipment_items e ON e.id=a.equipment_item_id WHERE a.equipment_item_id=? AND a.active=1 AND e.active=1 AND a.state NOT IN ('OUT_OF_SERVICE','RETIRED')",
+    [equipmentItemId]
+  );
+  const currentCapacity = Number(currentCapacityRow?.count ?? 0);
+  const newCapacity = Math.max(0, currentCapacity - reductionCount);
+  const loans = await rows(
+    tx,
+    "SELECT r.id, r.pickup_at, r.return_at, l.quantity, (SELECT COUNT(*) FROM reservation_assets ra WHERE ra.reservation_line_id=l.id AND ra.state='RETURNED') AS returned, (SELECT COUNT(*) FROM reservation_assets ra WHERE ra.reservation_line_id=l.id AND ra.state='BORROWED') AS borrowed FROM reservations r JOIN reservation_lines l ON l.reservation_id=r.id WHERE l.equipment_item_id=? AND (r.status='APPROVED' OR EXISTS (SELECT 1 FROM reservation_assets ra WHERE ra.reservation_line_id=l.id AND ra.state='BORROWED'))",
+    [equipmentItemId]
+  );
+  const now = Date.now();
+  const events = [];
+  for (const loan of loans) {
+    const returnAt = Number(loan.return_at);
+    if (returnAt <= now && Number(loan.borrowed) === 0) continue;
+    const held = Math.max(Number(loan.borrowed), Number(loan.quantity) - Number(loan.returned));
+    if (held <= 0) continue;
+    events.push({ time: Number(loan.pickup_at), delta: held });
+    events.push({ time: returnAt, delta: -held });
+  }
+  events.sort((a, b) => a.time - b.time || a.delta - b.delta);
+  let used = 0;
+  let peak = 0;
+  for (const event of events) {
+    used += event.delta;
+    peak = Math.max(peak, used);
+  }
+  if (newCapacity < peak) {
+    throw new DomainError(
+      409,
+      "RESERVATION_CONFLICT",
+      `Cannot ${actionDescription} because an approved reservation requires ${peak} units during this period and only ${newCapacity} usable units would remain.`
+    );
+  }
+}
+async function checkQuantities(tx, reservationId, pickupAt, returnAt) {
+  const lines = await rows(
+    tx,
+    "SELECT equipment_item_id,quantity FROM reservation_lines WHERE reservation_id=?",
+    [reservationId]
+  );
+  for (const line of lines) {
+    if (await availableQuantity(tx, line.equipment_item_id, pickupAt, returnAt, reservationId) < Number(line.quantity))
+      throw new DomainError(
+        409,
+        "RESERVATION_CONFLICT",
+        "The requested equipment quantity is no longer available for this window."
+      );
+  }
+}
 async function listCatalogue(env, pickupAt, returnAt) {
   const items = await rows(
     env.CLIENT,
@@ -722,9 +812,71 @@ async function listCatalogue(env, pickupAt, returnAt) {
   return Promise.all(
     items.map(async (item) => ({
       ...item,
-      availableQuantity: (await findAvailableAssets(env.CLIENT, item.id, pickupAt, returnAt)).length
+      availableQuantity: await availableQuantity(
+        env.CLIENT,
+        item.id,
+        pickupAt,
+        returnAt
+      )
     }))
   );
+}
+async function finalizeReservationIfFinished(tx, reservationId, now = Date.now()) {
+  const reservation = await one(
+    tx,
+    `SELECT r.id, r.status, r.return_at,
+      COALESCE((SELECT SUM(quantity) FROM reservation_lines WHERE reservation_id = r.id), 0) AS total_requested,
+      COALESCE((SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = r.id AND state = 'BORROWED'), 0) AS borrowed_count,
+      COALESCE((SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = r.id AND state = 'RETURNED'), 0) AS returned_count,
+      COALESCE((SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = r.id AND state NOT IN ('RESERVED', 'RELEASED')), 0) AS collected_count
+     FROM reservations r
+     WHERE r.id = ?`,
+    [reservationId]
+  );
+  if (!reservation || reservation.status !== "APPROVED") {
+    return false;
+  }
+  const returnAt = Number(reservation.return_at);
+  const borrowedCount = Number(reservation.borrowed_count);
+  const returnedCount = Number(reservation.returned_count);
+  const totalRequested = Number(reservation.total_requested);
+  const collectedCount = Number(reservation.collected_count);
+  let shouldComplete = false;
+  if (totalRequested > 0 && collectedCount === totalRequested && returnedCount === totalRequested) {
+    shouldComplete = true;
+  } else if (now >= returnAt && borrowedCount === 0) {
+    shouldComplete = true;
+  }
+  if (shouldComplete) {
+    await tx.execute({
+      sql: "UPDATE reservations SET status='COMPLETED', updated_at=? WHERE id=? AND status='APPROVED'",
+      args: [now, reservationId]
+    });
+    return true;
+  }
+  return false;
+}
+async function reconcileExpiredReservations(env, now = Date.now()) {
+  await write(env, async (tx) => {
+    await tx.execute({
+      sql: `UPDATE reservations
+            SET status = 'COMPLETED', updated_at = ?
+            WHERE status = 'APPROVED'
+              AND return_at <= ?
+              AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state = 'BORROWED') = 0`,
+      args: [now, now]
+    });
+    await tx.execute({
+      sql: `UPDATE reservations
+            SET status = 'COMPLETED', updated_at = ?
+            WHERE status = 'APPROVED'
+              AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state = 'BORROWED') = 0
+              AND (SELECT COALESCE(SUM(quantity), 0) FROM reservation_lines WHERE reservation_id = reservations.id) > 0
+              AND (SELECT COALESCE(SUM(quantity), 0) FROM reservation_lines WHERE reservation_id = reservations.id) = (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state = 'RETURNED')
+              AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state NOT IN ('RESERVED', 'RELEASED')) = (SELECT COALESCE(SUM(quantity), 0) FROM reservation_lines WHERE reservation_id = reservations.id)`,
+      args: [now]
+    });
+  });
 }
 async function getReservation(env, reservationId, includeAssets = false) {
   const executor = env.CLIENT;
@@ -741,6 +893,12 @@ async function getReservation(env, reservationId, includeAssets = false) {
     [reservationId]
   );
   if (!reservation) return null;
+  if (reservation.status === "APPROVED") {
+    const finalized = await finalizeReservationIfFinished(executor, reservationId);
+    if (finalized) {
+      reservation.status = "COMPLETED";
+    }
+  }
   const lineRows = await rows(
     executor,
     `SELECT l.id,l.equipment_item_id,e.name AS equipment_name,l.quantity,
@@ -785,10 +943,17 @@ async function getReservation(env, reservationId, includeAssets = false) {
     (state) => state !== "RESERVED" && state !== "RELEASED"
   ).length;
   let derivedStatus = reservation.status === "COMPLETED" ? "RETURNED" : reservation.status;
-  if (borrowedCount > 0 && now > Number(reservation.return_at)) derivedStatus = "OVERDUE";
-  else if (borrowedCount > 0 && returnedCount > 0) derivedStatus = "PARTIALLY_RETURNED";
-  else if (borrowedCount > 0) derivedStatus = "BORROWED";
-  else if (reservation.status === "COMPLETED") derivedStatus = "RETURNED";
+  if (borrowedCount > 0 && now > Number(reservation.return_at)) {
+    derivedStatus = "OVERDUE";
+  } else if (borrowedCount > 0 && returnedCount > 0) {
+    derivedStatus = "PARTIALLY_RETURNED";
+  } else if (borrowedCount > 0) {
+    derivedStatus = "BORROWED";
+  } else if (reservation.status === "APPROVED" && now >= Number(reservation.return_at) && borrowedCount === 0) {
+    derivedStatus = "RETURNED";
+  } else if (reservation.status === "COMPLETED") {
+    derivedStatus = "RETURNED";
+  }
   return {
     id: reservation.id,
     requestedBy: {
@@ -814,6 +979,7 @@ async function getReservation(env, reservationId, includeAssets = false) {
   };
 }
 async function listReservations(env, ownerId) {
+  await reconcileExpiredReservations(env);
   const ids = await rows(
     env.CLIENT,
     "SELECT id FROM reservations WHERE requested_by_user_id=? ORDER BY pickup_at DESC LIMIT 200",
@@ -822,6 +988,7 @@ async function listReservations(env, ownerId) {
   return Promise.all(ids.map(({ id: reservationId }) => getReservation(env, reservationId)));
 }
 async function listBoardReservations(env) {
+  await reconcileExpiredReservations(env);
   const ids = await rows(
     env.CLIENT,
     "SELECT id FROM reservations ORDER BY CASE status WHEN 'PENDING' THEN 0 WHEN 'APPROVED' THEN 1 ELSE 2 END,pickup_at ASC LIMIT 500"
@@ -886,13 +1053,13 @@ async function createReservation(env, actor, input) {
           "VALIDATION",
           "One of the selected equipment items is unavailable."
         );
-      const candidates = await findAvailableAssets(
+      const candidates = await availableQuantity(
         tx,
         line.equipmentItemId,
         input.pickupAt,
         input.returnAt
       );
-      if (candidates.length < line.quantity) {
+      if (candidates < line.quantity) {
         throw new DomainError(
           409,
           "NOT_AVAILABLE",
@@ -926,6 +1093,14 @@ async function createReservation(env, actor, input) {
     await audit(tx, actor.id, "RESERVATION", reservationId, "RESERVATION_CREATED", {
       itemCount: input.items.length
     });
+    await notify(
+      tx,
+      actor.id,
+      "RESERVATION_SUBMITTED",
+      "Reservation request submitted",
+      "Your request is waiting for Board review. We will remind you before borrowed equipment is due back.",
+      reservationId
+    );
     await notifyBoard(
       tx,
       "NEW_RESERVATION",
@@ -936,7 +1111,72 @@ async function createReservation(env, actor, input) {
   });
   return getReservation(env, reservationId);
 }
-async function approveReservation(env, actor, reservationId, assignments) {
+async function refreshReturnNotificationsForUser(env, userId, now = Date.now()) {
+  return write(env, async (tx) => {
+    const activeLoans = await rows(
+      tx,
+      "SELECT r.id,r.return_at,COUNT(ra.id) AS borrowed_count FROM reservations r INNER JOIN reservation_assets ra ON ra.reservation_id=r.id WHERE r.requested_by_user_id=? AND r.status='APPROVED' AND ra.state='BORROWED' GROUP BY r.id,r.return_at",
+      [userId]
+    );
+    const todayStart = tunisDayRange(now).start;
+    let created = 0;
+    for (const loan of activeLoans) {
+      const returnAt = Number(loan.return_at);
+      const dueLabel = DateTime.fromMillis(returnAt, { zone: DISPLAY_TIME_ZONE }).toFormat(
+        "ccc, d LLL 'at' HH:mm"
+      );
+      if (returnAt > now && returnAt <= now + 60 * 6e4) {
+        const priorReminder = await one(
+          tx,
+          "SELECT id FROM notifications WHERE user_id=? AND reservation_id=? AND type='RETURN_DUE_SOON' AND message LIKE ? LIMIT 1",
+          [userId, loan.id, `%${dueLabel}%`]
+        );
+        if (!priorReminder) {
+          await notify(
+            tx,
+            userId,
+            "RETURN_DUE_SOON",
+            "Equipment due back soon",
+            "Your borrowed equipment is due back by " + dueLabel + ". Please return it to the Board.",
+            loan.id
+          );
+          created++;
+        }
+      } else if (returnAt <= now) {
+        const priorOverdue = await one(
+          tx,
+          "SELECT id FROM notifications WHERE user_id=? AND reservation_id=? AND type='RETURN_OVERDUE' AND created_at>=? LIMIT 1",
+          [userId, loan.id, todayStart]
+        );
+        if (!priorOverdue) {
+          await notify(
+            tx,
+            userId,
+            "RETURN_OVERDUE",
+            "Equipment return overdue",
+            "The return time (" + dueLabel + ") has passed. Please return the borrowed equipment to the Board as soon as possible.",
+            loan.id
+          );
+          created++;
+        }
+      }
+    }
+    return created;
+  });
+}
+async function refreshAllReturnNotifications(env, now = Date.now()) {
+  await reconcileExpiredReservations(env, now);
+  const borrowers = await rows(
+    env.CLIENT,
+    "SELECT DISTINCT r.requested_by_user_id AS user_id FROM reservations r INNER JOIN reservation_assets ra ON ra.reservation_id=r.id WHERE r.status='APPROVED' AND ra.state='BORROWED'"
+  );
+  let created = 0;
+  for (const borrower of borrowers) {
+    created += await refreshReturnNotificationsForUser(env, borrower.user_id, now);
+  }
+  return { borrowersChecked: borrowers.length, notificationsCreated: created };
+}
+async function approveReservation(env, actor, reservationId, _assignments) {
   await write(env, async (tx) => {
     const reservation = await one(
       tx,
@@ -950,73 +1190,19 @@ async function approveReservation(env, actor, reservationId, assignments) {
         "RESERVATION_CONFLICT",
         "Only a pending reservation can be approved."
       );
-    const lines = await rows(
+    await checkQuantities(
       tx,
-      "SELECT id,equipment_item_id,quantity FROM reservation_lines WHERE reservation_id=? ORDER BY equipment_item_id",
-      [reservationId]
+      reservationId,
+      Number(reservation.pickup_at),
+      Number(reservation.return_at)
     );
-    const selections = [];
-    for (const line of lines) {
-      const available = await findAvailableAssets(
-        tx,
-        line.equipment_item_id,
-        Number(reservation.pickup_at),
-        Number(reservation.return_at)
-      );
-      const requestedIds = assignments?.[line.id];
-      const chosen = requestedIds ? requestedIds.map((assetId) => available.find((candidate) => candidate.id === assetId)).filter((asset) => Boolean(asset)) : available.slice(0, Number(line.quantity));
-      if (requestedIds && (requestedIds.length !== Number(line.quantity) || chosen.length !== requestedIds.length || new Set(requestedIds).size !== requestedIds.length)) {
-        throw new DomainError(
-          409,
-          "RESERVATION_CONFLICT",
-          "The selected assets are no longer available for this reservation."
-        );
-      }
-      if (chosen.length !== Number(line.quantity)) {
-        throw new DomainError(
-          409,
-          "RESERVATION_CONFLICT",
-          "Approval failed \u2014 equipment is no longer available."
-        );
-      }
-      selections.push(...chosen.map((asset) => ({ lineId: line.id, asset })));
-    }
     const timestamp = Date.now();
-    for (const selection of selections) {
-      const restored = await tx.execute({
-        sql: "UPDATE reservation_assets SET reservation_line_id=?,state='RESERVED',actual_pickup_at=NULL,checked_out_by_user_id=NULL,actual_return_at=NULL,checked_in_by_user_id=NULL,updated_at=? WHERE reservation_id=? AND asset_id=? AND state='RELEASED'",
-        args: [selection.lineId, timestamp, reservationId, selection.asset.id]
-      });
-      if (Number(restored.rowsAffected) === 0) {
-        await tx.execute({
-          sql: "INSERT INTO reservation_assets(id,reservation_id,reservation_line_id,asset_id,state,created_at,updated_at) VALUES(?,?,?,?, 'RESERVED',?,?)",
-          args: [
-            id("reservation_asset"),
-            reservationId,
-            selection.lineId,
-            selection.asset.id,
-            timestamp,
-            timestamp
-          ]
-        });
-      }
-      const assetUpdate = await tx.execute({
-        sql: "UPDATE assets SET state='RESERVED',updated_at=? WHERE id=? AND state IN ('AVAILABLE','RESERVED') AND active=1",
-        args: [timestamp, selection.asset.id]
-      });
-      if (Number(assetUpdate.rowsAffected) !== 1)
-        throw new DomainError(
-          409,
-          "RESERVATION_CONFLICT",
-          "An asset changed while this reservation was being approved."
-        );
-    }
     await tx.execute({
       sql: "UPDATE reservations SET status='APPROVED',approved_by_user_id=?,updated_at=? WHERE id=? AND status='PENDING'",
       args: [actor.id, timestamp, reservationId]
     });
     await audit(tx, actor.id, "RESERVATION", reservationId, "RESERVATION_APPROVED", {
-      assignedAssetIds: selections.map(({ asset }) => asset.id)
+      allocation: "QUANTITY_ONLY"
     });
     const requester = await one(
       tx,
@@ -1029,7 +1215,7 @@ async function approveReservation(env, actor, reservationId, assignments) {
         requester.requested_by_user_id,
         "RESERVATION_APPROVED",
         "Reservation approved",
-        "Your equipment reservation has been approved.",
+        "Your equipment reservation has been approved. Open your reservations and select Show Handover QR. Present it to the Board for pickup and return.",
         reservationId
       );
   });
@@ -1117,16 +1303,26 @@ async function cancelReservation(env, actor, reservationId, isBoard = false) {
 }
 async function forceDeleteReservation(env, actor, reservationId) {
   return await write(env, async (tx) => {
-    const reservation = await one(tx, "SELECT id,status,requested_by_user_id FROM reservations WHERE id=?", [
-      reservationId
-    ]);
+    const reservation = await one(tx, "SELECT id,status,requested_by_user_id FROM reservations WHERE id=?", [reservationId]);
     if (!reservation) throw new DomainError(404, "NOT_FOUND", "Reservation not found.");
+    const handover = await one(
+      tx,
+      "SELECT COUNT(*) AS count FROM reservation_assets WHERE reservation_id=? AND (actual_pickup_at IS NOT NULL OR state IN ('BORROWED', 'RETURNED'))",
+      [reservationId]
+    );
+    if (Number(handover?.count ?? 0) > 0) {
+      throw new DomainError(
+        409,
+        "HANDOVER_EXISTS",
+        "Cannot force-delete a reservation that has physical handover history."
+      );
+    }
     await tx.execute({
       sql: `UPDATE assets SET state='AVAILABLE', updated_at=?
             WHERE id IN (
               SELECT asset_id FROM reservation_assets
-              WHERE reservation_id=? AND state IN ('RESERVED', 'BORROWED')
-            ) AND state IN ('RESERVED', 'BORROWED')`,
+              WHERE reservation_id=? AND state='RESERVED'
+            ) AND state='RESERVED'`,
       args: [Date.now(), reservationId]
     });
     await tx.execute({
@@ -1161,66 +1357,12 @@ async function forceDeleteReservation(env, actor, reservationId) {
     return { ok: true, id: reservationId };
   });
 }
-async function assignApprovedReservation(tx, actor, reservationId, pickupAt, returnAt, assignments) {
-  const lines = await rows(
-    tx,
-    "SELECT id,equipment_item_id,quantity FROM reservation_lines WHERE reservation_id=? ORDER BY equipment_item_id",
-    [reservationId]
-  );
-  const selections = [];
-  for (const line of lines) {
-    const available = await findAvailableAssets(tx, line.equipment_item_id, pickupAt, returnAt);
-    const requestedIds = assignments?.[line.id];
-    const chosen = requestedIds ? requestedIds.map((assetId) => available.find((candidate) => candidate.id === assetId)).filter((asset) => Boolean(asset)) : available.slice(0, Number(line.quantity));
-    if (requestedIds && (requestedIds.length !== Number(line.quantity) || chosen.length !== requestedIds.length || new Set(requestedIds).size !== requestedIds.length)) {
-      throw new DomainError(
-        409,
-        "RESERVATION_CONFLICT",
-        "The selected assets are no longer available for this reservation."
-      );
-    }
-    if (chosen.length !== Number(line.quantity))
-      throw new DomainError(
-        409,
-        "RESERVATION_CONFLICT",
-        "Approval failed \u2014 equipment is no longer available."
-      );
-    selections.push(...chosen.map((asset) => ({ lineId: line.id, asset })));
-  }
-  const timestamp = Date.now();
-  for (const selection of selections) {
-    const restored = await tx.execute({
-      sql: "UPDATE reservation_assets SET reservation_line_id=?,state='RESERVED',actual_pickup_at=NULL,checked_out_by_user_id=NULL,actual_return_at=NULL,checked_in_by_user_id=NULL,updated_at=? WHERE reservation_id=? AND asset_id=? AND state='RELEASED'",
-      args: [selection.lineId, timestamp, reservationId, selection.asset.id]
-    });
-    if (Number(restored.rowsAffected) === 0) {
-      await tx.execute({
-        sql: "INSERT INTO reservation_assets(id,reservation_id,reservation_line_id,asset_id,state,created_at,updated_at) VALUES(?,?,?,?, 'RESERVED',?,?)",
-        args: [
-          id("reservation_asset"),
-          reservationId,
-          selection.lineId,
-          selection.asset.id,
-          timestamp,
-          timestamp
-        ]
-      });
-    }
-    const assetUpdate = await tx.execute({
-      sql: "UPDATE assets SET state='RESERVED',updated_at=? WHERE id=? AND state IN ('AVAILABLE','RESERVED') AND active=1",
-      args: [timestamp, selection.asset.id]
-    });
-    if (Number(assetUpdate.rowsAffected) !== 1)
-      throw new DomainError(
-        409,
-        "RESERVATION_CONFLICT",
-        "An asset changed while this reservation was being rescheduled."
-      );
-  }
+async function assignApprovedReservation(tx, actor, reservationId, pickupAt, returnAt, _assignments) {
+  await checkQuantities(tx, reservationId, pickupAt, returnAt);
   await audit(tx, actor.id, "RESERVATION", reservationId, "RESERVATION_RESCHEDULED", {
     pickupAt,
     returnAt,
-    assetIds: selections.map(({ asset }) => asset.id)
+    allocation: "QUANTITY_ONLY"
   });
 }
 async function rescheduleReservation(env, actor, reservationId, pickupAt, returnAt, assignments) {
@@ -1238,6 +1380,18 @@ async function rescheduleReservation(env, actor, reservationId, pickupAt, return
         "RESERVATION_CONFLICT",
         "Only an approved reservation can be rescheduled."
       );
+    const pickedUp = await one(
+      tx,
+      "SELECT COUNT(*) AS count FROM reservation_assets WHERE reservation_id=? AND actual_pickup_at IS NOT NULL",
+      [reservationId]
+    );
+    if (Number(pickedUp?.count ?? 0) > 0) {
+      throw new DomainError(
+        409,
+        "RESERVATION_LOCKED",
+        "Reservations cannot be rescheduled after equipment has been picked up."
+      );
+    }
     const borrowed = await one(
       tx,
       "SELECT COUNT(*) AS count FROM reservation_assets WHERE reservation_id=? AND state='BORROWED'",
@@ -1249,6 +1403,10 @@ async function rescheduleReservation(env, actor, reservationId, pickupAt, return
         "RESERVATION_CONFLICT",
         "Return checked-out equipment before changing the reservation time."
       );
+    await tx.execute({
+      sql: "DELETE FROM notifications WHERE reservation_id=? AND type='RETURN_DUE_SOON'",
+      args: [reservationId]
+    });
     await tx.execute({
       sql: "UPDATE reservation_assets SET state='RELEASED',updated_at=? WHERE reservation_id=? AND state='RESERVED'",
       args: [Date.now(), reservationId]
@@ -1279,7 +1437,98 @@ async function rescheduleReservation(env, actor, reservationId, pickupAt, return
   });
   return getReservation(env, reservationId, true);
 }
-async function scanAsset(env, actor, qrToken, idempotencyKey) {
+async function collectMaterial(tx, actor, reservationId, assetId, timestamp) {
+  const reservation = await one(
+    tx,
+    "SELECT r.status,r.pickup_at,r.return_at,r.requested_by_user_id,CASE WHEN r.borrower_type='PERSON' THEN u.name ELSE ch.name END AS borrower_name FROM reservations r LEFT JOIN user u ON u.id=r.borrower_user_id LEFT JOIN chapters ch ON ch.id=r.chapter_id WHERE r.id=?",
+    [reservationId]
+  );
+  if (!reservation) throw new DomainError(404, "NOT_FOUND", "Reservation not found.");
+  if (reservation.status !== "APPROVED")
+    throw new DomainError(
+      409,
+      "INVALID_CHECKOUT",
+      "Only approved reservations can collect equipment."
+    );
+  if (timestamp < Number(reservation.pickup_at))
+    throw new DomainError(409, "TOO_EARLY", "The pickup window has not started yet.");
+  if (timestamp >= Number(reservation.return_at))
+    throw new DomainError(409, "RESERVATION_EXPIRED", "The reservation window has expired.");
+  const asset = await one(
+    tx,
+    "SELECT a.equipment_item_id,a.state,a.active,e.active AS equipment_active FROM assets a JOIN equipment_items e ON e.id=a.equipment_item_id WHERE a.id=?",
+    [assetId]
+  );
+  if (!asset || !asset.active || !asset.equipment_active || !["AVAILABLE", "RESERVED"].includes(asset.state))
+    throw new DomainError(409, "ASSET_UNAVAILABLE", "This material is not available for pickup.");
+  const existing = await one(
+    tx,
+    "SELECT id FROM reservation_assets WHERE asset_id=? AND (state='BORROWED' OR (reservation_id=? AND actual_pickup_at IS NOT NULL))",
+    [assetId, reservationId]
+  );
+  if (existing)
+    throw new DomainError(409, "INVALID_CHECKOUT", "This material has already been collected.");
+  const line = await one(
+    tx,
+    "SELECT l.id,l.quantity,(SELECT COUNT(*) FROM reservation_assets ra WHERE ra.reservation_line_id=l.id AND ra.actual_pickup_at IS NOT NULL) AS collected FROM reservation_lines l WHERE l.reservation_id=? AND l.equipment_item_id=?",
+    [reservationId, asset.equipment_item_id]
+  );
+  if (!line)
+    throw new DomainError(
+      409,
+      "WRONG_RESERVATION",
+      "This equipment type is not part of this reservation."
+    );
+  if (Number(line.collected) >= Number(line.quantity))
+    throw new DomainError(
+      409,
+      "QUANTITY_REACHED",
+      "All requested units of this equipment type have been collected."
+    );
+  await tx.execute({
+    sql: "INSERT INTO reservation_assets(id,reservation_id,reservation_line_id,asset_id,state,actual_pickup_at,checked_out_by_user_id,created_at,updated_at) VALUES(?,?,?,?,'BORROWED',?,?,?,?)",
+    args: [
+      id("reservation_asset"),
+      reservationId,
+      line.id,
+      assetId,
+      timestamp,
+      actor.id,
+      timestamp,
+      timestamp
+    ]
+  });
+  await tx.execute({
+    sql: "UPDATE assets SET state='BORROWED',last_scan_at=?,updated_at=? WHERE id=?",
+    args: [timestamp, timestamp, assetId]
+  });
+  await audit(tx, actor.id, "ASSET", assetId, "ASSET_CHECKED_OUT", { reservationId });
+  return reservation;
+}
+async function handoverReservation(env, actor, reservationId, assetIds = []) {
+  if (!assetIds.length || new Set(assetIds).size !== assetIds.length)
+    throw new DomainError(400, "VALIDATION", "Select the material labels actually handed over.");
+  return write(env, async (tx) => {
+    const timestamp = Date.now();
+    for (const assetId of assetIds)
+      await collectMaterial(tx, actor, reservationId, assetId, timestamp);
+    const reservation = await one(
+      tx,
+      "SELECT requested_by_user_id FROM reservations WHERE id=?",
+      [reservationId]
+    );
+    await notify(
+      tx,
+      reservation.requested_by_user_id,
+      "ASSET_CHECKED_OUT",
+      "Equipment handed over",
+      "Equipment collection has been recorded. Please return it by the reservation deadline.",
+      reservationId
+    );
+    return { ok: true, handedOverCount: assetIds.length };
+  });
+}
+async function scanAsset(env, actor, qrToken, idempotencyKey, reservationId, operation) {
   if (!/^[a-f0-9]{64}$/i.test(qrToken))
     throw new DomainError(400, "INVALID_ASSET", "This QR code is not valid.");
   if (!/^[a-zA-Z0-9_-]{12,120}$/.test(idempotencyKey))
@@ -1293,10 +1542,25 @@ async function scanAsset(env, actor, qrToken, idempotencyKey) {
     if (replay) return JSON.parse(replay.response);
     const asset = await one(
       tx,
-      "SELECT a.id,a.asset_code,a.state,a.active,a.last_scan_at,e.name AS equipment_name FROM assets a INNER JOIN equipment_items e ON e.id=a.equipment_item_id WHERE a.qr_token=?",
+      "SELECT a.id,a.asset_code,a.state,a.active,a.last_scan_at,a.equipment_item_id,e.name AS equipment_name FROM assets a INNER JOIN equipment_items e ON e.id=a.equipment_item_id WHERE a.qr_token=?",
       [qrToken]
     );
     if (!asset) throw new DomainError(404, "INVALID_ASSET", "No equipment matches this QR code.");
+    if (reservationId && operation === "RETURNED") {
+      const assignment = await one(
+        tx,
+        "SELECT id FROM reservation_assets WHERE reservation_id=? AND asset_id=? AND state='BORROWED'",
+        [reservationId, asset.id]
+      );
+      if (!assignment)
+        throw new DomainError(
+          409,
+          "INVALID_RETURN",
+          "This material is not awaiting return for this reservation."
+        );
+    }
+    if (operation === "CHECKED_OUT" && asset.state === "BORROWED")
+      throw new DomainError(409, "INVALID_CHECKOUT", "This material is already borrowed.");
     if (!asset.active || asset.state === "RETIRED")
       throw new DomainError(409, "INVALID_ASSET", "This asset has been retired.");
     if (asset.state === "OUT_OF_SERVICE")
@@ -1328,27 +1592,11 @@ async function scanAsset(env, actor, qrToken, idempotencyKey) {
         sql: "UPDATE reservation_assets SET state='RETURNED',actual_return_at=?,checked_in_by_user_id=?,updated_at=? WHERE id=? AND state='BORROWED'",
         args: [timestamp, actor.id, timestamp, assignment.id]
       });
-      const nextReservation = await one(
-        tx,
-        `SELECT r.id FROM reservation_assets ra INNER JOIN reservations r ON r.id=ra.reservation_id
-          WHERE ra.asset_id=? AND ra.state='RESERVED' AND r.status='APPROVED' AND r.pickup_at<=? AND ?<r.return_at LIMIT 1`,
-        [asset.id, timestamp, timestamp]
-      );
       await tx.execute({
-        sql: "UPDATE assets SET state=?,last_scan_at=?,updated_at=? WHERE id=?",
-        args: [nextReservation ? "RESERVED" : "AVAILABLE", timestamp, timestamp, asset.id]
+        sql: "UPDATE assets SET state='AVAILABLE',last_scan_at=?,updated_at=? WHERE id=?",
+        args: [timestamp, timestamp, asset.id]
       });
-      const unfinished = await one(
-        tx,
-        "SELECT COUNT(*) AS count FROM reservation_assets WHERE reservation_id=? AND state IN ('RESERVED','BORROWED')",
-        [assignment.reservation_id]
-      );
-      if (Number(unfinished?.count ?? 0) === 0) {
-        await tx.execute({
-          sql: "UPDATE reservations SET status='COMPLETED',updated_at=? WHERE id=? AND status IN ('APPROVED','CANCELLED')",
-          args: [timestamp, assignment.reservation_id]
-        });
-      }
+      await finalizeReservationIfFinished(tx, assignment.reservation_id, timestamp);
       await audit(tx, actor.id, "ASSET", asset.id, "ASSET_RETURNED", {
         reservationId: assignment.reservation_id
       });
@@ -1363,48 +1611,66 @@ async function scanAsset(env, actor, qrToken, idempotencyKey) {
       result = {
         operation: "RETURNED",
         assetName: asset.equipment_name,
-        assetCode: asset.asset_code
+        assetCode: asset.asset_code,
+        reservationId: assignment.reservation_id
       };
     } else {
-      const activeAssignment = await one(
+      if (operation === "RETURNED") {
+        throw new DomainError(409, "ALREADY_RETURNED", "This asset has no active checkout.");
+      }
+      const equipment = await one(
         tx,
-        `SELECT ra.id,ra.reservation_id,r.pickup_at,r.return_at,r.requested_by_user_id,
-                CASE WHEN r.borrower_type='PERSON' THEN bu.name ELSE ch.name END AS borrower_name
-           FROM reservation_assets ra
-           INNER JOIN reservations r ON r.id=ra.reservation_id
-           LEFT JOIN user bu ON bu.id=r.borrower_user_id
-           LEFT JOIN chapters ch ON ch.id=r.chapter_id
-          WHERE ra.asset_id=? AND ra.state='RESERVED' AND r.status='APPROVED'
-          ORDER BY r.pickup_at ASC LIMIT 1`,
-        [asset.id]
+        "SELECT active FROM equipment_items WHERE id=?",
+        [asset.equipment_item_id]
       );
-      if (!activeAssignment)
-        throw new DomainError(409, "NOT_FOUND", "No approved reservation found for this asset.");
-      if (timestamp < Number(activeAssignment.pickup_at)) {
-        throw new DomainError(
-          409,
-          "TOO_EARLY",
-          `Reservation starts at ${formatTunis(Number(activeAssignment.pickup_at))}. Checkout is not active yet.`
-        );
+      if (!equipment || !equipment.active) {
+        throw new DomainError(409, "ASSET_UNAVAILABLE", "This equipment is currently inactive.");
       }
-      if (timestamp >= Number(activeAssignment.return_at)) {
-        throw new DomainError(
-          409,
-          "RESERVATION_EXPIRED",
-          "Reservation window has expired. Update or recreate the reservation."
+      let targetReservationId = reservationId;
+      if (!targetReservationId) {
+        const eligible = await rows(
+          tx,
+          `SELECT r.id, r.pickup_at, r.return_at, l.quantity,
+                  (SELECT COUNT(*) FROM reservation_assets ra WHERE ra.reservation_line_id=l.id AND ra.actual_pickup_at IS NOT NULL) AS collected,
+                  CASE WHEN r.borrower_type='PERSON' THEN bu.name ELSE ch.name END AS borrower_name,
+                  ch.name AS chapter_name
+             FROM reservations r
+             JOIN reservation_lines l ON l.reservation_id=r.id
+             LEFT JOIN user bu ON bu.id=r.borrower_user_id
+             LEFT JOIN chapters ch ON ch.id=r.chapter_id
+            WHERE r.status='APPROVED'
+              AND r.pickup_at <= ? AND ? < r.return_at
+              AND l.equipment_item_id = ?`,
+          [timestamp, timestamp, asset.equipment_item_id]
         );
+        const needed = eligible.filter((r) => Number(r.collected) < Number(r.quantity));
+        if (needed.length === 0) {
+          throw new DomainError(
+            409,
+            "NO_ELIGIBLE_RESERVATION",
+            "No approved reservation is currently awaiting this equipment."
+          );
+        }
+        if (needed.length > 1) {
+          return {
+            code: "RESERVATION_SELECTION_REQUIRED",
+            assetName: asset.equipment_name,
+            assetCode: asset.asset_code,
+            reservations: needed.map((r) => ({
+              id: r.id,
+              borrowerName: r.borrower_name,
+              chapterName: r.chapter_name,
+              pickupAt: new Date(Number(r.pickup_at)).toISOString(),
+              returnAt: new Date(Number(r.return_at)).toISOString(),
+              quantity: Number(r.quantity),
+              uncollectedCount: Number(r.quantity) - Number(r.collected)
+            }))
+          };
+        }
+        targetReservationId = needed[0].id;
       }
-      await tx.execute({
-        sql: "UPDATE reservation_assets SET state='BORROWED',actual_pickup_at=?,checked_out_by_user_id=?,updated_at=? WHERE id=? AND state='RESERVED'",
-        args: [timestamp, actor.id, timestamp, activeAssignment.id]
-      });
-      await tx.execute({
-        sql: "UPDATE assets SET state='BORROWED',last_scan_at=?,updated_at=? WHERE id=?",
-        args: [timestamp, timestamp, asset.id]
-      });
-      await audit(tx, actor.id, "ASSET", asset.id, "ASSET_CHECKED_OUT", {
-        reservationId: activeAssignment.reservation_id
-      });
+      const collected = await collectMaterial(tx, actor, targetReservationId, asset.id, timestamp);
+      const activeAssignment = { ...collected, reservation_id: targetReservationId };
       await notify(
         tx,
         activeAssignment.requested_by_user_id,
@@ -1417,6 +1683,7 @@ async function scanAsset(env, actor, qrToken, idempotencyKey) {
         operation: "CHECKED_OUT",
         assetName: asset.equipment_name,
         assetCode: asset.asset_code,
+        reservationId: targetReservationId,
         borrowerName: activeAssignment.borrower_name,
         returnAt: new Date(Number(activeAssignment.return_at)).toISOString()
       };
@@ -1427,13 +1694,6 @@ async function scanAsset(env, actor, qrToken, idempotencyKey) {
     });
     return result;
   });
-}
-function formatTunis(timestamp) {
-  return new Intl.DateTimeFormat("en-GB", {
-    timeZone: DISPLAY_TIME_ZONE,
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(timestamp);
 }
 function tunisDayRange(timestamp = Date.now()) {
   const localStart = DateTime.fromMillis(timestamp, { zone: DISPLAY_TIME_ZONE }).startOf("day");
@@ -1493,11 +1753,12 @@ async function calendarEvents(env, start, end, filters = {}) {
   if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end || end - start > 93 * 864e5) {
     throw new DomainError(400, "INVALID_TIME_RANGE", "Choose a calendar range under 93 days.");
   }
+  await reconcileExpiredReservations(env);
   const ids = await rows(
     env.CLIENT,
     `SELECT DISTINCT r.id FROM reservations r
-       INNER JOIN reservation_assets ra ON ra.reservation_id=r.id
-      WHERE ((r.status='APPROVED' AND r.pickup_at < ? AND ? < r.return_at) OR ra.state='BORROWED')
+       LEFT JOIN reservation_assets ra ON ra.reservation_id=r.id
+      WHERE ((r.status IN ('APPROVED', 'COMPLETED') AND r.pickup_at < ? AND ? < r.return_at) OR ra.state='BORROWED')
       ORDER BY r.pickup_at`,
     [end, start]
   );
@@ -1505,25 +1766,25 @@ async function calendarEvents(env, start, end, filters = {}) {
     ids.map(({ id: reservationId }) => getReservation(env, reservationId, true))
   );
   return reservations2.filter((reservation) => Boolean(reservation)).flatMap(
-    (reservation) => reservation.items.flatMap(
-      (item) => (item.assignedAssets ?? []).filter((asset) => asset.state === "RESERVED" || asset.state === "BORROWED").filter(
-        () => !filters.equipmentItemId || item.equipmentItemId === filters.equipmentItemId
-      ).filter(() => !filters.borrower || reservation.borrower.id === filters.borrower).filter(
-        () => !filters.status || reservation.derivedStatus === filters.status || reservation.status === filters.status
-      ).map((asset) => ({
-        id: `${reservation.id}:${asset.id}`,
-        reservationId: reservation.id,
-        assetId: asset.id,
-        title: `${item.name} ${asset.assetCode} \xB7 ${reservation.borrower.name}`,
-        equipmentName: item.name,
-        assetCode: asset.assetCode,
-        borrowerName: reservation.borrower.name,
-        requesterName: reservation.requestedBy.name,
-        start: reservation.pickupAt,
-        end: reservation.returnAt,
-        status: reservation.derivedStatus
-      }))
-    )
+    (reservation) => reservation.items.filter(
+      (item) => !filters.equipmentItemId || item.equipmentItemId === filters.equipmentItemId
+    ).filter(() => !filters.borrower || reservation.borrower.id === filters.borrower).filter(
+      () => !filters.status || reservation.derivedStatus === filters.status || reservation.status === filters.status
+    ).map((item) => ({
+      id: `${reservation.id}:${item.lineId}`,
+      reservationId: reservation.id,
+      lineId: item.lineId,
+      assetId: item.lineId,
+      title: `${item.quantity}\xD7 ${item.name} \xB7 ${reservation.borrower.name}`,
+      equipmentName: item.name,
+      assetCode: `${item.quantity} units`,
+      quantity: item.quantity,
+      borrowerName: reservation.borrower.name,
+      requesterName: reservation.requestedBy.name,
+      start: reservation.pickupAt,
+      end: reservation.returnAt,
+      status: reservation.derivedStatus
+    }))
   );
 }
 async function listBoardAudit(env) {
@@ -1601,6 +1862,15 @@ app.get("/api/health", async (c) => {
   await c.env.CLIENT.execute("SELECT 1");
   return c.json({ status: "ok" });
 });
+app.get("/api/cron/return-reminders", async (c) => {
+  if (!c.env.CRON_SECRET) {
+    return jsonError(c, 503, "CRON_NOT_CONFIGURED", "The reminder job is not configured.");
+  }
+  if (c.req.header("Authorization") !== "Bearer " + c.env.CRON_SECRET) {
+    return jsonError(c, 401, "UNAUTHENTICATED", "Invalid cron authorization.");
+  }
+  return c.json(await refreshAllReturnNotifications(c.env));
+});
 app.all("/api/auth/*", async (c) => {
   if (await isRateLimited(c.env, `auth:${requestIp(c)}`, c.env.AUTH_RATE_LIMIT_PER_MINUTE)) {
     return jsonError(c, 429, "RATE_LIMITED", "Too many sign-in attempts. Try again shortly.");
@@ -1610,26 +1880,39 @@ app.all("/api/auth/*", async (c) => {
   );
 });
 app.post("/api/v1/auth/borrower", async (c) => {
+  if (await isRateLimited(c.env, "auth:" + requestIp(c), c.env.AUTH_RATE_LIMIT_PER_MINUTE)) {
+    return jsonError(c, 429, "RATE_LIMITED", "Too many sign-in attempts. Try again shortly.");
+  }
   const body = await c.req.json().catch(() => null);
   if (!body || typeof body.email !== "string" || !/^\S+@\S+\.\S+$/.test(body.email.trim()) || typeof body.name !== "string" || body.name.trim().length < 2) {
     return jsonError(c, 400, "VALIDATION", "Valid member details are required.");
   }
   const email = body.email.trim().toLowerCase();
   const name = body.name.trim();
+  const phone = typeof body.phone === "string" ? body.phone.trim().slice(0, 50) || null : null;
   const now = /* @__PURE__ */ new Date();
   const existing = await c.env.DB.select().from(schema_exports.authUsers).where(eq2(schema_exports.authUsers.email, email)).limit(1);
   let userId;
   let user;
   if (existing.length > 0) {
+    if (existing[0].role !== "USER") {
+      return jsonError(
+        c,
+        403,
+        "PRIVILEGED_ACCOUNT",
+        "Privileged accounts cannot use borrower sign-in."
+      );
+    }
     userId = existing[0].id;
-    user = existing[0];
-    await c.env.DB.update(schema_exports.authUsers).set({ name, updatedAt: now }).where(eq2(schema_exports.authUsers.id, userId));
+    await c.env.DB.update(schema_exports.authUsers).set({ name, phone: phone ?? existing[0].phone, updatedAt: now }).where(eq2(schema_exports.authUsers.id, userId));
+    user = { ...existing[0], name, phone: phone ?? existing[0].phone, updatedAt: now };
   } else {
     userId = crypto.randomUUID();
     const [newUser] = await c.env.DB.insert(schema_exports.authUsers).values({
       id: userId,
       name,
       email,
+      phone,
       emailVerified: true,
       role: "USER",
       createdAt: now,
@@ -1719,7 +2002,9 @@ app.post("/api/v1/auth/sign-out", async (c) => {
   }
   if (currentUserId) {
     try {
-      await c.env.DB.delete(schema_exports.authSessions).where(eq2(schema_exports.authSessions.userId, currentUserId));
+      await c.env.DB.delete(schema_exports.authSessions).where(
+        eq2(schema_exports.authSessions.userId, currentUserId)
+      );
     } catch {
     }
   }
@@ -1835,7 +2120,12 @@ app.delete("/api/v1/reservations/:id", async (c) => {
       return jsonError(c, 404, "NOT_FOUND", "Reservation not found.");
     }
     if (res.status !== "PENDING") {
-      return jsonError(c, 400, "BAD_REQUEST", "Only pending reservation requests can be force deleted.");
+      return jsonError(
+        c,
+        400,
+        "BAD_REQUEST",
+        "Only pending reservation requests can be force deleted."
+      );
     }
     return c.json(await forceDeleteReservation(c.env, c.get("actor"), c.req.param("id")));
   }
@@ -1855,6 +2145,12 @@ app.get("/api/v1/notifications", async (c) => {
   }).from(schema_exports.notifications).where(eq2(schema_exports.notifications.userId, actor.id)).orderBy(desc(schema_exports.notifications.createdAt)).limit(100);
   return c.json(notifications2);
 });
+app.post("/api/v1/notifications/refresh", async (c) => {
+  const actor = await resolveIdentity(c);
+  if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue.");
+  const created = actor.role === "USER" ? await refreshReturnNotificationsForUser(c.env, actor.id) : 0;
+  return c.json({ ok: true, notificationsCreated: created });
+});
 app.patch("/api/v1/notifications/:id/read", async (c) => {
   const actor = await resolveIdentity(c);
   if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue.");
@@ -1867,18 +2163,40 @@ app.use("/api/v1/board", requireBoard);
 app.use("/api/v1/board/*", requireBoard);
 app.get("/api/v1/board/dashboard", async (c) => c.json(await boardDashboard(c.env)));
 app.get("/api/v1/board/reservations", async (c) => c.json(await listBoardReservations(c.env)));
+app.get("/api/v1/board/reservations/:id/borrower", async (c) => {
+  const reservation = await getReservation(c.env, c.req.param("id"));
+  if (!reservation) return jsonError(c, 404, "NOT_FOUND", "Reservation not found.");
+  const userId = reservation.borrower.type === "PERSON" ? reservation.borrower.id : reservation.requestedBy.id;
+  const [person] = await c.env.DB.select({
+    name: schema_exports.authUsers.name,
+    email: schema_exports.authUsers.email,
+    phone: schema_exports.authUsers.phone
+  }).from(schema_exports.authUsers).where(eq2(schema_exports.authUsers.id, userId)).limit(1);
+  if (!person) return jsonError(c, 404, "NOT_FOUND", "Borrower not found.");
+  const count = await c.env.CLIENT.execute({
+    sql: "SELECT COUNT(DISTINCT r.id) AS count FROM reservations r WHERE " + (reservation.borrower.type === "PERSON" ? "r.borrower_type='PERSON' AND r.borrower_user_id=?" : "r.borrower_type='CHAPTER' AND r.chapter_id=?") + " AND EXISTS (SELECT 1 FROM reservation_assets ra WHERE ra.reservation_id=r.id AND ra.actual_pickup_at IS NOT NULL)",
+    args: [reservation.borrower.id]
+  });
+  return c.json({
+    ...person,
+    borrowingCount: Number(count.rows[0]?.count ?? 0),
+    chapterName: reservation.borrower.type === "CHAPTER" ? reservation.borrower.name : null
+  });
+});
 app.get("/api/v1/board/reservations/:id", async (c) => {
   const reservation = await getReservation(c.env, c.req.param("id"), true);
   if (!reservation) return jsonError(c, 404, "NOT_FOUND", "Reservation not found.");
   const candidates = await Promise.all(
     reservation.items.map(async (item) => ({
       lineId: item.lineId,
-      assets: reservation.status === "PENDING" ? (await findAvailableAssets(
+      assets: reservation.status === "APPROVED" ? (await findAvailableAssets(
         c.env.CLIENT,
         item.equipmentItemId,
         Date.parse(reservation.pickupAt),
         Date.parse(reservation.returnAt)
-      )).map((asset) => ({
+      )).filter(
+        (asset) => !item.assignedAssets?.some((collected) => collected.id === asset.id)
+      ).map((asset) => ({
         id: asset.id,
         assetCode: asset.asset_code,
         serialNumber: asset.serial_number,
@@ -1889,6 +2207,14 @@ app.get("/api/v1/board/reservations/:id", async (c) => {
   return c.json({ ...reservation, allocationCandidates: candidates });
 });
 var assignmentsSchema = z.record(z.string(), z.array(z.string()));
+app.post("/api/v1/board/reservations/:id/handover", async (c) => {
+  const parsed = z.object({ assetIds: z.array(z.string().min(1)).min(1).max(500) }).safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success)
+    return jsonError(c, 400, "VALIDATION", "Select the material labels actually handed over.");
+  return c.json(
+    await handoverReservation(c.env, c.get("actor"), c.req.param("id"), parsed.data.assetIds)
+  );
+});
 app.post("/api/v1/board/reservations/:id/approve", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const parsed = z.object({ assignments: assignmentsSchema.optional() }).safeParse(body);
@@ -1947,10 +2273,23 @@ app.post("/api/v1/board/scan", async (c) => {
   const actor = c.get("actor");
   if (await isRateLimited(c.env, `scan:${actor.id}`, 180))
     return jsonError(c, 429, "RATE_LIMITED", "Scanner is busy. Wait a moment and try again.");
-  const parsed = z.object({ qrToken: z.string().min(1).max(256) }).safeParse(await c.req.json().catch(() => null));
+  const parsed = z.object({
+    qrToken: z.string().min(1).max(256),
+    reservationId: z.string().min(1).optional(),
+    operation: z.enum(["CHECKED_OUT", "RETURNED"]).optional()
+  }).safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return jsonError(c, 400, "INVALID_ASSET", "This QR code is not valid.");
-  const idempotencyKey = c.req.header("Idempotency-Key") ?? "";
-  return c.json(await scanAsset(c.env, actor, parsed.data.qrToken, idempotencyKey));
+  const idempotencyKey = c.req.header("Idempotency-Key") || crypto.randomUUID();
+  return c.json(
+    await scanAsset(
+      c.env,
+      actor,
+      parsed.data.qrToken,
+      idempotencyKey,
+      parsed.data.reservationId,
+      parsed.data.operation
+    )
+  );
 });
 app.get("/api/v1/board/inventory", async (c) => {
   const origin = trustedAuthOrigin(c.env, c.req.url);
@@ -2046,55 +2385,89 @@ app.patch("/api/v1/board/equipment/:id", async (c) => {
   const parsed = z.object({ active: z.boolean() }).strict().safeParse(await c.req.json().catch(() => null));
   if (!parsed.success)
     return jsonError(c, 400, "VALIDATION", "Choose whether this equipment is active.");
-  const result = await c.env.DB.update(schema_exports.equipmentItems).set({ active: parsed.data.active, updatedAt: Date.now() }).where(eq2(schema_exports.equipmentItems.id, c.req.param("id")));
-  if (!result.rowsAffected) return jsonError(c, 404, "NOT_FOUND", "Equipment not found.");
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("audit"),
-      c.get("actor").id,
-      "EQUIPMENT",
-      c.req.param("id"),
-      parsed.data.active ? "EQUIPMENT_ACTIVATED" : "EQUIPMENT_DISABLED",
-      Date.now(),
-      JSON.stringify({ active: parsed.data.active })
-    ]
-  });
-  return c.json({ ok: true });
+  const id2 = c.req.param("id");
+  return c.json(
+    await write(c.env, async (tx) => {
+      const equipment = await one(
+        tx,
+        "SELECT id, active FROM equipment_items WHERE id=?",
+        [id2]
+      );
+      if (!equipment) throw new DomainError(404, "NOT_FOUND", "Equipment not found.");
+      if (!parsed.data.active && equipment.active) {
+        const capacityRow = await one(
+          tx,
+          "SELECT COUNT(*) AS count FROM assets WHERE equipment_item_id=? AND active=1 AND state NOT IN ('OUT_OF_SERVICE','RETIRED')",
+          [id2]
+        );
+        const usableCount = Number(capacityRow?.count ?? 0);
+        await assertCanReduceCapacity(tx, id2, usableCount, "deactivate this equipment");
+      }
+      const timestamp = Date.now();
+      await tx.execute({
+        sql: "UPDATE equipment_items SET active=?, updated_at=? WHERE id=?",
+        args: [parsed.data.active ? 1 : 0, timestamp, id2]
+      });
+      await tx.execute({
+        sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+        args: [
+          randomId("audit"),
+          c.get("actor").id,
+          "EQUIPMENT",
+          id2,
+          parsed.data.active ? "EQUIPMENT_ACTIVATED" : "EQUIPMENT_DISABLED",
+          timestamp,
+          JSON.stringify({ active: parsed.data.active })
+        ]
+      });
+      return { ok: true };
+    })
+  );
 });
 app.delete("/api/v1/board/equipment/:id", requireBoard, async (c) => {
   const id2 = c.req.param("id");
-  const activeAssets = await c.env.DB.select({ id: schema_exports.assets.id, state: schema_exports.assets.state }).from(schema_exports.assets).where(
-    and2(
-      eq2(schema_exports.assets.equipmentItemId, id2),
-      inArray(schema_exports.assets.state, ["BORROWED", "RESERVED"])
-    )
-  ).limit(1);
-  if (activeAssets.length > 0)
-    return jsonError(
-      c,
-      409,
-      "RESERVATION_CONFLICT",
-      "Cannot delete equipment while some of its assets are currently borrowed or reserved."
-    );
-  await c.env.DB.delete(schema_exports.assets).where(eq2(schema_exports.assets.equipmentItemId, id2));
-  const result = await c.env.DB.delete(schema_exports.equipmentItems).where(
-    eq2(schema_exports.equipmentItems.id, id2)
+  return c.json(
+    await write(c.env, async (tx) => {
+      const equipment = await one(tx, "SELECT id FROM equipment_items WHERE id=?", [
+        id2
+      ]);
+      if (!equipment) throw new DomainError(404, "NOT_FOUND", "Equipment not found.");
+      const borrowed = await one(
+        tx,
+        "SELECT COUNT(*) AS count FROM assets WHERE equipment_item_id=? AND state='BORROWED'",
+        [id2]
+      );
+      if (Number(borrowed?.count ?? 0) > 0) {
+        throw new DomainError(
+          409,
+          "RESERVATION_CONFLICT",
+          "Cannot delete equipment while some of its assets are currently borrowed."
+        );
+      }
+      const capacityRow = await one(
+        tx,
+        "SELECT COUNT(*) AS count FROM assets WHERE equipment_item_id=? AND active=1 AND state NOT IN ('OUT_OF_SERVICE','RETIRED')",
+        [id2]
+      );
+      const usableCount = Number(capacityRow?.count ?? 0);
+      await assertCanReduceCapacity(tx, id2, usableCount, "delete this equipment");
+      await tx.execute({ sql: "DELETE FROM assets WHERE equipment_item_id=?", args: [id2] });
+      await tx.execute({ sql: "DELETE FROM equipment_items WHERE id=?", args: [id2] });
+      await tx.execute({
+        sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+        args: [
+          randomId("audit"),
+          c.get("actor").id,
+          "EQUIPMENT",
+          id2,
+          "EQUIPMENT_DELETED",
+          Date.now(),
+          "{}"
+        ]
+      });
+      return { ok: true };
+    })
   );
-  if (!result.rowsAffected) return jsonError(c, 404, "NOT_FOUND", "Equipment not found.");
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("audit"),
-      c.get("actor").id,
-      "EQUIPMENT",
-      id2,
-      "EQUIPMENT_DELETED",
-      Date.now(),
-      "{}"
-    ]
-  });
-  return c.json({ ok: true });
 });
 app.post("/api/v1/board/equipment/:id/assets", async (c) => {
   const parsed = z.object({
@@ -2151,61 +2524,82 @@ app.post("/api/v1/board/equipment/:id/assets", async (c) => {
 app.patch("/api/v1/board/assets/:id", async (c) => {
   const parsed = z.object({ state: z.enum(["AVAILABLE", "OUT_OF_SERVICE", "RETIRED"]) }).strict().safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return jsonError(c, 400, "VALIDATION", "Choose a valid asset state.");
-  const asset = await c.env.DB.select({ state: schema_exports.assets.state, active: schema_exports.assets.active }).from(schema_exports.assets).where(eq2(schema_exports.assets.id, c.req.param("id"))).limit(1);
-  if (!asset[0]) return jsonError(c, 404, "NOT_FOUND", "Asset not found.");
-  if (asset[0].state === "BORROWED" || asset[0].state === "RESERVED")
-    return jsonError(
-      c,
-      409,
-      "RESERVATION_CONFLICT",
-      "Return or release the asset before changing its state."
-    );
-  if (asset[0].state === "RETIRED" && parsed.data.state !== "RETIRED")
-    return jsonError(c, 409, "INVALID_ASSET", "Retired assets cannot be restored.");
-  await c.env.DB.update(schema_exports.assets).set({
-    state: parsed.data.state,
-    active: parsed.data.state !== "RETIRED",
-    updatedAt: Date.now()
-  }).where(eq2(schema_exports.assets.id, c.req.param("id")));
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("audit"),
-      c.get("actor").id,
-      "ASSET",
-      c.req.param("id"),
-      parsed.data.state === "RETIRED" ? "ASSET_DISABLED" : "ASSET_STATE_CHANGED",
-      Date.now(),
-      JSON.stringify({ state: parsed.data.state })
-    ]
-  });
-  return c.json({ ok: true });
+  const assetId = c.req.param("id");
+  return c.json(
+    await write(c.env, async (tx) => {
+      const asset = await one(tx, "SELECT id, equipment_item_id, state, active FROM assets WHERE id=?", [assetId]);
+      if (!asset) throw new DomainError(404, "NOT_FOUND", "Asset not found.");
+      if (asset.state === "BORROWED") {
+        throw new DomainError(
+          409,
+          "RESERVATION_CONFLICT",
+          "Return the asset before changing its state."
+        );
+      }
+      if (asset.state === "RETIRED" && parsed.data.state !== "RETIRED") {
+        throw new DomainError(409, "INVALID_ASSET", "Retired assets cannot be restored.");
+      }
+      if (asset.active && asset.state === "AVAILABLE" && ["OUT_OF_SERVICE", "RETIRED"].includes(parsed.data.state)) {
+        await assertCanReduceCapacity(
+          tx,
+          asset.equipment_item_id,
+          1,
+          parsed.data.state === "RETIRED" ? "retire this asset" : "mark this asset out of service"
+        );
+      }
+      const timestamp = Date.now();
+      await tx.execute({
+        sql: "UPDATE assets SET state=?, active=?, updated_at=? WHERE id=?",
+        args: [parsed.data.state, parsed.data.state !== "RETIRED" ? 1 : 0, timestamp, assetId]
+      });
+      await tx.execute({
+        sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+        args: [
+          randomId("audit"),
+          c.get("actor").id,
+          "ASSET",
+          assetId,
+          parsed.data.state === "RETIRED" ? "ASSET_DISABLED" : "ASSET_STATE_CHANGED",
+          timestamp,
+          JSON.stringify({ state: parsed.data.state })
+        ]
+      });
+      return { ok: true };
+    })
+  );
 });
 app.delete("/api/v1/board/assets/:id", requireBoard, async (c) => {
-  const id2 = c.req.param("id");
-  const asset = await c.env.DB.select({ state: schema_exports.assets.state }).from(schema_exports.assets).where(eq2(schema_exports.assets.id, id2)).limit(1);
-  if (!asset[0]) return jsonError(c, 404, "NOT_FOUND", "Asset not found.");
-  if (asset[0].state === "BORROWED" || asset[0].state === "RESERVED")
-    return jsonError(
-      c,
-      409,
-      "RESERVATION_CONFLICT",
-      "Cannot delete an asset that is currently borrowed or reserved."
-    );
-  await c.env.DB.delete(schema_exports.assets).where(eq2(schema_exports.assets.id, id2));
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("audit"),
-      c.get("actor").id,
-      "ASSET",
-      id2,
-      "ASSET_DELETED",
-      Date.now(),
-      "{}"
-    ]
-  });
-  return c.json({ ok: true });
+  const assetId = c.req.param("id");
+  return c.json(
+    await write(c.env, async (tx) => {
+      const asset = await one(tx, "SELECT id, equipment_item_id, state, active FROM assets WHERE id=?", [assetId]);
+      if (!asset) throw new DomainError(404, "NOT_FOUND", "Asset not found.");
+      if (asset.state === "BORROWED") {
+        throw new DomainError(
+          409,
+          "RESERVATION_CONFLICT",
+          "Cannot delete an asset that is currently borrowed."
+        );
+      }
+      if (asset.active && asset.state === "AVAILABLE") {
+        await assertCanReduceCapacity(tx, asset.equipment_item_id, 1, "delete this asset");
+      }
+      await tx.execute({ sql: "DELETE FROM assets WHERE id=?", args: [assetId] });
+      await tx.execute({
+        sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+        args: [
+          randomId("audit"),
+          c.get("actor").id,
+          "ASSET",
+          assetId,
+          "ASSET_DELETED",
+          Date.now(),
+          "{}"
+        ]
+      });
+      return { ok: true };
+    })
+  );
 });
 app.get("/api/v1/board/chapters", async (c) => {
   const chapters2 = await c.env.DB.select().from(schema_exports.chapters).orderBy(asc(schema_exports.chapters.name));
@@ -2430,7 +2824,12 @@ app.delete("/api/v1/board/users/:id", requireSuperadmin, async (c) => {
     )
   ).limit(1);
   if (activeRes.length > 0) {
-    return jsonError(c, 409, "ACTIVE_RESERVATIONS", "Cannot delete a user with active or pending reservations.");
+    return jsonError(
+      c,
+      409,
+      "ACTIVE_RESERVATIONS",
+      "Cannot delete a user with active or pending reservations."
+    );
   }
   await c.env.DB.delete(schema_exports.notifications).where(eq2(schema_exports.notifications.userId, targetId));
   await c.env.DB.update(schema_exports.reservations).set({ approvedByUserId: null }).where(eq2(schema_exports.reservations.approvedByUserId, targetId));
@@ -2443,8 +2842,12 @@ app.delete("/api/v1/board/users/:id", requireSuperadmin, async (c) => {
     )
   );
   for (const r of userReservations) {
-    await c.env.DB.delete(schema_exports.reservationAssets).where(eq2(schema_exports.reservationAssets.reservationId, r.id));
-    await c.env.DB.delete(schema_exports.reservationLines).where(eq2(schema_exports.reservationLines.reservationId, r.id));
+    await c.env.DB.delete(schema_exports.reservationAssets).where(
+      eq2(schema_exports.reservationAssets.reservationId, r.id)
+    );
+    await c.env.DB.delete(schema_exports.reservationLines).where(
+      eq2(schema_exports.reservationLines.reservationId, r.id)
+    );
     await c.env.DB.delete(schema_exports.reservations).where(eq2(schema_exports.reservations.id, r.id));
   }
   await c.env.DB.delete(schema_exports.authSessions).where(eq2(schema_exports.authSessions.userId, targetId));
@@ -2452,7 +2855,19 @@ app.delete("/api/v1/board/users/:id", requireSuperadmin, async (c) => {
     sql: "DELETE FROM account WHERE userId=?",
     args: [targetId]
   });
-  await c.env.DB.delete(schema_exports.authUsers).where(eq2(schema_exports.authUsers.id, targetId));
+  const hasAudit = await c.env.DB.select({ id: schema_exports.auditEvents.id }).from(schema_exports.auditEvents).where(eq2(schema_exports.auditEvents.actorUserId, targetId)).limit(1);
+  if (hasAudit.length > 0) {
+    await c.env.DB.update(schema_exports.authUsers).set({
+      name: "Deleted User",
+      email: `disabled_${targetId}@deleted.local`,
+      phone: null,
+      role: "USER",
+      emailVerified: false,
+      updatedAt: /* @__PURE__ */ new Date()
+    }).where(eq2(schema_exports.authUsers.id, targetId));
+  } else {
+    await c.env.DB.delete(schema_exports.authUsers).where(eq2(schema_exports.authUsers.id, targetId));
+  }
   await c.env.CLIENT.execute({
     sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
     args: [
@@ -2519,6 +2934,7 @@ async function createRuntimeEnv(source = process.env) {
     BREVO_API_KEY: source.BREVO_API_KEY,
     BREVO_SENDER_EMAIL: source.BREVO_SENDER_EMAIL,
     BREVO_SENDER_NAME: source.BREVO_SENDER_NAME,
+    CRON_SECRET: source.CRON_SECRET,
     VERCEL_URL: source.VERCEL_URL,
     VERCEL_PROJECT_PRODUCTION_URL: source.VERCEL_PROJECT_PRODUCTION_URL,
     API_RATE_LIMIT_PER_MINUTE: 1200,

@@ -63,6 +63,7 @@ export async function createRuntimeEnv(source: NodeJS.ProcessEnv = process.env):
     BREVO_API_KEY: source.BREVO_API_KEY,
     BREVO_SENDER_EMAIL: source.BREVO_SENDER_EMAIL,
     BREVO_SENDER_NAME: source.BREVO_SENDER_NAME,
+    CRON_SECRET: source.CRON_SECRET,
     VERCEL_URL: source.VERCEL_URL,
     VERCEL_PROJECT_PRODUCTION_URL: source.VERCEL_PROJECT_PRODUCTION_URL,
     API_RATE_LIMIT_PER_MINUTE: 1200,

@@ -6,7 +6,12 @@ import { dirname, resolve } from "node:path";
 const url = process.env.TURSO_DATABASE_URL;
 const secret = process.env.BETTER_AUTH_SECRET;
 const origin = process.env.APP_ORIGIN;
-if (!url?.startsWith("file:") || !url.endsWith("/.local/e2e.db") || !secret || !origin) {
+if (
+  !url?.startsWith("file:") ||
+  !url.replaceAll("\\", "/").endsWith("/.local/e2e.db") ||
+  !secret ||
+  !origin
+) {
   throw new Error("E2E setup requires the isolated local database, test secret, and app origin.");
 }
 const databasePath = url.slice("file:".length);
@@ -17,6 +22,10 @@ const client = createClient({ url });
 try {
   await client.execute("PRAGMA foreign_keys = ON");
   await client.executeMultiple(await readFile(resolve("drizzle/0000_sb_reservations.sql"), "utf8"));
+  await client.executeMultiple(await readFile(resolve("drizzle/0001_borrower_phone.sql"), "utf8"));
+  await client.executeMultiple(
+    await readFile(resolve("drizzle/0002_quantity_reservations.sql"), "utf8")
+  );
   const now = Date.now();
   const result = {};
   for (const [id, name, role] of [

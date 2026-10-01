@@ -24,10 +24,11 @@ export default defineConfig({
   webServer: [
     {
       command: "node scripts/e2e-setup.mjs && npm run dev:api",
-      url: "http://127.0.0.1:8787/api/health",
+      url: "http://127.0.0.1:8789/api/health",
       reuseExistingServer: false,
       timeout: 120 * 1000,
       env: {
+        API_PORT: "8789",
         TURSO_DATABASE_URL: e2eDatabase,
         BETTER_AUTH_SECRET: e2eSecret,
         APP_ORIGIN: "http://127.0.0.1:5188",
@@ -39,6 +40,7 @@ export default defineConfig({
       url: "http://127.0.0.1:5188",
       reuseExistingServer: false,
       timeout: 120 * 1000,
+      env: { API_PORT: "8789" },
     },
   ],
 });

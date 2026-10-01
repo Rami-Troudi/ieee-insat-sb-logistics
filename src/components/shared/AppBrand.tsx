@@ -27,7 +27,12 @@ export const AppBrand: React.FC<AppBrandProps> = ({ className, to = "/app", isDa
         />
       </div>
 
-      <div className={cn("flex flex-col text-left border-l pl-2", isDark ? "border-white/20" : "border-border")}>
+      <div
+        className={cn(
+          "flex flex-col text-left border-l pl-2",
+          isDark ? "border-white/20" : "border-border"
+        )}
+      >
         <span
           className={cn(
             "text-xs font-bold tracking-tight leading-tight",

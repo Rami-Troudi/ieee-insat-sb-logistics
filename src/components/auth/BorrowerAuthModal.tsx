@@ -126,7 +126,6 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
     }
   };
 
-
   const onSubmitStaff = async (e: React.FormEvent) => {
     e.preventDefault();
     setStaffError("");
@@ -162,7 +161,7 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="sm:max-w-md p-6 rounded-2xl border-border bg-card shadow-2xl">
-        {/* Toggle Mode Tabs (Exactly identical to RAS solution) */}
+        {/* Toggle Mode Tabs */}
         <div className="grid grid-cols-2 p-1 rounded-xl bg-surface-subtle text-xs font-semibold mb-2 border border-border">
           <button
             type="button"
