@@ -21,9 +21,9 @@ Main files: `src/components/auth/BorrowerAuthModal.tsx`, `src/app/App.tsx`, `src
 - After the deadline, they receive an overdue reminder, limited to one per Tunis calendar day per reservation.
 - The top bar includes an inbox, unread count and controls to mark notifications as read.
 - While the app is open, notifications refresh every minute.
-- A daily scheduled endpoint also checks return reminders. Configure `CRON_SECRET` in the deployment environment for this endpoint.
+- A minute scheduled endpoint checks pickup expiry, return reminders and queued emails. Configure `CRON_SECRET` in the deployment environment for this endpoint.
 
-These are in-app notifications. Email and push delivery were not added. The daily scheduled check does not guarantee a reminder exactly one hour before every deadline; that check also runs when the borrower uses the app.
+In-app notifications are always available. Brevo email delivery now covers approval, return deadlines, overdue loans and missed-pickup cancellation; it requires an API key and verified sender. Push delivery was not added. A minute maintenance schedule is required in production for timely background delivery and pickup cancellation; see `docs/operations.md`.
 
 Main files: `src/components/shared/TopBar.tsx`, `src/worker/domain.ts`, `src/worker/index.ts`, `vercel.json`, `.env.example`, `docs/operations.md`.
 
@@ -122,7 +122,32 @@ Before the borrower-details and quantity-only changes, 8 API tests and 2 browser
 
 Suggested integration checks: create a borrower with a phone number, submit and approve a reservation, inspect the borrower dialog, collect a different physical unit of the requested type, try an extra unit, return units one by one, and confirm the final status and Board attribution.
 
+## Bulk QR label export
+
+In **Board → Inventory**, each equipment type has an **Export all QR codes** button. It opens an A4 label sheet containing one QR label per physical unit of that type, including its equipment name, material code, serial number when present, and current state. Select **Print / Save as PDF** to print the sheet or save one PDF through the browser print dialog. Equipment types without units have the button disabled. Existing individual sticker exports remain available.
+
+## Borrowing history, email reminders and pickup expiry
+
+- The Board borrower dialog shows the latest 50 loans, dates, material types, requested/collected/returned quantities, total units collected and units still borrowed. Totals count all retained loan records, including current loans; force-deleted records are excluded.
+- Approval, return reminder, overdue and missed-pickup emails use the existing Brevo sender. A persistent queue records delivery and retries provider failures after five minutes. Superseded or old reminders are skipped. Migration `0003_notification_emails.sql` creates the queue.
+- Reservations with no collected units are cancelled 30 minutes after scheduled pickup, releasing their quantity capacity. This applies to pending and approved requests. Partially collected reservations remain active.
+- Borrowers see the policy before submitting a request and in submission/approval notifications. Automatic cancellations create borrower and Board notifications and an audit entry marked as automatic.
+- The development API performs maintenance every minute. Production requires a minute scheduler calling the protected maintenance endpoint, or a Vercel Pro minute cron. The checked-in cron now runs every minute; Hobby deployments need the documented external scheduler alternative. Pickup is rejected after the deadline even between scheduler runs.
+
 ## Code commits
 
 - `be3e985`: password signup, notifications and reservation handover workflows.
 - `53a588b`: borrower details and assigning material units at pickup.
+
+## Review corrections (2 October 2026)
+
+- Protected equipment, account and reservation deletion with transactional writes and history checks. Accounts with history can have access disabled instead of being deleted.
+- Removed unsigned session-cookie fallback and restricted origin trust to configured deployments and local development ports.
+- Public signup always creates a new account; existing passwordless accounts require a Superadmin password reset. Password changes and bootstrap rotation revoke sessions.
+- Added migration 0004 for pickup closure, disabled accounts, affiliation, credential uniqueness and physical assignment constraints.
+- Fixed quantity availability, reserved stock retirement checks, pickup for previously approved disabled equipment, and partial-pickup completion at the return deadline.
+- Fixed direct material QR routing and staff login destination, borrower status filters, calendar quantities/colors/range loading, print CSP and HTML escaping, and camera lifecycle.
+- Added accessible notification history and mark-all-read, paginated reservation/account/audit/borrower lists, bulk database reads, cleanup of transient data, and bounded email batches.
+- Hardened browser storage handling, asynchronous availability requests, persistent loading error feedback and local Vite host settings.
+- Replaced unsafe initial ORM regeneration with numbered incremental SQL migration creation. Updated the test toolchain, CI Node version and existing formatting.
+- Added API regression tests and Chromium feature tests; see docs/review-fixes.md for results and the remaining external verification requirements.

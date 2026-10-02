@@ -36,9 +36,9 @@ export const Metric: React.FC<MetricProps> = ({
       icon: "text-destructive",
     },
     success: {
-      container: "border-[hsl(var(--success))]/30 bg-[hsl(var(--success-surface))]",
-      text: "text-[hsl(var(--success))]",
-      icon: "text-[hsl(var(--success))]",
+      container: "border-emerald-500/30 bg-emerald-500/5",
+      text: "text-[var(--success)]",
+      icon: "text-[var(--success)]",
     },
     secondary: {
       container: "border-secondary/30 bg-secondary/5",

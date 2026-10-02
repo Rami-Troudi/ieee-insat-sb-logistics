@@ -22,6 +22,7 @@ try {
   )`);
   const directory = resolve("drizzle");
   const migrations = (await readdir(directory)).filter((name) => /^\d+.*\.sql$/.test(name)).sort();
+  if (!migrations.length) throw new Error("No SQL migrations found.");
   for (const name of migrations) {
     const existing = await client.execute({
       sql: "SELECT 1 FROM app_schema_migrations WHERE name=?",
@@ -39,7 +40,10 @@ try {
       await transaction.commit();
     } catch (error) {
       await transaction.rollback();
-      throw error;
+      throw new Error(
+        `Migration ${name} failed and was rolled back. Inspect existing data and constraints before retrying.`,
+        { cause: error }
+      );
     } finally {
       transaction.close();
     }
