@@ -35,7 +35,9 @@ function NotificationBell({ userId }: { userId: string }) {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const unreadCount = notifications.filter((notification) => !notification.readAt).length;
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [total, setTotal] = useState(0);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -48,11 +50,22 @@ function NotificationBell({ userId }: { userId: string }) {
         const response = await fetch("/api/v1/notifications", {
           credentials: "same-origin",
         });
-        if (!response.ok) return;
+        if (!response.ok) throw new Error("Could not load notifications. Please retry.");
         const data = (await response.json()) as Notification[];
-        if (active) setNotifications(data);
+        const summary = await fetch("/api/v1/notifications/summary", {
+          credentials: "same-origin",
+        });
+        if (!summary.ok) throw new Error("Could not load notifications. Please retry.");
+        const counts = (await summary.json()) as { unread: number; total: number };
+        if (active) {
+          setNotifications(data);
+          setUnreadCount(counts.unread);
+          setTotal(counts.total);
+          setError("");
+        }
       } catch {
-        // Keep the last notification list when the network is unavailable.
+        if (active)
+          setError("Notifications are temporarily unavailable. They refresh every minute.");
       }
     };
     void load();
@@ -61,7 +74,7 @@ function NotificationBell({ userId }: { userId: string }) {
       active = false;
       window.clearInterval(timer);
     };
-  }, [userId]);
+  }, [userId, open]);
 
   const markRead = async (notification: Notification) => {
     if (notification.readAt) return;
@@ -72,6 +85,7 @@ function NotificationBell({ userId }: { userId: string }) {
         credentials: "same-origin",
       });
       if (response.ok) {
+        setUnreadCount((count) => Math.max(0, count - 1));
         setNotifications((current) =>
           current.map((item) =>
             item.id === notification.id ? { ...item, readAt: Date.now() } : item
@@ -80,6 +94,40 @@ function NotificationBell({ userId }: { userId: string }) {
       }
     } catch {
       // Keep the notification unread so the user can retry.
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadMore = async () => {
+    setLoading(true);
+    try {
+      const response = await fetch(`/api/v1/notifications?offset=${notifications.length}`);
+      if (!response.ok) throw new Error("Could not load older notifications.");
+      const next = (await response.json()) as Notification[];
+      setNotifications((current) => [
+        ...current,
+        ...next.filter((item) => !current.some((old) => old.id === item.id)),
+      ]);
+      setError("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Please retry.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  const markAllRead = async () => {
+    setLoading(true);
+    try {
+      const response = await fetch("/api/v1/notifications/read-all", { method: "PATCH" });
+      if (!response.ok) throw new Error("Could not mark notifications as read.");
+      setUnreadCount(0);
+      setNotifications((current) =>
+        current.map((item) => ({ ...item, readAt: item.readAt ?? Date.now() }))
+      );
+      setError("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Please retry.");
     } finally {
       setLoading(false);
     }
@@ -117,8 +165,23 @@ function NotificationBell({ userId }: { userId: string }) {
             {loading && <span className="text-[10px] text-muted-foreground">Saving…</span>}
           </div>
           <div className="max-h-80 overflow-y-auto">
+            {error && (
+              <p role="alert" className="px-4 py-2 text-xs text-destructive">
+                {error}
+              </p>
+            )}
+            {unreadCount > 0 && (
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => void markAllRead()}
+                className="px-4 py-2 text-xs text-primary"
+              >
+                Mark all as read
+              </button>
+            )}
             {notifications.length ? (
-              notifications.slice(0, 20).map((notification) => (
+              notifications.map((notification) => (
                 <button
                   key={notification.id}
                   type="button"
@@ -156,6 +219,16 @@ function NotificationBell({ userId }: { userId: string }) {
               <p className="px-4 py-8 text-center text-xs text-muted-foreground">
                 No notifications yet.
               </p>
+            )}
+            {notifications.length < total && (
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => void loadMore()}
+                className="px-4 py-3 text-xs text-primary"
+              >
+                Load older notifications
+              </button>
             )}
           </div>
         </div>

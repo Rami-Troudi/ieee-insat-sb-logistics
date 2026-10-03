@@ -12,7 +12,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { requestId } from "hono/request-id";
 import { secureHeaders } from "hono/secure-headers";
-import { and as and2, asc, desc, eq as eq2, inArray, or } from "drizzle-orm";
+import { and as and2, asc, desc, eq as eq2, inArray } from "drizzle-orm";
 import { z } from "zod";
 
 // src/worker/database.ts
@@ -33,6 +33,7 @@ __export(schema_exports, {
   chapters: () => chapters,
   equipmentItems: () => equipmentItems,
   idempotencyKeys: () => idempotencyKeys,
+  notificationEmails: () => notificationEmails,
   notifications: () => notifications,
   rateLimitBuckets: () => rateLimitBuckets,
   reservationAssets: () => reservationAssets,
@@ -57,6 +58,8 @@ var authUsers = sqliteTable(
     name: text("name").notNull(),
     email: text("email").notNull(),
     phone: text("phone"),
+    disabledAt: integer("disabled_at"),
+    membership: text("membership", { enum: ["IEEE", "EXTERNAL"] }),
     emailVerified: integer("emailVerified", { mode: "boolean" }).notNull().default(false),
     image: text("image"),
     role: text("role", { enum: ["USER", "BOARD", "SUPERADMIN"] }).notNull().default("USER"),
@@ -99,7 +102,10 @@ var authAccounts = sqliteTable(
     createdAt: integer("createdAt", { mode: "timestamp_ms" }).notNull(),
     updatedAt: integer("updatedAt", { mode: "timestamp_ms" }).notNull()
   },
-  (table) => [index("account_user_id").on(table.userId)]
+  (table) => [
+    index("account_user_id").on(table.userId),
+    uniqueIndex("account_provider_user").on(table.userId, table.providerId)
+  ]
 );
 var authVerifications = sqliteTable(
   "verification",
@@ -188,6 +194,7 @@ var reservations = sqliteTable(
     pickupAt: integer("pickup_at").notNull(),
     returnAt: integer("return_at").notNull(),
     note: text("note"),
+    pickupClosedAt: integer("pickup_closed_at"),
     status: text("status", {
       enum: ["PENDING", "APPROVED", "DECLINED", "CANCELLED", "COMPLETED"]
     }).notNull().default("PENDING"),
@@ -244,6 +251,7 @@ var reservationAssets = sqliteTable(
   },
   (table) => [
     uniqueIndex("reservation_asset_once").on(table.reservationId, table.assetId),
+    uniqueIndex("reservation_assets_one_borrowed").on(table.assetId).where(sql`${table.state} = 'BORROWED'`),
     index("reservation_assets_asset").on(table.assetId),
     index("reservation_assets_reservation").on(table.reservationId),
     index("reservation_assets_line").on(table.reservationLineId)
@@ -300,6 +308,23 @@ var rateLimitBuckets = sqliteTable("rate_limit_buckets", {
   windowStart: integer("window_start").notNull(),
   count: integer("count").notNull()
 });
+var notificationEmails = sqliteTable(
+  "notification_emails",
+  {
+    notificationId: text("notification_id").primaryKey().references(() => notifications.id, { onDelete: "cascade" }),
+    status: text("status", { enum: ["PENDING", "SENDING", "SENT", "SKIPPED"] }).notNull().default("PENDING"),
+    attempts: integer("attempts").notNull().default(0),
+    nextAttemptAt: integer("next_attempt_at").notNull().default(0),
+    sentAt: integer("sent_at")
+  },
+  (table) => [
+    index("notification_emails_pending").on(table.status, table.nextAttemptAt),
+    check(
+      "notification_email_status",
+      sql`${table.status} IN ('PENDING','SENDING','SENT','SKIPPED')`
+    )
+  ]
+);
 var authSchema = {
   user: authUsers,
   session: authSessions,
@@ -316,6 +341,7 @@ var schema = {
   reservationLines,
   reservationAssets,
   notifications,
+  notificationEmails,
   auditEvents,
   idempotencyKeys,
   rateLimitBuckets
@@ -340,6 +366,7 @@ async function sendEmail(env, to, subject, htmlContent) {
     throw new Error("Email delivery is not configured.");
   }
   const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+    signal: AbortSignal.timeout(8e3),
     method: "POST",
     headers: {
       accept: "application/json",
@@ -386,19 +413,30 @@ function isAllowedOrigin(origin, env, requestUrl) {
     const localHostnames = ["localhost", "127.0.0.1"];
     const isOriginLocal = localHostnames.includes(originUrl.hostname);
     const isTrustedLocal = localHostnames.includes(trustedUrl.hostname);
-    if (originUrl.hostname.endsWith(".vercel.app") && (trustedUrl.hostname.endsWith(".vercel.app") || Boolean(env.APP_ORIGIN?.includes(".vercel.app")))) {
-      return true;
+    if (originUrl.hostname.endsWith(".vercel.app")) {
+      const allowedVercelHosts = /* @__PURE__ */ new Set();
+      if (env.VERCEL_URL) allowedVercelHosts.add(env.VERCEL_URL.replace(/^https?:\/\//, ""));
+      if (env.VERCEL_PROJECT_PRODUCTION_URL)
+        allowedVercelHosts.add(env.VERCEL_PROJECT_PRODUCTION_URL.replace(/^https?:\/\//, ""));
+      if (trustedUrl.hostname.endsWith(".vercel.app")) allowedVercelHosts.add(trustedUrl.hostname);
+      if (env.APP_ORIGIN) {
+        try {
+          const appUrl = new URL(env.APP_ORIGIN);
+          if (appUrl.hostname.endsWith(".vercel.app")) allowedVercelHosts.add(appUrl.hostname);
+        } catch {
+        }
+      }
+      if (allowedVercelHosts.has(originUrl.hostname)) return true;
+      for (const trustedHost of allowedVercelHosts) {
+        const prefix = trustedHost.replace(/\.vercel\.app$/, "");
+        if (originUrl.hostname.startsWith(`${prefix}-`)) {
+          return true;
+        }
+      }
+      return false;
     }
     if (isOriginLocal && isTrustedLocal && originUrl.protocol === trustedUrl.protocol) {
-      const allowedPorts = /* @__PURE__ */ new Set([
-        originUrl.port,
-        trustedUrl.port,
-        "5173",
-        "5174",
-        "5175",
-        "5188",
-        "8787"
-      ]);
+      const allowedPorts = /* @__PURE__ */ new Set([trustedUrl.port, "5173", "5174", "5175", "5188", "8787"]);
       if (allowedPorts.has(originUrl.port) && allowedPorts.has(trustedUrl.port)) {
         return true;
       }
@@ -534,6 +572,17 @@ async function signCookieValue(value, secret) {
   const signature = await makeCookieSignature(value, secret);
   return encodeURIComponent(`${value}.${signature}`);
 }
+async function verifyCookieValue(rawVal, secret) {
+  const decoded = decodeURIComponent(rawVal);
+  const dotIndex = decoded.lastIndexOf(".");
+  if (dotIndex === -1) return null;
+  const value = decoded.slice(0, dotIndex);
+  const sig = decoded.slice(dotIndex + 1);
+  if (!value || !sig) return null;
+  const expectedSig = await makeCookieSignature(value, secret);
+  if (sig !== expectedSig) return null;
+  return value;
+}
 
 // src/worker/index.ts
 import { hashPassword } from "better-auth/crypto";
@@ -554,14 +603,16 @@ async function resolveIdentity(c) {
       const cookieHeader = c.req.header("Cookie") || "";
       const tokenMatch = cookieHeader.match(/(?:__Secure-)?better-auth\.session_token=([^;]+)/);
       if (tokenMatch) {
-        const rawVal = decodeURIComponent(tokenMatch[1]);
-        const token = rawVal.split(".")[0];
-        if (token) {
+        const verifiedToken = await verifyCookieValue(tokenMatch[1], c.env.BETTER_AUTH_SECRET);
+        if (verifiedToken) {
           const now = /* @__PURE__ */ new Date();
           const [session] = await c.env.DB.select({
             userId: schema_exports.authSessions.userId
           }).from(schema_exports.authSessions).where(
-            and(eq(schema_exports.authSessions.token, token), gt(schema_exports.authSessions.expiresAt, now))
+            and(
+              eq(schema_exports.authSessions.token, verifiedToken),
+              gt(schema_exports.authSessions.expiresAt, now)
+            )
           ).limit(1);
           if (session?.userId) {
             userId = session.userId;
@@ -576,9 +627,10 @@ async function resolveIdentity(c) {
     id: schema_exports.authUsers.id,
     name: schema_exports.authUsers.name,
     email: schema_exports.authUsers.email,
-    role: schema_exports.authUsers.role
+    role: schema_exports.authUsers.role,
+    disabledAt: schema_exports.authUsers.disabledAt
   }).from(schema_exports.authUsers).where(eq(schema_exports.authUsers.id, userId)).limit(1);
-  if (!user || !["USER", "BOARD", "SUPERADMIN"].includes(user.role)) return null;
+  if (!user || user.disabledAt || !["USER", "BOARD", "SUPERADMIN"].includes(user.role)) return null;
   return { ...user, role: user.role };
 }
 var requireUser = createMiddleware(async (c, next) => {
@@ -684,11 +736,26 @@ function audit(tx, actorId, entityType, entityId, action, data = {}) {
     args: [id("audit"), actorId, entityType, entityId, action, Date.now(), JSON.stringify(data)]
   });
 }
-function notify(tx, userId, type, title, message, reservationId = null) {
-  return tx.execute({
+async function notify(tx, userId, type, title, message, reservationId = null) {
+  const notifId = id("notification");
+  const now = Date.now();
+  await tx.execute({
     sql: "INSERT INTO notifications(id,user_id,type,title,message,reservation_id,created_at) VALUES(?,?,?,?,?,?,?)",
-    args: [id("notification"), userId, type, title, message, reservationId, Date.now()]
+    args: [notifId, userId, type, title, message, reservationId, now]
   });
+  const emailEligible = [
+    "RESERVATION_APPROVED",
+    "RESERVATION_DECLINED",
+    "RETURN_DUE_SOON",
+    "RETURN_OVERDUE",
+    "PICKUP_EXPIRED"
+  ];
+  if (emailEligible.includes(type)) {
+    await tx.execute({
+      sql: "INSERT OR IGNORE INTO notification_emails(notification_id,status,attempts,next_attempt_at) VALUES(?,'PENDING',0,0)",
+      args: [notifId]
+    });
+  }
 }
 async function notifyBoard(tx, type, title, message, reservationId) {
   const boardUsers = await rows(
@@ -702,8 +769,7 @@ async function findAvailableAssets(executor, equipmentItemId, pickupAt, returnAt
     executor,
     `SELECT a.id,a.asset_code,a.serial_number,a.state
        FROM assets a
-       INNER JOIN equipment_items e ON e.id=a.equipment_item_id
-      WHERE a.equipment_item_id=? AND e.active=1 AND a.active=1
+      WHERE a.equipment_item_id=? AND a.active=1
         AND a.state NOT IN ('BORROWED','OUT_OF_SERVICE','RETIRED')
         AND NOT EXISTS (
           SELECT 1
@@ -856,8 +922,53 @@ async function finalizeReservationIfFinished(tx, reservationId, now = Date.now()
   }
   return false;
 }
+async function expireUncollectedReservationsTx(tx, now) {
+  const cutoff = now - 30 * 6e4;
+  const candidates = await rows(
+    tx,
+    `SELECT r.id, r.requested_by_user_id, r.status
+     FROM reservations r
+     WHERE r.status IN ('PENDING', 'APPROVED')
+       AND r.pickup_at <= ?
+       AND (
+         SELECT COUNT(*)
+         FROM reservation_assets ra
+         WHERE ra.reservation_id = r.id AND ra.actual_pickup_at IS NOT NULL
+       ) = 0`,
+    [cutoff]
+  );
+  let expiredCount = 0;
+  for (const r of candidates) {
+    await tx.execute({
+      sql: "UPDATE reservations SET status = 'CANCELLED', pickup_closed_at = ?, updated_at = ? WHERE id = ? AND status IN ('PENDING', 'APPROVED')",
+      args: [now, now, r.id]
+    });
+    await tx.execute({
+      sql: "UPDATE reservation_assets SET state = 'RELEASED', updated_at = ? WHERE reservation_id = ? AND state = 'RESERVED'",
+      args: [now, r.id]
+    });
+    await notify(
+      tx,
+      r.requested_by_user_id,
+      "PICKUP_EXPIRED",
+      "Pickup window expired",
+      "Your reservation was cancelled because equipment was not collected within 30 minutes of the scheduled pickup.",
+      r.id
+    );
+    await audit(tx, r.requested_by_user_id, "RESERVATION", r.id, "RESERVATION_CANCELLED", {
+      reason: "MISSED_PICKUP_30_MIN",
+      pickupClosedAt: now
+    });
+    expiredCount++;
+  }
+  return expiredCount;
+}
+async function expireUncollectedReservations(env, now = Date.now()) {
+  return write(env, (tx) => expireUncollectedReservationsTx(tx, now));
+}
 async function reconcileExpiredReservations(env, now = Date.now()) {
   await write(env, async (tx) => {
+    await expireUncollectedReservationsTx(tx, now);
     await tx.execute({
       sql: `UPDATE reservations
             SET status = 'COMPLETED', updated_at = ?
@@ -987,12 +1098,19 @@ async function listReservations(env, ownerId) {
   );
   return Promise.all(ids.map(({ id: reservationId }) => getReservation(env, reservationId)));
 }
-async function listBoardReservations(env) {
+async function listBoardReservations(env, options = {}) {
   await reconcileExpiredReservations(env);
-  const ids = await rows(
-    env.CLIENT,
-    "SELECT id FROM reservations ORDER BY CASE status WHEN 'PENDING' THEN 0 WHEN 'APPROVED' THEN 1 ELSE 2 END,pickup_at ASC LIMIT 500"
-  );
+  const limit = Math.min(100, Math.max(1, options.limit ?? 100));
+  const offset = Math.max(0, options.offset ?? 0);
+  let sql2 = "SELECT id FROM reservations";
+  const args = [];
+  if (options.start !== void 0 && options.end !== void 0) {
+    sql2 += " WHERE pickup_at < ? AND ? < return_at";
+    args.push(options.end, options.start);
+  }
+  sql2 += " ORDER BY CASE status WHEN 'PENDING' THEN 0 WHEN 'APPROVED' THEN 1 ELSE 2 END, pickup_at ASC LIMIT ? OFFSET ?";
+  args.push(limit, offset);
+  const ids = await rows(env.CLIENT, sql2, args);
   return Promise.all(ids.map(({ id: reservationId }) => getReservation(env, reservationId, true)));
 }
 function validateWindow(pickupAt, returnAt, allowStarted = false) {
@@ -1459,7 +1577,7 @@ async function collectMaterial(tx, actor, reservationId, assetId, timestamp) {
     "SELECT a.equipment_item_id,a.state,a.active,e.active AS equipment_active FROM assets a JOIN equipment_items e ON e.id=a.equipment_item_id WHERE a.id=?",
     [assetId]
   );
-  if (!asset || !asset.active || !asset.equipment_active || !["AVAILABLE", "RESERVED"].includes(asset.state))
+  if (!asset || !asset.active || !["AVAILABLE", "RESERVED"].includes(asset.state))
     throw new DomainError(409, "ASSET_UNAVAILABLE", "This material is not available for pickup.");
   const existing = await one(
     tx,
@@ -1802,6 +1920,61 @@ function createQrToken() {
 function randomId(prefix) {
   return id(prefix);
 }
+async function deliverNotificationEmails(env, now = Date.now()) {
+  if (!env.BREVO_API_KEY || !env.BREVO_SENDER_EMAIL) {
+    return { sent: 0, skipped: 0, pending: 0 };
+  }
+  const pendingRows = await rows(
+    env.CLIENT,
+    `SELECT ne.notification_id, ne.attempts, n.title, n.message, u.email AS user_email
+     FROM notification_emails ne
+     JOIN notifications n ON n.id = ne.notification_id
+     LEFT JOIN user u ON u.id = n.user_id
+     WHERE ne.status = 'PENDING' AND ne.next_attempt_at <= ?
+     ORDER BY ne.next_attempt_at ASC
+     LIMIT 25`,
+    [now]
+  );
+  let sent = 0;
+  let skipped = 0;
+  const startTime = Date.now();
+  for (const row of pendingRows) {
+    if (Date.now() - startTime > 16e3) break;
+    if (!row.user_email) {
+      await env.CLIENT.execute({
+        sql: "UPDATE notification_emails SET status = 'SKIPPED' WHERE notification_id = ?",
+        args: [row.notification_id]
+      });
+      skipped++;
+      continue;
+    }
+    try {
+      await sendEmail(env, row.user_email, row.title, `<p>${escapeHtml(row.message)}</p>`);
+      await env.CLIENT.execute({
+        sql: "UPDATE notification_emails SET status = 'SENT', attempts = attempts + 1, sent_at = ?, next_attempt_at = 0 WHERE notification_id = ?",
+        args: [Date.now(), row.notification_id]
+      });
+      sent++;
+    } catch {
+      await env.CLIENT.execute({
+        sql: "UPDATE notification_emails SET status = 'PENDING', attempts = attempts + 1, next_attempt_at = ? WHERE notification_id = ?",
+        args: [now + 5 * 6e4, row.notification_id]
+      });
+    }
+  }
+  return { sent, skipped, pending: pendingRows.length - sent - skipped };
+}
+async function runReservationMaintenance(env, now = Date.now()) {
+  const expiredReservations = await expireUncollectedReservations(env, now);
+  await reconcileExpiredReservations(env, now);
+  const reminders = await refreshAllReturnNotifications(env, now);
+  const emailResults = await deliverNotificationEmails(env, now);
+  return {
+    expiredReservations,
+    remindersCreated: reminders.notificationsCreated,
+    emailsSent: emailResults.sent
+  };
+}
 
 // src/worker/index.ts
 var app = new Hono();
@@ -1855,7 +2028,11 @@ app.use("/api/*", async (c, next) => {
 app.onError((error, c) => {
   const requestIdValue = c.get("requestId");
   if (error instanceof DomainError) return jsonError(c, error.status, error.code, error.message);
-  console.error("request_failed", { requestId: requestIdValue, type: error.name });
+  console.error("request_failed", {
+    requestId: requestIdValue,
+    type: error.name,
+    message: error.message
+  });
   return jsonError(c, 500, "INTERNAL", "The request could not be completed.");
 });
 app.get("/api/health", async (c) => {
@@ -1869,7 +2046,7 @@ app.get("/api/cron/return-reminders", async (c) => {
   if (c.req.header("Authorization") !== "Bearer " + c.env.CRON_SECRET) {
     return jsonError(c, 401, "UNAUTHENTICATED", "Invalid cron authorization.");
   }
-  return c.json(await refreshAllReturnNotifications(c.env));
+  return c.json(await runReservationMaintenance(c.env));
 });
 app.all("/api/auth/*", async (c) => {
   if (await isRateLimited(c.env, `auth:${requestIp(c)}`, c.env.AUTH_RATE_LIMIT_PER_MINUTE)) {
@@ -1884,12 +2061,16 @@ app.post("/api/v1/auth/borrower", async (c) => {
     return jsonError(c, 429, "RATE_LIMITED", "Too many sign-in attempts. Try again shortly.");
   }
   const body = await c.req.json().catch(() => null);
-  if (!body || typeof body.email !== "string" || !/^\S+@\S+\.\S+$/.test(body.email.trim()) || typeof body.name !== "string" || body.name.trim().length < 2) {
+  if (!body || typeof body.email !== "string" || !/^\S+@\S+\.\S+$/.test(body.email.trim()) || typeof body.name !== "string" || body.name.trim().length < 2 || body.name.trim().length > 120) {
     return jsonError(c, 400, "VALIDATION", "Valid member details are required.");
+  }
+  if (body.phone && (typeof body.phone !== "string" || body.phone.trim().length > 50)) {
+    return jsonError(c, 400, "VALIDATION", "Phone number is too long.");
   }
   const email = body.email.trim().toLowerCase();
   const name = body.name.trim();
   const phone = typeof body.phone === "string" ? body.phone.trim().slice(0, 50) || null : null;
+  const membership = body.membership === "IEEE" || body.membership === "EXTERNAL" ? body.membership : null;
   const now = /* @__PURE__ */ new Date();
   const existing = await c.env.DB.select().from(schema_exports.authUsers).where(eq2(schema_exports.authUsers.email, email)).limit(1);
   let userId;
@@ -1903,9 +2084,23 @@ app.post("/api/v1/auth/borrower", async (c) => {
         "Privileged accounts cannot use borrower sign-in."
       );
     }
+    if (existing[0].disabledAt) {
+      return jsonError(c, 403, "ACCOUNT_DISABLED", "Your account access has been disabled.");
+    }
     userId = existing[0].id;
-    await c.env.DB.update(schema_exports.authUsers).set({ name, phone: phone ?? existing[0].phone, updatedAt: now }).where(eq2(schema_exports.authUsers.id, userId));
-    user = { ...existing[0], name, phone: phone ?? existing[0].phone, updatedAt: now };
+    await c.env.DB.update(schema_exports.authUsers).set({
+      name,
+      phone: phone ?? existing[0].phone,
+      membership: membership ?? existing[0].membership,
+      updatedAt: now
+    }).where(eq2(schema_exports.authUsers.id, userId));
+    user = {
+      ...existing[0],
+      name,
+      phone: phone ?? existing[0].phone,
+      membership: membership ?? existing[0].membership,
+      updatedAt: now
+    };
   } else {
     userId = crypto.randomUUID();
     const [newUser] = await c.env.DB.insert(schema_exports.authUsers).values({
@@ -1913,6 +2108,7 @@ app.post("/api/v1/auth/borrower", async (c) => {
       name,
       email,
       phone,
+      membership,
       emailVerified: true,
       role: "USER",
       createdAt: now,
@@ -2063,13 +2259,13 @@ app.get("/api/v1/equipment/:id/availability", async (c) => {
     and2(eq2(schema_exports.equipmentItems.id, c.req.param("id")), eq2(schema_exports.equipmentItems.active, true))
   ).limit(1);
   if (!item.length) return jsonError(c, 404, "NOT_FOUND", "Equipment not found.");
-  const availableAssets = await findAvailableAssets(
+  const qty = await availableQuantity(
     c.env.CLIENT,
     item[0].id,
     pickupAt,
     returnAt
   );
-  return c.json({ availableQuantity: availableAssets.length });
+  return c.json({ availableQuantity: qty });
 });
 app.use("/api/v1/reservations", requireUser);
 app.use("/api/v1/reservations/*", requireUser);
@@ -2134,6 +2330,8 @@ app.delete("/api/v1/reservations/:id", async (c) => {
 app.get("/api/v1/notifications", async (c) => {
   const actor = await resolveIdentity(c);
   if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue.");
+  const offset = Math.max(0, Number(c.req.query("offset") ?? 0));
+  const limit = Math.min(100, Math.max(1, Number(c.req.query("limit") ?? 100)));
   const notifications2 = await c.env.DB.select({
     id: schema_exports.notifications.id,
     type: schema_exports.notifications.type,
@@ -2142,14 +2340,36 @@ app.get("/api/v1/notifications", async (c) => {
     reservationId: schema_exports.notifications.reservationId,
     readAt: schema_exports.notifications.readAt,
     createdAt: schema_exports.notifications.createdAt
-  }).from(schema_exports.notifications).where(eq2(schema_exports.notifications.userId, actor.id)).orderBy(desc(schema_exports.notifications.createdAt)).limit(100);
+  }).from(schema_exports.notifications).where(eq2(schema_exports.notifications.userId, actor.id)).orderBy(desc(schema_exports.notifications.createdAt)).offset(offset).limit(limit);
   return c.json(notifications2);
+});
+app.get("/api/v1/notifications/summary", async (c) => {
+  const actor = await resolveIdentity(c);
+  if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue.");
+  const rows2 = await c.env.CLIENT.execute({
+    sql: "SELECT COUNT(*) AS total, SUM(CASE WHEN read_at IS NULL THEN 1 ELSE 0 END) AS unread FROM notifications WHERE user_id=?",
+    args: [actor.id]
+  });
+  const row = rows2.rows[0];
+  return c.json({
+    total: Number(row?.total ?? 0),
+    unread: Number(row?.unread ?? 0)
+  });
 });
 app.post("/api/v1/notifications/refresh", async (c) => {
   const actor = await resolveIdentity(c);
   if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue.");
   const created = actor.role === "USER" ? await refreshReturnNotificationsForUser(c.env, actor.id) : 0;
   return c.json({ ok: true, notificationsCreated: created });
+});
+app.patch("/api/v1/notifications/read-all", async (c) => {
+  const actor = await resolveIdentity(c);
+  if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue.");
+  const result = await c.env.CLIENT.execute({
+    sql: "UPDATE notifications SET read_at=? WHERE user_id=? AND read_at IS NULL",
+    args: [Date.now(), actor.id]
+  });
+  return c.json({ ok: true, changes: result.rowsAffected });
 });
 app.patch("/api/v1/notifications/:id/read", async (c) => {
   const actor = await resolveIdentity(c);
@@ -2162,7 +2382,25 @@ app.patch("/api/v1/notifications/:id/read", async (c) => {
 app.use("/api/v1/board", requireBoard);
 app.use("/api/v1/board/*", requireBoard);
 app.get("/api/v1/board/dashboard", async (c) => c.json(await boardDashboard(c.env)));
-app.get("/api/v1/board/reservations", async (c) => c.json(await listBoardReservations(c.env)));
+app.get("/api/v1/board/reservations", async (c) => {
+  const startStr = c.req.query("start");
+  const endStr = c.req.query("end");
+  let start;
+  let end;
+  if (startStr !== void 0 || endStr !== void 0) {
+    if (!startStr || !endStr || !Number.isFinite(Date.parse(startStr)) || !Number.isFinite(Date.parse(endStr))) {
+      return jsonError(c, 400, "VALIDATION", "Valid start and end dates are required.");
+    }
+    start = Date.parse(startStr);
+    end = Date.parse(endStr);
+    if (start >= end) {
+      return jsonError(c, 400, "VALIDATION", "Start date must be before end date.");
+    }
+  }
+  const offset = Math.max(0, Number(c.req.query("offset") ?? 0));
+  const limit = Math.min(100, Math.max(1, Number(c.req.query("limit") ?? 100)));
+  return c.json(await listBoardReservations(c.env, { offset, limit, start, end }));
+});
 app.get("/api/v1/board/reservations/:id/borrower", async (c) => {
   const reservation = await getReservation(c.env, c.req.param("id"));
   if (!reservation) return jsonError(c, 404, "NOT_FOUND", "Reservation not found.");
@@ -2177,10 +2415,18 @@ app.get("/api/v1/board/reservations/:id/borrower", async (c) => {
     sql: "SELECT COUNT(DISTINCT r.id) AS count FROM reservations r WHERE " + (reservation.borrower.type === "PERSON" ? "r.borrower_type='PERSON' AND r.borrower_user_id=?" : "r.borrower_type='CHAPTER' AND r.chapter_id=?") + " AND EXISTS (SELECT 1 FROM reservation_assets ra WHERE ra.reservation_id=r.id AND ra.actual_pickup_at IS NOT NULL)",
     args: [reservation.borrower.id]
   });
+  const materials = await c.env.CLIENT.execute({
+    sql: "SELECT COUNT(CASE WHEN ra.actual_pickup_at IS NOT NULL THEN 1 END) AS collected_count, COUNT(CASE WHEN ra.state='BORROWED' THEN 1 END) AS borrowed_count FROM reservations r INNER JOIN reservation_assets ra ON ra.reservation_id=r.id WHERE " + (reservation.borrower.type === "PERSON" ? "r.borrower_type='PERSON' AND r.borrower_user_id=?" : "r.borrower_type='CHAPTER' AND r.chapter_id=?"),
+    args: [reservation.borrower.id]
+  });
+  const collectedTotal = Number(materials.rows[0]?.collected_count ?? 0);
+  const borrowedNow = Number(materials.rows[0]?.borrowed_count ?? 0);
   return c.json({
     ...person,
     borrowingCount: Number(count.rows[0]?.count ?? 0),
-    chapterName: reservation.borrower.type === "CHAPTER" ? reservation.borrower.name : null
+    chapterName: reservation.borrower.type === "CHAPTER" ? reservation.borrower.name : null,
+    totalCollected: collectedTotal,
+    stillBorrowed: borrowedNow
   });
 });
 app.get("/api/v1/board/reservations/:id", async (c) => {
@@ -2451,6 +2697,18 @@ app.delete("/api/v1/board/equipment/:id", requireBoard, async (c) => {
       );
       const usableCount = Number(capacityRow?.count ?? 0);
       await assertCanReduceCapacity(tx, id2, usableCount, "delete this equipment");
+      const lines = await one(
+        tx,
+        "SELECT COUNT(*) AS count FROM reservation_lines WHERE equipment_item_id=?",
+        [id2]
+      );
+      if (Number(lines?.count ?? 0) > 0) {
+        throw new DomainError(
+          409,
+          "RESERVATION_CONFLICT",
+          "Cannot delete equipment associated with existing reservations."
+        );
+      }
       await tx.execute({ sql: "DELETE FROM assets WHERE equipment_item_id=?", args: [id2] });
       await tx.execute({ sql: "DELETE FROM equipment_items WHERE id=?", args: [id2] });
       await tx.execute({
@@ -2663,6 +2921,7 @@ app.get("/api/v1/board/users", requireSuperadmin, async (c) => {
     name: schema_exports.authUsers.name,
     email: schema_exports.authUsers.email,
     role: schema_exports.authUsers.role,
+    disabledAt: schema_exports.authUsers.disabledAt,
     emailVerified: schema_exports.authUsers.emailVerified,
     createdAt: schema_exports.authUsers.createdAt
   }).from(schema_exports.authUsers).orderBy(asc(schema_exports.authUsers.name)).limit(500);
@@ -2682,48 +2941,60 @@ app.post("/api/v1/board/users", requireSuperadmin, async (c) => {
       "VALIDATION",
       parsed.error.issues[0]?.message ?? "Enter a name, email, password (min 12 chars), and role."
     );
-  const existing = await c.env.DB.select({ id: schema_exports.authUsers.id }).from(schema_exports.authUsers).where(eq2(schema_exports.authUsers.email, parsed.data.email.toLowerCase())).limit(1);
-  if (existing.length > 0)
-    return jsonError(c, 409, "RESERVATION_CONFLICT", "An account with that email already exists.");
   const passwordHash = await hashPassword(parsed.data.password);
   const userId = randomId("user");
   const timestamp = Date.now();
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO user(id,name,email,emailVerified,role,createdAt,updatedAt) VALUES(?,?,?,1,?,?,?)",
-    args: [
-      userId,
-      parsed.data.name,
-      parsed.data.email.toLowerCase(),
-      parsed.data.role,
-      timestamp,
-      timestamp
-    ]
-  });
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO account(id,accountId,providerId,userId,password,createdAt,updatedAt) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("account"),
-      userId,
-      // accountId must equal userId for credential provider
-      "credential",
-      userId,
-      passwordHash,
-      timestamp,
-      timestamp
-    ]
-  });
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("audit"),
-      c.get("actor").id,
-      "USER",
-      userId,
-      "USER_CREATED",
-      timestamp,
-      JSON.stringify({ role: parsed.data.role, email: parsed.data.email.toLowerCase() })
-    ]
-  });
+  try {
+    await write(c.env, async (tx) => {
+      const existing = await one(tx, "SELECT id FROM user WHERE email = ?", [
+        parsed.data.email.toLowerCase()
+      ]);
+      if (existing)
+        throw new DomainError(
+          409,
+          "RESERVATION_CONFLICT",
+          "An account with that email already exists."
+        );
+      await tx.execute({
+        sql: "INSERT INTO user(id,name,email,emailVerified,role,createdAt,updatedAt) VALUES(?,?,?,1,?,?,?)",
+        args: [
+          userId,
+          parsed.data.name,
+          parsed.data.email.toLowerCase(),
+          parsed.data.role,
+          timestamp,
+          timestamp
+        ]
+      });
+      await tx.execute({
+        sql: "INSERT INTO account(id,accountId,providerId,userId,password,createdAt,updatedAt) VALUES(?,?,?,?,?,?,?)",
+        args: [
+          randomId("account"),
+          userId,
+          "credential",
+          userId,
+          passwordHash,
+          timestamp,
+          timestamp
+        ]
+      });
+      await tx.execute({
+        sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+        args: [
+          randomId("audit"),
+          c.get("actor").id,
+          "USER",
+          userId,
+          "USER_CREATED",
+          timestamp,
+          JSON.stringify({ role: parsed.data.role, email: parsed.data.email.toLowerCase() })
+        ]
+      });
+    });
+  } catch (error) {
+    if (error instanceof DomainError) return jsonError(c, error.status, error.code, error.message);
+    throw error;
+  }
   return c.json(
     {
       id: userId,
@@ -2810,6 +3081,47 @@ app.patch("/api/v1/board/users/:id/role", requireSuperadmin, async (c) => {
   });
   return c.json({ ok: true, role: parsed.data.role });
 });
+app.patch("/api/v1/board/users/:id/access", requireSuperadmin, async (c) => {
+  const parsed = z.object({ enabled: z.boolean() }).strict().safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return jsonError(c, 400, "VALIDATION", "Choose whether access is enabled.");
+  const targetId = c.req.param("id");
+  if (targetId === c.get("actor").id && !parsed.data.enabled) {
+    return jsonError(c, 409, "RESERVATION_CONFLICT", "You cannot disable your own access.");
+  }
+  const user = await c.env.DB.select({ id: schema_exports.authUsers.id }).from(schema_exports.authUsers).where(eq2(schema_exports.authUsers.id, targetId)).limit(1);
+  if (!user[0]) return jsonError(c, 404, "NOT_FOUND", "Account not found.");
+  const now = Date.now();
+  await write(c.env, async (tx) => {
+    if (parsed.data.enabled) {
+      await tx.execute({
+        sql: "UPDATE user SET disabled_at=NULL, updatedAt=? WHERE id=?",
+        args: [now, targetId]
+      });
+    } else {
+      await tx.execute({
+        sql: "UPDATE user SET disabled_at=?, updatedAt=? WHERE id=?",
+        args: [now, now, targetId]
+      });
+      await tx.execute({
+        sql: "DELETE FROM session WHERE userId=?",
+        args: [targetId]
+      });
+    }
+    await tx.execute({
+      sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+      args: [
+        randomId("audit"),
+        c.get("actor").id,
+        "USER",
+        targetId,
+        parsed.data.enabled ? "USER_ACCESS_ENABLED" : "USER_ACCESS_DISABLED",
+        now,
+        JSON.stringify({ enabled: parsed.data.enabled })
+      ]
+    });
+  });
+  return c.json({ ok: true, enabled: parsed.data.enabled });
+});
 app.delete("/api/v1/board/users/:id", requireSuperadmin, async (c) => {
   const targetId = c.req.param("id");
   if (targetId === c.get("actor").id) {
@@ -2831,56 +3143,88 @@ app.delete("/api/v1/board/users/:id", requireSuperadmin, async (c) => {
       "Cannot delete a user with active or pending reservations."
     );
   }
-  await c.env.DB.delete(schema_exports.notifications).where(eq2(schema_exports.notifications.userId, targetId));
-  await c.env.DB.update(schema_exports.reservations).set({ approvedByUserId: null }).where(eq2(schema_exports.reservations.approvedByUserId, targetId));
-  await c.env.DB.update(schema_exports.reservationAssets).set({ checkedOutByUserId: null }).where(eq2(schema_exports.reservationAssets.checkedOutByUserId, targetId));
-  await c.env.DB.update(schema_exports.reservationAssets).set({ checkedInByUserId: null }).where(eq2(schema_exports.reservationAssets.checkedInByUserId, targetId));
-  const userReservations = await c.env.DB.select({ id: schema_exports.reservations.id }).from(schema_exports.reservations).where(
-    or(
-      eq2(schema_exports.reservations.requestedByUserId, targetId),
-      eq2(schema_exports.reservations.borrowerUserId, targetId)
-    )
+  const historicalPickup = await c.env.CLIENT.execute({
+    sql: `SELECT 1 FROM reservation_assets ra
+          JOIN reservations r ON r.id = ra.reservation_id
+          WHERE (r.requested_by_user_id = ? OR r.borrower_user_id = ?)
+            AND ra.actual_pickup_at IS NOT NULL
+          LIMIT 1`,
+    args: [targetId, targetId]
+  });
+  if (historicalPickup.rows.length > 0) {
+    return jsonError(
+      c,
+      409,
+      "HISTORICAL_DATA",
+      "Historical users with borrowing records cannot be deleted. Disable access instead."
+    );
+  }
+  return c.json(
+    await write(c.env, async (tx) => {
+      await tx.execute({ sql: "DELETE FROM notifications WHERE user_id=?", args: [targetId] });
+      await tx.execute({
+        sql: "UPDATE reservations SET approved_by_user_id=NULL WHERE approved_by_user_id=?",
+        args: [targetId]
+      });
+      await tx.execute({
+        sql: "UPDATE reservation_assets SET checked_out_by_user_id=NULL WHERE checked_out_by_user_id=?",
+        args: [targetId]
+      });
+      await tx.execute({
+        sql: "UPDATE reservation_assets SET checked_in_by_user_id=NULL WHERE checked_in_by_user_id=?",
+        args: [targetId]
+      });
+      const userReservations = await tx.execute({
+        sql: "SELECT id FROM reservations WHERE requested_by_user_id=? OR borrower_user_id=?",
+        args: [targetId, targetId]
+      });
+      for (const r of userReservations.rows) {
+        await tx.execute({
+          sql: "DELETE FROM reservation_assets WHERE reservation_id=?",
+          args: [r.id]
+        });
+        await tx.execute({
+          sql: "DELETE FROM reservation_lines WHERE reservation_id=?",
+          args: [r.id]
+        });
+        await tx.execute({
+          sql: "DELETE FROM reservations WHERE id=?",
+          args: [r.id]
+        });
+      }
+      await tx.execute({ sql: "DELETE FROM session WHERE userId=?", args: [targetId] });
+      await tx.execute({ sql: "DELETE FROM account WHERE userId=?", args: [targetId] });
+      const hasAudit = await tx.execute({
+        sql: "SELECT id FROM audit_events WHERE actor_user_id=? LIMIT 1",
+        args: [targetId]
+      });
+      if (hasAudit.rows.length > 0) {
+        await tx.execute({
+          sql: "UPDATE user SET name='Deleted User', email=?, phone=NULL, role='USER', emailVerified=0, updatedAt=? WHERE id=?",
+          args: [`disabled_${targetId}@deleted.local`, Date.now(), targetId]
+        });
+      } else {
+        await tx.execute({ sql: "DELETE FROM user WHERE id=?", args: [targetId] });
+      }
+      await tx.execute({
+        sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+        args: [
+          randomId("audit"),
+          c.get("actor").id,
+          "USER",
+          targetId,
+          "USER_DELETED",
+          Date.now(),
+          JSON.stringify({
+            email: existing[0].email,
+            name: existing[0].name,
+            role: existing[0].role
+          })
+        ]
+      });
+      return { ok: true };
+    })
   );
-  for (const r of userReservations) {
-    await c.env.DB.delete(schema_exports.reservationAssets).where(
-      eq2(schema_exports.reservationAssets.reservationId, r.id)
-    );
-    await c.env.DB.delete(schema_exports.reservationLines).where(
-      eq2(schema_exports.reservationLines.reservationId, r.id)
-    );
-    await c.env.DB.delete(schema_exports.reservations).where(eq2(schema_exports.reservations.id, r.id));
-  }
-  await c.env.DB.delete(schema_exports.authSessions).where(eq2(schema_exports.authSessions.userId, targetId));
-  await c.env.CLIENT.execute({
-    sql: "DELETE FROM account WHERE userId=?",
-    args: [targetId]
-  });
-  const hasAudit = await c.env.DB.select({ id: schema_exports.auditEvents.id }).from(schema_exports.auditEvents).where(eq2(schema_exports.auditEvents.actorUserId, targetId)).limit(1);
-  if (hasAudit.length > 0) {
-    await c.env.DB.update(schema_exports.authUsers).set({
-      name: "Deleted User",
-      email: `disabled_${targetId}@deleted.local`,
-      phone: null,
-      role: "USER",
-      emailVerified: false,
-      updatedAt: /* @__PURE__ */ new Date()
-    }).where(eq2(schema_exports.authUsers.id, targetId));
-  } else {
-    await c.env.DB.delete(schema_exports.authUsers).where(eq2(schema_exports.authUsers.id, targetId));
-  }
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("audit"),
-      c.get("actor").id,
-      "USER",
-      targetId,
-      "USER_DELETED",
-      Date.now(),
-      JSON.stringify({ email: existing[0].email, name: existing[0].name, role: existing[0].role })
-    ]
-  });
-  return c.json({ ok: true });
 });
 app.get("/api/v1/board/audit", async (c) => c.json(await listBoardAudit(c.env)));
 app.notFound((c) => jsonError(c, 404, "NOT_FOUND", "API endpoint not found."));

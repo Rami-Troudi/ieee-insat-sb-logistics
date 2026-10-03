@@ -11,8 +11,8 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    host: true,
-    allowedHosts: true,
+    host: "127.0.0.1",
+    allowedHosts: ["localhost", "127.0.0.1"],
     proxy: {
       "/api": "http://127.0.0.1:" + (process.env.API_PORT ?? "8787"),
     },

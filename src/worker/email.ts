@@ -5,6 +5,7 @@ export async function sendEmail(env: Env, to: string, subject: string, htmlConte
     throw new Error("Email delivery is not configured.");
   }
   const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+    signal: AbortSignal.timeout(8000),
     method: "POST",
     headers: {
       accept: "application/json",

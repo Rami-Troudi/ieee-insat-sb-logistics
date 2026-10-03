@@ -42,8 +42,8 @@
     "avoid": []
   },
   "decisions": [
-    "Member availability and item selection lead the experience; Board asset allocation stays explicit.",
-    "The interface follows the former dashboard's compact operational layout with neutral surfaces and restrained SB green accents.",
+    "Member availability and item selection lead the experience; Board identifies physical units at pickup.",
+    "The interface follows the former dashboard's compact operational layout with neutral surfaces and IEEE blue and navy accents.",
     "The equipment catalogue uses horizontal rows instead of a card grid.",
     "Product copy is factual and concise; it avoids slogans, promotional phrasing, and shopping terminology.",
     "Africa/Tunis is the shared timezone for displayed and submitted reservation times."

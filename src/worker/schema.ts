@@ -16,6 +16,8 @@ export const authUsers = sqliteTable(
     name: text("name").notNull(),
     email: text("email").notNull(),
     phone: text("phone"),
+    disabledAt: integer("disabled_at"),
+    membership: text("membership", { enum: ["IEEE", "EXTERNAL"] }),
     emailVerified: integer("emailVerified", { mode: "boolean" }).notNull().default(false),
     image: text("image"),
     role: text("role", { enum: ["USER", "BOARD", "SUPERADMIN"] })
@@ -66,7 +68,10 @@ export const authAccounts = sqliteTable(
     createdAt: integer("createdAt", { mode: "timestamp_ms" }).notNull(),
     updatedAt: integer("updatedAt", { mode: "timestamp_ms" }).notNull(),
   },
-  (table) => [index("account_user_id").on(table.userId)]
+  (table) => [
+    index("account_user_id").on(table.userId),
+    uniqueIndex("account_provider_user").on(table.userId, table.providerId),
+  ]
 );
 
 export const authVerifications = sqliteTable(
@@ -167,6 +172,7 @@ export const reservations = sqliteTable(
     pickupAt: integer("pickup_at").notNull(),
     returnAt: integer("return_at").notNull(),
     note: text("note"),
+    pickupClosedAt: integer("pickup_closed_at"),
     status: text("status", {
       enum: ["PENDING", "APPROVED", "DECLINED", "CANCELLED", "COMPLETED"],
     })
@@ -239,6 +245,9 @@ export const reservationAssets = sqliteTable(
   },
   (table) => [
     uniqueIndex("reservation_asset_once").on(table.reservationId, table.assetId),
+    uniqueIndex("reservation_assets_one_borrowed")
+      .on(table.assetId)
+      .where(sql`${table.state} = 'BORROWED'`),
     index("reservation_assets_asset").on(table.assetId),
     index("reservation_assets_reservation").on(table.reservationId),
     index("reservation_assets_line").on(table.reservationLineId),
@@ -306,6 +315,28 @@ export const rateLimitBuckets = sqliteTable("rate_limit_buckets", {
   count: integer("count").notNull(),
 });
 
+export const notificationEmails = sqliteTable(
+  "notification_emails",
+  {
+    notificationId: text("notification_id")
+      .primaryKey()
+      .references(() => notifications.id, { onDelete: "cascade" }),
+    status: text("status", { enum: ["PENDING", "SENDING", "SENT", "SKIPPED"] })
+      .notNull()
+      .default("PENDING"),
+    attempts: integer("attempts").notNull().default(0),
+    nextAttemptAt: integer("next_attempt_at").notNull().default(0),
+    sentAt: integer("sent_at"),
+  },
+  (table) => [
+    index("notification_emails_pending").on(table.status, table.nextAttemptAt),
+    check(
+      "notification_email_status",
+      sql`${table.status} IN ('PENDING','SENDING','SENT','SKIPPED')`
+    ),
+  ]
+);
+
 export const authSchema = {
   user: authUsers,
   session: authSessions,
@@ -323,6 +354,7 @@ export const schema = {
   reservationLines,
   reservationAssets,
   notifications,
+  notificationEmails,
   auditEvents,
   idempotencyKeys,
   rateLimitBuckets,

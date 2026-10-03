@@ -65,6 +65,12 @@ beforeEach(async () => {
   await client.executeMultiple(
     await readFile(new URL("../../drizzle/0002_quantity_reservations.sql", import.meta.url), "utf8")
   );
+  await client.executeMultiple(
+    await readFile(new URL("../../drizzle/0003_notification_emails.sql", import.meta.url), "utf8")
+  );
+  await client.executeMultiple(
+    await readFile(new URL("../../drizzle/0004_review_invariants.sql", import.meta.url), "utf8")
+  );
   env = {
     CLIENT: client,
     DB: createDatabase(client),

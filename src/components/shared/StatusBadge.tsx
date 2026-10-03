@@ -45,6 +45,7 @@ export interface StatusConfigItem {
 }
 
 export const STATUS_CONFIG: Record<string, StatusConfigItem> = {
+  DECLINED: { label: "Declined", variant: "danger", icon: XCircle, iconClass: "text-destructive" },
   // --- 1. Pending (Neutral / Slate) ---
   PENDING: {
     label: "Pending",
