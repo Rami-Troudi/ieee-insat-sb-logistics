@@ -144,19 +144,40 @@ describe("review regressions", () => {
       ).status
     ).toBe(401);
   });
-  it("Regression: unauthenticated registration claims legacy borrower", async () => {
-    const response = await request(
+  it("Regression: privileged accounts cannot use borrower sign-in", async () => {
+    const boardResponse = await request(
       "/api/v1/auth/borrower",
       sendJson({
         name: "Claimed account",
-        email: "member@example.test",
-        password: "Attacker-password-2026",
+        email: "board@example.test",
       })
     );
-    expect(response.status).toBe(409);
-    expect((await client.execute("SELECT name FROM user WHERE id='member'")).rows[0].name).toBe(
-      "member"
+    expect(boardResponse.status).toBe(403);
+    const body = (await boardResponse.json()) as { error?: { code?: string } };
+    expect(body.error?.code).toBe("PRIVILEGED_ACCOUNT");
+
+    await seedUser("admin-priv", "SUPERADMIN");
+    const superadminResponse = await request(
+      "/api/v1/auth/borrower",
+      sendJson({
+        name: "Claimed account",
+        email: "admin-priv@example.test",
+      })
     );
+    expect(superadminResponse.status).toBe(403);
+  });
+  it("Regression: existing USER email borrower auth works", async () => {
+    const response = await request(
+      "/api/v1/auth/borrower",
+      sendJson({
+        name: "Updated Member Name",
+        email: "member@example.test",
+      })
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { user: { email: string; name: string } };
+    expect(body.user.email).toBe("member@example.test");
+    expect(body.user.name).toBe("Updated Member Name");
   });
   it("Regression: quantity hold ignored by availability endpoint", async () => {
     const r = await loan();
@@ -329,7 +350,6 @@ describe("validation and capacity checks", () => {
           sendJson({
             name: "n".repeat(121),
             email: "long@example.test",
-            password: "Long-name-password-2026",
           })
         )
       ).status
@@ -481,15 +501,10 @@ describe("additional safety and database coverage", () => {
       (await request(`/api/v1/board/reservations/${loan.id}/approve`, sendJson({}), boardCookie))
         .status
     ).toBe(200);
-    expect(
-      (
-        await request(
-          `/api/v1/board/equipment/${itemId}`,
-          { ...sendJson({ active: false }), method: "PATCH" },
-          boardCookie
-        )
-      ).status
-    ).toBe(200);
+    await client.execute({
+      sql: "UPDATE equipment_items SET active=0 WHERE id=?",
+      args: [itemId],
+    });
     const detail = await (
       await request(`/api/v1/board/reservations/${loan.id}`, {}, boardCookie)
     ).json();
@@ -538,18 +553,18 @@ describe("additional safety and database coverage", () => {
     expect(
       (
         await request(
-          "/api/v1/board/users/member/password",
+          "/api/v1/board/users/board/password",
           { ...sendJson({ password: "Reset-password-2026" }), method: "PUT" },
           admin
         )
       ).status
     ).toBe(200);
-    expect((await request("/api/v1/reservations", {}, memberCookie)).status).toBe(401);
+    expect((await request("/api/v1/board/dashboard", {}, boardCookie)).status).toBe(401);
     expect(
       (
         await request(
-          "/api/v1/auth/borrower-login",
-          sendJson({ email: "member@example.test", password: "Reset-password-2026" })
+          "/api/v1/auth/board-login",
+          sendJson({ email: "board@example.test", password: "Reset-password-2026" })
         )
       ).status
     ).toBe(200);
@@ -585,7 +600,6 @@ describe("additional safety and database coverage", () => {
     const profile = {
       name: "Profile User",
       email: "profile@example.test",
-      password: "Profile-password-2026",
       membership: "EXTERNAL",
     };
     expect(

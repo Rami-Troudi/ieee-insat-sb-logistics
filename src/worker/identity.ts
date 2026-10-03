@@ -1,7 +1,7 @@
 import { createMiddleware } from "hono/factory";
 import type { Context } from "hono";
 import { and, eq, gt } from "drizzle-orm";
-import { createAuth, trustedAuthOrigin } from "./auth";
+import { createAuth, trustedAuthOrigin, verifyCookieValue } from "./auth";
 import type { CurrentUser, Env, UserRole } from "./env";
 import { schema } from "./database";
 
@@ -18,22 +18,24 @@ export async function resolveIdentity(c: AppContext): Promise<CurrentUser | null
     // If better-auth getSession throws (e.g. origin issue), fall back to DB lookup
   }
 
-  // Fallback: extract token from cookie and check database
+  // Fallback: extract token from signed cookie and check database
   if (!userId) {
     try {
       const cookieHeader = c.req.header("Cookie") || "";
       const tokenMatch = cookieHeader.match(/(?:__Secure-)?better-auth\.session_token=([^;]+)/);
       if (tokenMatch) {
-        const rawVal = decodeURIComponent(tokenMatch[1]);
-        const token = rawVal.split(".")[0];
-        if (token) {
+        const verifiedToken = await verifyCookieValue(tokenMatch[1], c.env.BETTER_AUTH_SECRET);
+        if (verifiedToken) {
           const now = new Date();
           const [session] = await c.env.DB.select({
             userId: schema.authSessions.userId,
           })
             .from(schema.authSessions)
             .where(
-              and(eq(schema.authSessions.token, token), gt(schema.authSessions.expiresAt, now))
+              and(
+                eq(schema.authSessions.token, verifiedToken),
+                gt(schema.authSessions.expiresAt, now)
+              )
             )
             .limit(1);
 
@@ -54,12 +56,13 @@ export async function resolveIdentity(c: AppContext): Promise<CurrentUser | null
     name: schema.authUsers.name,
     email: schema.authUsers.email,
     role: schema.authUsers.role,
+    disabledAt: schema.authUsers.disabledAt,
   })
     .from(schema.authUsers)
     .where(eq(schema.authUsers.id, userId))
     .limit(1);
 
-  if (!user || !["USER", "BOARD", "SUPERADMIN"].includes(user.role)) return null;
+  if (!user || user.disabledAt || !["USER", "BOARD", "SUPERADMIN"].includes(user.role)) return null;
   return { ...user, role: user.role as UserRole };
 }
 

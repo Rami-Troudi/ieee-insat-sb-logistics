@@ -59,6 +59,7 @@ import {
   AssetQrStickerModal,
   type AssetStickerData,
 } from "@/components/equipment/AssetQrStickerModal";
+import { exportQrLabels } from "@/components/equipment/exportQrLabels";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -73,7 +74,13 @@ import { cn } from "@/lib/utils";
 
 const TZ = "Africa/Tunis";
 export type Role = "USER" | "BOARD" | "SUPERADMIN";
-export type User = { id: string; name: string; email: string; role: Role };
+export type User = {
+  id: string;
+  name: string;
+  email: string;
+  role: Role;
+  disabledAt?: number | null;
+};
 export type Item = EquipmentItem;
 export type Reservation = {
   id: string;
@@ -233,6 +240,7 @@ function AppFrame() {
 
   const { notice, setNotice } = useNotice();
   const location = useLocation();
+  const navigate = useNavigate();
   const isBoardPath = location.pathname.startsWith("/board");
   const boardAccess = user?.role === "BOARD" || user?.role === "SUPERADMIN";
   const cartCount = Object.values(cart).reduce((sum, quantity) => sum + quantity, 0);
@@ -258,8 +266,8 @@ function AppFrame() {
 
   useEffect(() => {
     const tokenPath = location.pathname.match(/^\/scan\/([a-f0-9]{64})$/i);
-    if (tokenPath) window.history.replaceState(null, "", `/board/scan?token=${tokenPath[1]}`);
-  }, [location.pathname]);
+    if (tokenPath) navigate(`/board/scan?token=${tokenPath[1]}`, { replace: true });
+  }, [location.pathname, navigate]);
 
   const handleSignOut = async () => {
     try {
@@ -719,7 +727,11 @@ function Catalogue({
   const cartCount = Object.values(cart).reduce((sum, qty) => sum + qty, 0);
 
   useEffect(() => {
-    if (!start || !end || Date.parse(isoFromInput(end)) <= Date.parse(isoFromInput(start))) return;
+    if (!start || !end || Date.parse(isoFromInput(end)) <= Date.parse(isoFromInput(start))) {
+      setItems([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     api<Item[]>(
       `/api/v1/catalogue?pickupAt=${encodeURIComponent(isoFromInput(start))}&returnAt=${encodeURIComponent(isoFromInput(end))}`
@@ -1116,6 +1128,14 @@ function SelectionPage({
 
             <DateWindow start={start} end={end} setStart={setStart} setEnd={setEnd} compact />
 
+            <div className="p-3 bg-surface-subtle border border-border/80 rounded-lg text-[11px] text-muted-foreground flex items-start gap-2">
+              <Clock3 className="w-4 h-4 text-primary shrink-0 mt-0.5" />
+              <span>
+                Pickups close automatically if not collected within 30 minutes of the scheduled
+                pickup window.
+              </span>
+            </div>
+
             <div className="space-y-2">
               <label className="text-xs font-semibold text-foreground block">
                 Who is borrowing?
@@ -1228,13 +1248,21 @@ function MyReservations({ user }: { user: User }) {
     return reservations.filter((r) => {
       if (activeTab === "ALL") return true;
       if (activeTab === "BORROWED")
-        return ["ACTIVE", "BORROWED", "HANDED_OVER"].includes(r.derivedStatus);
+        return ["ACTIVE", "BORROWED", "HANDED_OVER", "PARTIALLY_RETURNED", "OVERDUE"].includes(
+          r.derivedStatus
+        );
       if (activeTab === "UPCOMING") return r.derivedStatus === "APPROVED";
       if (activeTab === "PENDING") return ["PENDING", "WAITING"].includes(r.derivedStatus);
       if (activeTab === "PAST")
-        return ["RETURNED", "COMPLETED", "CANCELLED", "REJECTED", "EXPIRED", "CLOSED"].includes(
-          r.derivedStatus
-        );
+        return [
+          "RETURNED",
+          "COMPLETED",
+          "CANCELLED",
+          "REJECTED",
+          "DECLINED",
+          "EXPIRED",
+          "CLOSED",
+        ].includes(r.derivedStatus);
       return true;
     });
   }, [reservations, activeTab]);
@@ -1597,6 +1625,8 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
     phone: string | null;
     borrowingCount: number;
     chapterName: string | null;
+    totalCollected?: number;
+    stillBorrowed?: number;
   } | null>(null);
   const [borrowerOpen, setBorrowerOpen] = useState(false);
   const [borrowerLoading, setBorrowerLoading] = useState(false);
@@ -1942,6 +1972,15 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
                 </dt>
                 <dd className="font-medium">{borrowerInfo.borrowingCount}</dd>
               </div>
+              {borrowerInfo.totalCollected !== undefined && (
+                <div>
+                  <dt className="text-muted-foreground">Equipment activity</dt>
+                  <dd className="font-medium">
+                    {borrowerInfo.totalCollected} materials collected in total ·{" "}
+                    {borrowerInfo.stillBorrowed ?? 0} still borrowed
+                  </dd>
+                </div>
+              )}
             </dl>
           )}
           <p className="text-xs text-muted-foreground">
@@ -2192,6 +2231,7 @@ function BoardCalendar() {
           <FullCalendar
             plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin, luxonPlugin]}
             initialView="timeGridWeek"
+            firstDay={1}
             timeZone={TZ}
             headerToolbar={{
               left: "prev,next today",
@@ -2355,15 +2395,41 @@ function BoardInventory({ setNotice }: { setNotice: (message: string) => void })
         title="Equipment Inventory"
         description="Manage equipment types, individually tracked physical assets, and printable QR labels."
         action={
-          <Button
-            variant="default"
-            size="sm"
-            onClick={() => setShowAddModal(true)}
-            className="gap-2"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Add Equipment</span>
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={loading || inventory.length === 0}
+              onClick={() => {
+                try {
+                  const allAssets = inventory.flatMap((i) =>
+                    i.assets.map((a) => ({
+                      assetCode: a.assetCode,
+                      qrUrl: a.qrUrl,
+                      serialNumber: a.serialNumber,
+                      state: a.state,
+                    }))
+                  );
+                  exportQrLabels("Equipment", allAssets);
+                } catch (e) {
+                  setNotice(e instanceof Error ? e.message : "Failed to export QR codes.");
+                }
+              }}
+              className="gap-2"
+            >
+              <QrCode className="w-4 h-4" />
+              <span>Export all QR codes</span>
+            </Button>
+            <Button
+              variant="default"
+              size="sm"
+              onClick={() => setShowAddModal(true)}
+              className="gap-2"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Add Equipment</span>
+            </Button>
+          </div>
         }
       />
 
@@ -2683,7 +2749,6 @@ function BoardScan({
     if (!["APPROVED", "COMPLETED", "CANCELLED"].includes(detail.status))
       throw new Error("This reservation has not been approved.");
     setReservation(detail);
-    setToken("");
   }, []);
   useEffect(() => {
     const id = new URLSearchParams(window.location.search).get("res");
@@ -2744,6 +2809,7 @@ function BoardScan({
       }
       if (reservationId) {
         await openReservation(reservationId);
+        setToken("");
         setNotice("Reservation opened. Scan equipment to record borrow or return.");
         setTimeout(() => {
           isScanningRef.current = false;
@@ -2988,7 +3054,7 @@ function BoardScan({
             disabled={busy || !token.trim()}
             className="shrink-0"
           >
-            {busy ? "Processing…" : "Process equipment"}
+            {busy ? "Processing…" : "Record Handover"}
           </Button>
         </form>
 
@@ -3459,6 +3525,26 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
                   </td>
                   <td className="p-3">
                     <div className="flex items-center gap-1.5">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={async () => {
+                          try {
+                            const willEnable = Boolean(u.disabledAt);
+                            await api(
+                              `/api/v1/board/users/${u.id}/access`,
+                              patch({ enabled: willEnable })
+                            );
+                            setNotice(willEnable ? "Access enabled." : "Access disabled.");
+                            refresh();
+                          } catch (e) {
+                            setNotice(e instanceof Error ? e.message : "Could not change access.");
+                          }
+                        }}
+                        className="text-[11px] h-7 px-2.5 gap-1 border-border"
+                      >
+                        <span>{u.disabledAt ? "Enable access" : "Disable access"}</span>
+                      </Button>
                       <Button
                         variant="outline"
                         size="sm"

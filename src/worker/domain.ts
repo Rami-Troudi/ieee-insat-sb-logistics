@@ -2,6 +2,7 @@ import { DateTime } from "luxon";
 import type { Client, InArgs, InStatement, ResultSet } from "@libsql/client";
 import type { Env, CurrentUser } from "./env";
 import { DomainError } from "./security";
+import { escapeHtml, sendEmail } from "./email";
 
 export const DISPLAY_TIME_ZONE = "Africa/Tunis";
 const DUPLICATE_SCAN_WINDOW_MS = 3_000;
@@ -52,7 +53,7 @@ function audit(
   });
 }
 
-function notify(
+async function notify(
   tx: SqlExecutor,
   userId: string,
   type: string,
@@ -60,10 +61,25 @@ function notify(
   message: string,
   reservationId: string | null = null
 ) {
-  return tx.execute({
+  const notifId = id("notification");
+  const now = Date.now();
+  await tx.execute({
     sql: "INSERT INTO notifications(id,user_id,type,title,message,reservation_id,created_at) VALUES(?,?,?,?,?,?,?)",
-    args: [id("notification"), userId, type, title, message, reservationId, Date.now()],
+    args: [notifId, userId, type, title, message, reservationId, now],
   });
+  const emailEligible = [
+    "RESERVATION_APPROVED",
+    "RESERVATION_DECLINED",
+    "RETURN_DUE_SOON",
+    "RETURN_OVERDUE",
+    "PICKUP_EXPIRED",
+  ];
+  if (emailEligible.includes(type)) {
+    await tx.execute({
+      sql: "INSERT OR IGNORE INTO notification_emails(notification_id,status,attempts,next_attempt_at) VALUES(?,'PENDING',0,0)",
+      args: [notifId],
+    });
+  }
 }
 
 async function notifyBoard(
@@ -97,8 +113,7 @@ export async function findAvailableAssets(
     executor,
     `SELECT a.id,a.asset_code,a.serial_number,a.state
        FROM assets a
-       INNER JOIN equipment_items e ON e.id=a.equipment_item_id
-      WHERE a.equipment_item_id=? AND e.active=1 AND a.active=1
+      WHERE a.equipment_item_id=? AND a.active=1
         AND a.state NOT IN ('BORROWED','OUT_OF_SERVICE','RETIRED')
         AND NOT EXISTS (
           SELECT 1
@@ -390,8 +405,61 @@ export async function finalizeReservationIfFinished(
   return false;
 }
 
+async function expireUncollectedReservationsTx(tx: SqlExecutor, now: number) {
+  const cutoff = now - 30 * 60_000;
+  const candidates = await rows<{
+    id: string;
+    requested_by_user_id: string;
+    status: string;
+  }>(
+    tx,
+    `SELECT r.id, r.requested_by_user_id, r.status
+     FROM reservations r
+     WHERE r.status IN ('PENDING', 'APPROVED')
+       AND r.pickup_at <= ?
+       AND (
+         SELECT COUNT(*)
+         FROM reservation_assets ra
+         WHERE ra.reservation_id = r.id AND ra.actual_pickup_at IS NOT NULL
+       ) = 0`,
+    [cutoff]
+  );
+
+  let expiredCount = 0;
+  for (const r of candidates) {
+    await tx.execute({
+      sql: "UPDATE reservations SET status = 'CANCELLED', pickup_closed_at = ?, updated_at = ? WHERE id = ? AND status IN ('PENDING', 'APPROVED')",
+      args: [now, now, r.id],
+    });
+    await tx.execute({
+      sql: "UPDATE reservation_assets SET state = 'RELEASED', updated_at = ? WHERE reservation_id = ? AND state = 'RESERVED'",
+      args: [now, r.id],
+    });
+    await notify(
+      tx,
+      r.requested_by_user_id,
+      "PICKUP_EXPIRED",
+      "Pickup window expired",
+      "Your reservation was cancelled because equipment was not collected within 30 minutes of the scheduled pickup.",
+      r.id
+    );
+    await audit(tx, r.requested_by_user_id, "RESERVATION", r.id, "RESERVATION_CANCELLED", {
+      reason: "MISSED_PICKUP_30_MIN",
+      pickupClosedAt: now,
+    });
+    expiredCount++;
+  }
+  return expiredCount;
+}
+
+export async function expireUncollectedReservations(env: Env, now = Date.now()): Promise<number> {
+  return write(env, (tx) => expireUncollectedReservationsTx(tx, now));
+}
+
 export async function reconcileExpiredReservations(env: Env, now = Date.now()) {
   await write(env, async (tx) => {
+    await expireUncollectedReservationsTx(tx, now);
+
     // 1. Expired approved reservations with 0 currently borrowed units -> COMPLETED
     await tx.execute({
       sql: `UPDATE reservations
@@ -546,12 +614,26 @@ export async function listReservations(env: Env, ownerId: string) {
   return Promise.all(ids.map(({ id: reservationId }) => getReservation(env, reservationId)));
 }
 
-export async function listBoardReservations(env: Env) {
+export async function listBoardReservations(
+  env: Env,
+  options: { offset?: number; limit?: number; start?: number; end?: number } = {}
+) {
   await reconcileExpiredReservations(env);
-  const ids = await rows<{ id: string }>(
-    env.CLIENT as unknown as SqlExecutor,
-    "SELECT id FROM reservations ORDER BY CASE status WHEN 'PENDING' THEN 0 WHEN 'APPROVED' THEN 1 ELSE 2 END,pickup_at ASC LIMIT 500"
-  );
+  const limit = Math.min(100, Math.max(1, options.limit ?? 100));
+  const offset = Math.max(0, options.offset ?? 0);
+  let sql = "SELECT id FROM reservations";
+  const args: (string | number)[] = [];
+
+  if (options.start !== undefined && options.end !== undefined) {
+    sql += " WHERE pickup_at < ? AND ? < return_at";
+    args.push(options.end, options.start);
+  }
+
+  sql +=
+    " ORDER BY CASE status WHEN 'PENDING' THEN 0 WHEN 'APPROVED' THEN 1 ELSE 2 END, pickup_at ASC LIMIT ? OFFSET ?";
+  args.push(limit, offset);
+
+  const ids = await rows<{ id: string }>(env.CLIENT as unknown as SqlExecutor, sql, args);
   return Promise.all(ids.map(({ id: reservationId }) => getReservation(env, reservationId, true)));
 }
 
@@ -1155,12 +1237,7 @@ async function collectMaterial(
     "SELECT a.equipment_item_id,a.state,a.active,e.active AS equipment_active FROM assets a JOIN equipment_items e ON e.id=a.equipment_item_id WHERE a.id=?",
     [assetId]
   );
-  if (
-    !asset ||
-    !asset.active ||
-    !asset.equipment_active ||
-    !["AVAILABLE", "RESERVED"].includes(asset.state)
-  )
+  if (!asset || !asset.active || !["AVAILABLE", "RESERVED"].includes(asset.state))
     throw new DomainError(409, "ASSET_UNAVAILABLE", "This material is not available for pickup.");
   const existing = await one<{ id: string }>(
     tx,
@@ -1574,4 +1651,76 @@ export function createQrToken() {
 
 export function randomId(prefix: string) {
   return id(prefix);
+}
+
+export async function deliverNotificationEmails(
+  env: Env,
+  now = Date.now()
+): Promise<{ sent: number; skipped: number; pending: number }> {
+  if (!env.BREVO_API_KEY || !env.BREVO_SENDER_EMAIL) {
+    return { sent: 0, skipped: 0, pending: 0 };
+  }
+
+  const pendingRows = await rows<{
+    notification_id: string;
+    attempts: number;
+    title: string;
+    message: string;
+    user_email: string | null;
+  }>(
+    env.CLIENT as unknown as SqlExecutor,
+    `SELECT ne.notification_id, ne.attempts, n.title, n.message, u.email AS user_email
+     FROM notification_emails ne
+     JOIN notifications n ON n.id = ne.notification_id
+     LEFT JOIN user u ON u.id = n.user_id
+     WHERE ne.status = 'PENDING' AND ne.next_attempt_at <= ?
+     ORDER BY ne.next_attempt_at ASC
+     LIMIT 25`,
+    [now]
+  );
+
+  let sent = 0;
+  let skipped = 0;
+  const startTime = Date.now();
+
+  for (const row of pendingRows) {
+    if (Date.now() - startTime > 16_000) break;
+
+    if (!row.user_email) {
+      await env.CLIENT.execute({
+        sql: "UPDATE notification_emails SET status = 'SKIPPED' WHERE notification_id = ?",
+        args: [row.notification_id],
+      });
+      skipped++;
+      continue;
+    }
+
+    try {
+      await sendEmail(env, row.user_email, row.title, `<p>${escapeHtml(row.message)}</p>`);
+      await env.CLIENT.execute({
+        sql: "UPDATE notification_emails SET status = 'SENT', attempts = attempts + 1, sent_at = ?, next_attempt_at = 0 WHERE notification_id = ?",
+        args: [Date.now(), row.notification_id],
+      });
+      sent++;
+    } catch {
+      await env.CLIENT.execute({
+        sql: "UPDATE notification_emails SET status = 'PENDING', attempts = attempts + 1, next_attempt_at = ? WHERE notification_id = ?",
+        args: [now + 5 * 60_000, row.notification_id],
+      });
+    }
+  }
+
+  return { sent, skipped, pending: pendingRows.length - sent - skipped };
+}
+
+export async function runReservationMaintenance(env: Env, now = Date.now()) {
+  const expiredReservations = await expireUncollectedReservations(env, now);
+  await reconcileExpiredReservations(env, now);
+  const reminders = await refreshAllReturnNotifications(env, now);
+  const emailResults = await deliverNotificationEmails(env, now);
+  return {
+    expiredReservations,
+    remindersCreated: reminders.notificationsCreated,
+    emailsSent: emailResults.sent,
+  };
 }

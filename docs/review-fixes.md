@@ -1,6 +1,6 @@
 # Project review fixes and verification
 
-Completed on 2 October 2026 on branch `Youssef`. This work has not been committed or deployed.
+Completed on branch `Rekik`.
 
 ## Corrections
 
@@ -9,7 +9,7 @@ Completed on 2 October 2026 on branch `Youssef`. This work has not been committe
 | Equipment deletion could partially remove assets           | Historical references are checked before deletion; administrative writes are atomic.                                                             |
 | User deletion could remove credentials before failing      | Historical users cannot be deleted; administrators can disable their access and revoke sessions.                                                 |
 | Force deletion could release physically borrowed equipment | Reservations with pickup history cannot be force deleted.                                                                                        |
-| Signup could claim an existing passwordless account        | Public signup rejects existing email addresses and creates credentials atomically.                                                               |
+| Privileged accounts could attempt borrower sign-in         | Privileged Board and Superadmin accounts are rejected from borrower sign-in; borrowers remain strictly passwordless.                             |
 | Partial pickup and return could leave reservations stuck   | Pickup closes after the return deadline; reservations complete when no collected assets remain outstanding.                                      |
 | Inventory changes could invalidate approvals               | Retirement and unavailable states check approved capacity. Disabling a material type preserves previously approved pickup.                       |
 | Availability ignored approved quantity holds               | Availability subtracts overlapping approved reservations. Asset IDs remain assigned at actual pickup.                                            |
@@ -26,8 +26,8 @@ Additional improvements include paginated notifications/history/audit/users/rese
 
 ## Verification
 
-- **32 API tests:** signed sessions, account creation, authorization, atomic rollback, capacity conflicts, deletion safety, database constraints, pickup/return completion, exact expiry boundary, notification ownership/pagination, reminder deduplication, and email retry.
-- **13 Chromium browser tests:** registration and chosen password, reservation and approval, quantity selection, calendar, Board/borrower notifications, pickup, QR returns, due/overdue reminders, expiry cancellation, borrower contact/history, QR exports and printing, accounts/roles/access, chapters, camera lifecycle, pagination, and error recovery.
+- **44 API tests:** signed sessions, account creation, authorization, atomic rollback, capacity conflicts, deletion safety, database constraints, pickup/return completion, exact expiry boundary, notification ownership/pagination, reminder deduplication, and email retry.
+- **13 Chromium browser tests:** passwordless borrower sign-in, Board authentication and password provisioning, reservation and approval, quantity selection, calendar, Board/borrower notifications, pickup, QR returns, due/overdue reminders, expiry cancellation, borrower contact/history, QR exports and printing, accounts/roles/access, chapters, camera lifecycle, pagination, and error recovery.
 - The visible browser was also opened against the isolated test database to inspect Board notifications directly.
 - Formatting, lint, TypeScript checks, production build, migration replay, and read-only database integrity checks were run.
 - Local database checks found no foreign key errors, duplicate active borrowing, inconsistent assignments, or asset stock mismatches. A local database backup was made before applying the migration.

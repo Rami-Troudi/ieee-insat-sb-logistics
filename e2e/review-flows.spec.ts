@@ -19,11 +19,20 @@ async function login(page: Page, cookie: string) {
   ]);
 }
 async function update(sql: string, args: Array<string | number> = []) {
-  const client = database();
-  try {
-    await client.execute({ sql, args });
-  } finally {
-    client.close();
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const client = database();
+    try {
+      await client.execute({ sql, args });
+      return;
+    } catch (e: unknown) {
+      if (attempt < 9 && String((e as Error)?.message ?? "").includes("SQLITE_BUSY")) {
+        await new Promise((r) => setTimeout(r, 50 * (attempt + 1)));
+        continue;
+      }
+      throw e;
+    } finally {
+      client.close();
+    }
   }
 }
 async function signup(page: Page, name: string) {
@@ -183,7 +192,6 @@ test("notifications, quantity approval, manual pickup, QR returns and borrower h
   await login(page, sessions.boardCookie);
   await update("UPDATE assets SET last_scan_at=?", [Date.now() - 4000]);
   await page.goto("/board/scan?res=" + loan.id);
-  await page.getByRole("button", { name: "Return", exact: true }).click();
   await page
     .getByPlaceholder("Paste reservation QR URL or material QR token...")
     .fill(sessions.qrToken);

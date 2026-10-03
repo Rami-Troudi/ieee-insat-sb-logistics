@@ -21,24 +21,34 @@ export function isAllowedOrigin(origin: string, env: Env, requestUrl: string): b
     const isOriginLocal = localHostnames.includes(originUrl.hostname);
     const isTrustedLocal = localHostnames.includes(trustedUrl.hostname);
 
-    if (
-      originUrl.hostname.endsWith(".vercel.app") &&
-      (trustedUrl.hostname.endsWith(".vercel.app") ||
-        Boolean(env.APP_ORIGIN?.includes(".vercel.app")))
-    ) {
-      return true;
+    if (originUrl.hostname.endsWith(".vercel.app")) {
+      const allowedVercelHosts = new Set<string>();
+      if (env.VERCEL_URL) allowedVercelHosts.add(env.VERCEL_URL.replace(/^https?:\/\//, ""));
+      if (env.VERCEL_PROJECT_PRODUCTION_URL)
+        allowedVercelHosts.add(env.VERCEL_PROJECT_PRODUCTION_URL.replace(/^https?:\/\//, ""));
+      if (trustedUrl.hostname.endsWith(".vercel.app")) allowedVercelHosts.add(trustedUrl.hostname);
+      if (env.APP_ORIGIN) {
+        try {
+          const appUrl = new URL(env.APP_ORIGIN);
+          if (appUrl.hostname.endsWith(".vercel.app")) allowedVercelHosts.add(appUrl.hostname);
+        } catch {
+          // Ignore invalid URL
+        }
+      }
+
+      if (allowedVercelHosts.has(originUrl.hostname)) return true;
+
+      for (const trustedHost of allowedVercelHosts) {
+        const prefix = trustedHost.replace(/\.vercel\.app$/, "");
+        if (originUrl.hostname.startsWith(`${prefix}-`)) {
+          return true;
+        }
+      }
+      return false;
     }
 
     if (isOriginLocal && isTrustedLocal && originUrl.protocol === trustedUrl.protocol) {
-      const allowedPorts = new Set([
-        originUrl.port,
-        trustedUrl.port,
-        "5173",
-        "5174",
-        "5175",
-        "5188",
-        "8787",
-      ]);
+      const allowedPorts = new Set([trustedUrl.port, "5173", "5174", "5175", "5188", "8787"]);
       if (allowedPorts.has(originUrl.port) && allowedPorts.has(trustedUrl.port)) {
         return true;
       }
@@ -196,4 +206,16 @@ export async function makeCookieSignature(value: string, secret: string): Promis
 export async function signCookieValue(value: string, secret: string): Promise<string> {
   const signature = await makeCookieSignature(value, secret);
   return encodeURIComponent(`${value}.${signature}`);
+}
+
+export async function verifyCookieValue(rawVal: string, secret: string): Promise<string | null> {
+  const decoded = decodeURIComponent(rawVal);
+  const dotIndex = decoded.lastIndexOf(".");
+  if (dotIndex === -1) return null;
+  const value = decoded.slice(0, dotIndex);
+  const sig = decoded.slice(dotIndex + 1);
+  if (!value || !sig) return null;
+  const expectedSig = await makeCookieSignature(value, secret);
+  if (sig !== expectedSig) return null;
+  return value;
 }
