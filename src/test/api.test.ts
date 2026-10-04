@@ -65,6 +65,15 @@ beforeEach(async () => {
   await client.executeMultiple(
     await readFile(new URL("../../drizzle/0002_quantity_reservations.sql", import.meta.url), "utf8")
   );
+  await client.executeMultiple(
+    await readFile(new URL("../../drizzle/0003_notification_emails.sql", import.meta.url), "utf8")
+  );
+  await client.executeMultiple(
+    await readFile(new URL("../../drizzle/0004_review_invariants.sql", import.meta.url), "utf8")
+  );
+  await client.executeMultiple(
+    await readFile(new URL("../../drizzle/0005_system_audit_actor.sql", import.meta.url), "utf8")
+  );
   env = {
     CLIENT: client,
     DB: createDatabase(client),
@@ -96,6 +105,21 @@ beforeEach(async () => {
 afterEach(() => client.close());
 
 describe("reservation API against a real libSQL database", () => {
+  it("blocks Better Auth public password signup", async () => {
+    const response = await request(
+      "/api/auth/sign-up/email",
+      sendJson({
+        name: "Unapproved",
+        email: "unapproved@example.test",
+        password: "a-long-enough-password",
+      })
+    );
+    expect(response.status).not.toBe(200);
+    expect(
+      (await client.execute("SELECT id FROM user WHERE email='unapproved@example.test'")).rows
+    ).toHaveLength(0);
+  });
+
   it("authenticates borrowers passwordlessly and establishes session", async () => {
     const profile = {
       name: "New Borrower",
@@ -331,7 +355,7 @@ describe("reservation API against a real libSQL database", () => {
     const catalogue = await request("/api/v1/catalogue");
     expect(catalogue.status).toBe(200);
     expect(await catalogue.json()).toMatchObject([
-      { id: itemId, name: "Digital multimeter", availableQuantity: 1 },
+      { id: itemId, name: "Digital multimeter", available: true },
     ]);
     expect((await request("/api/v1/board/dashboard", {}, memberCookie)).status).toBe(403);
   });
@@ -439,9 +463,9 @@ describe("reservation API against a real libSQL database", () => {
     expect(Number(audit.rows[0]?.count)).toBe(2);
   });
 
-  it("supports chapter reservations and blocks requests from another origin", async () => {
+  it("keeps chapter assignment under Board control and blocks requests from another origin", async () => {
     const pickupAt = new Date(Date.now() + 24 * 60 * 60_000).toISOString();
-    const response = await request(
+    const rejected = await request(
       "/api/v1/reservations",
       sendJson({
         borrowerType: "CHAPTER",
@@ -452,10 +476,28 @@ describe("reservation API against a real libSQL database", () => {
       }),
       memberCookie
     );
-    expect(response.status).toBe(201);
-    expect(await response.json()).toMatchObject({
+    expect(rejected.status).toBe(400);
+    const created = await request(
+      "/api/v1/reservations",
+      sendJson({
+        pickupAt,
+        returnAt: new Date(Date.parse(pickupAt) + 60 * 60_000).toISOString(),
+        items: [{ equipmentItemId: itemId, quantity: 1 }],
+      }),
+      memberCookie
+    );
+    expect(created.status).toBe(201);
+    const reservation = (await created.json()) as { id: string };
+    const assigned = await request(
+      `/api/v1/board/reservations/${reservation.id}/chapter`,
+      { ...sendJson({ chapterId: "chapter-robotics" }), method: "PATCH" },
+      boardCookie
+    );
+    expect(assigned.status).toBe(200);
+    expect(await assigned.json()).toMatchObject({
       borrower: { type: "CHAPTER", name: "Robotics Club" },
     });
+    expect((await request("/api/v1/chapters")).status).toBe(404);
     const crossOrigin = await request(
       "/api/v1/reservations",
       {
@@ -930,10 +972,10 @@ describe("reservation API against a real libSQL database", () => {
 
     const catRes = (await request("/api/v1/catalogue").then((r) => r.json())) as Array<{
       id: string;
-      availableQuantity: number;
+      available: boolean;
     }>;
     const meterCat = catRes.find((i) => i.id === itemId);
-    expect(meterCat?.availableQuantity).toBe(3);
+    expect(meterCat?.available).toBe(true);
   });
 
   it("keeps overdue reservation as APPROVED and derived OVERDUE until all borrowed assets are returned, then finalizes as COMPLETED", async () => {

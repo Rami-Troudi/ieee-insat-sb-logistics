@@ -50,6 +50,7 @@ try {
       args: [randomUUID(), userId, userId, passwordHash, now, now],
     });
   }
+  statements.push({ sql: "DELETE FROM session WHERE userId=?", args: [userId] });
   await client.batch(statements, "write");
   console.log(`Superadmin email: ${email}`);
   console.log(`Generated password (shown once): ${password}`);

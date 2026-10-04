@@ -1,5 +1,6 @@
 import { createClient } from "@libsql/client";
 import { serializeSignedCookie } from "better-call";
+import { hashPassword } from "better-auth/crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
@@ -26,11 +27,21 @@ try {
   await client.executeMultiple(
     await readFile(resolve("drizzle/0002_quantity_reservations.sql"), "utf8")
   );
+  await client.executeMultiple(
+    await readFile(resolve("drizzle/0003_notification_emails.sql"), "utf8")
+  );
+  await client.executeMultiple(
+    await readFile(resolve("drizzle/0004_review_invariants.sql"), "utf8")
+  );
+  await client.executeMultiple(
+    await readFile(resolve("drizzle/0005_system_audit_actor.sql"), "utf8")
+  );
   const now = Date.now();
   const result = {};
   for (const [id, name, role] of [
     ["e2e-member", "Alex Member", "USER"],
     ["e2e-board", "Sam Board", "BOARD"],
+    ["e2e-admin", "Test Admin", "SUPERADMIN"],
   ]) {
     const email = id + "@example.test";
     await client.execute({
@@ -47,7 +58,12 @@ try {
       httpOnly: true,
       sameSite: "lax",
     });
-    result[role === "USER" ? "memberCookie" : "boardCookie"] = cookie.split(";")[0];
+    result[role === "USER" ? "memberCookie" : role === "BOARD" ? "boardCookie" : "adminCookie"] =
+      cookie.split(";")[0];
+    await client.execute({
+      sql: "INSERT INTO account(id,accountId,providerId,userId,password,createdAt,updatedAt) VALUES(?,?,'credential',?,?,?,?)",
+      args: ["account-" + id, id, id, await hashPassword("Isolated-test-password-2026"), now, now],
+    });
   }
   await client.execute({
     sql: "INSERT INTO equipment_items(id,name,description,category,image_url,active,created_at,updated_at) VALUES(?,?,?,'Measurement','/equipment/multimeter.svg',1,?,?)",
@@ -72,6 +88,7 @@ try {
     args: [now, now],
   });
   result.qrToken = qrToken;
+  result.secondQrToken = secondQrToken;
   await writeFile(sessionsPath, JSON.stringify(result), { mode: 0o600 });
 } finally {
   client.close();

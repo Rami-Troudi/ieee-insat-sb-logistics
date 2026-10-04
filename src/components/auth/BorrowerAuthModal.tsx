@@ -150,7 +150,6 @@ export const BorrowerAuthModal: React.FC<BorrowerAuthModalProps> = ({
       if (onSuccess) {
         onSuccess();
       }
-      window.location.assign("/board");
     } catch (cause) {
       setStaffError(cause instanceof Error ? cause.message : "Unable to sign in right now.");
     } finally {

@@ -12,14 +12,20 @@ Configure these Vercel environment variables for Production and Preview:
 | TURSO_AUTH_TOKEN   | Token scoped to the SB database                                       |
 | BETTER_AUTH_SECRET | Random secret, at least 32 characters; use a different value from RAS |
 | APP_ORIGIN         | Exact HTTPS origin of this SB application                             |
-| BREVO_API_KEY      | Optional; needed only for email sign-in links                         |
-| BREVO_SENDER_EMAIL | Verified sender address for magic links                               |
+| BREVO_API_KEY      | Needed for reminder emails and optional email sign-in links           |
+| BREVO_SENDER_EMAIL | Verified sender address for reminder emails and magic links           |
 | BREVO_SENDER_NAME  | IEEE INSAT Student Branch                                             |
 | CRON_SECRET        | Secret used to authorize the scheduled return reminder job            |
 
 Account creation and password sign-in work without Brevo. Email links need a valid sender and API key. Keep provider credentials in Vercel only; never commit them.
 
-The Vercel cron job checks once daily for loans due within an hour and loans that are overdue. Borrowers signed in to the app also refresh their reminders while the app is open. On Vercel Hobby, the daily background schedule is intentional; the platform permits only daily cron runs.
+The maintenance endpoint `GET /api/cron/return-reminders` cancels uncollected reservations after their 30-minute pickup deadline, creates return reminders, and delivers queued emails. Calls require `Authorization: Bearer <CRON_SECRET>`.
+
+**Production setup:** schedule this endpoint every minute. The checked-in `vercel.json` runs every minute and requires a Vercel plan supporting that frequency. For a Hobby deployment, remove the Vercel cron entry and configure an external minute scheduler that sends the Authorization header. See [Vercel scheduling limits](https://vercel.com/docs/cron-jobs/usage-and-pricing).
+
+Local `npm run dev:api` runs maintenance on startup and every minute. API requests also enforce expiry before reservation actions. Partially collected reservations keep the checked-out units active. At the return deadline, further pickup closes; once all collected units are returned, the reservation completes even if some requested units were never collected. Configure Brevo's key and verified sender to enable emails; without them, notifications remain available in the app and queued emails are not sent. Emails cover approval, return due soon, overdue returns, and missed-pickup cancellation. Failed delivery is retried after five minutes. Outdated reminders are skipped, and each maintenance call processes up to 25 queued emails, stopping before starting another provider request after 16 seconds. Monitor the queue and increase processing capacity if reservation volume grows. A provider accepting a message followed by a database write failure can result in duplicate delivery on retry.
+
+Run `npm run db:migrate` before deploying this code; migration `0003_notification_emails.sql` creates the persistent email queue and `0004_review_invariants.sql` adds account access/profile fields, pickup closure tracking, unique credentials and assignment constraints. No provider credentials are stored in Git.
 
 ## Apply schema and establish access
 

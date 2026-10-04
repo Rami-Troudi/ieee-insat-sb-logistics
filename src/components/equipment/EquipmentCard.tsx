@@ -9,7 +9,7 @@ export interface EquipmentItem {
   description: string;
   category: string;
   imageUrl: string | null;
-  availableQuantity: number;
+  available: boolean;
 }
 
 interface EquipmentCardProps {
@@ -29,7 +29,7 @@ export const EquipmentCard: React.FC<EquipmentCardProps> = ({
 }) => {
   const [imageError, setImageError] = useState(false);
   const inCart = quantity > 0;
-  const isAvailable = item.availableQuantity > 0;
+  const isAvailable = item.available;
 
   const availabilityLabel = isAvailable ? "Available" : "Unavailable";
 
@@ -94,7 +94,7 @@ export const EquipmentCard: React.FC<EquipmentCardProps> = ({
             <button
               type="button"
               onClick={onIncrement}
-              disabled={quantity >= item.availableQuantity}
+              disabled={quantity >= 100}
               className="w-10 h-10 rounded-md bg-background border border-border flex items-center justify-center text-foreground hover:bg-muted active:scale-95 disabled:opacity-40 transition-all focus-visible:ring-2 focus-visible:ring-primary"
               aria-label={`Increase ${item.name} quantity`}
             >

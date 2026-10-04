@@ -46,3 +46,11 @@ The command prints a random password once. Use the Admin sign in tab with that e
 Browser tests create a fresh isolated database at .local/e2e.db; they do not use the configured development or remote database.
 
 Deployment and operational requirements are in [docs/operations.md](docs/operations.md).
+
+## Database changes
+
+The numbered SQL files in `drizzle/` are the migration source of truth. They include SQLite collation, checks and triggers which the ORM does not generate. `src/worker/schema.ts` maps those tables for application queries.
+
+Use `npm run db:generate -- descriptive_name` to create the next empty incremental SQL migration. Write and review its SQL, update the ORM mapping, then run `npm run db:migrate` and `npm run db:check`. Do not regenerate an initial schema, modify an already applied migration, or run Drizzle Kit against this migration history. Back up an existing database before applying new constraints; a migration failure rolls back that migration and requires inspecting existing data.
+
+The review fixes and verification coverage are documented in [docs/review-fixes.md](docs/review-fixes.md).

@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { requestId } from "hono/request-id";
 import { secureHeaders } from "hono/secure-headers";
-import { and, asc, desc, eq, inArray, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { schema } from "./database";
 import type { CurrentUser, Env } from "./env";
@@ -11,6 +11,7 @@ import { hashPassword } from "better-auth/crypto";
 import { requireBoard, requireSuperadmin, requireUser, resolveIdentity } from "./identity";
 import {
   approveReservation,
+  availableQuantity,
   assertCanReduceCapacity,
   boardDashboard,
   calendarEvents,
@@ -28,9 +29,9 @@ import {
   listReservations,
   one,
   randomId,
-  refreshAllReturnNotifications,
   refreshReturnNotificationsForUser,
   rescheduleReservation,
+  runReservationMaintenance,
   scanAsset,
   write,
 } from "./domain";
@@ -94,7 +95,11 @@ app.onError((error, c) => {
   const requestIdValue = c.get("requestId");
   if (error instanceof DomainError) return jsonError(c, error.status, error.code, error.message);
   // Request bodies, cookies, QR tokens, and provider messages stay out of logs.
-  console.error("request_failed", { requestId: requestIdValue, type: error.name });
+  console.error("request_failed", {
+    requestId: requestIdValue,
+    type: error.name,
+    message: error.message,
+  });
   return jsonError(c, 500, "INTERNAL", "The request could not be completed.");
 });
 
@@ -110,7 +115,7 @@ app.get("/api/cron/return-reminders", async (c) => {
   if (c.req.header("Authorization") !== "Bearer " + c.env.CRON_SECRET) {
     return jsonError(c, 401, "UNAUTHENTICATED", "Invalid cron authorization.");
   }
-  return c.json(await refreshAllReturnNotifications(c.env));
+  return c.json(await runReservationMaintenance(c.env));
 });
 
 app.all("/api/auth/*", async (c) => {
@@ -133,6 +138,7 @@ app.post("/api/v1/auth/borrower", async (c) => {
       name?: string;
       email?: string;
       phone?: string;
+      membership?: "IEEE" | "EXTERNAL";
     }>()
     .catch(() => null);
   if (
@@ -140,13 +146,19 @@ app.post("/api/v1/auth/borrower", async (c) => {
     typeof body.email !== "string" ||
     !/^\S+@\S+\.\S+$/.test(body.email.trim()) ||
     typeof body.name !== "string" ||
-    body.name.trim().length < 2
+    body.name.trim().length < 2 ||
+    body.name.trim().length > 120
   ) {
     return jsonError(c, 400, "VALIDATION", "Valid member details are required.");
+  }
+  if (body.phone && (typeof body.phone !== "string" || body.phone.trim().length > 50)) {
+    return jsonError(c, 400, "VALIDATION", "Phone number is too long.");
   }
   const email = body.email.trim().toLowerCase();
   const name = body.name.trim();
   const phone = typeof body.phone === "string" ? body.phone.trim().slice(0, 50) || null : null;
+  const membership =
+    body.membership === "IEEE" || body.membership === "EXTERNAL" ? body.membership : null;
   const now = new Date();
 
   const existing = await c.env.DB.select()
@@ -165,11 +177,25 @@ app.post("/api/v1/auth/borrower", async (c) => {
         "Privileged accounts cannot use borrower sign-in."
       );
     }
+    if (existing[0].disabledAt) {
+      return jsonError(c, 403, "ACCOUNT_DISABLED", "Your account access has been disabled.");
+    }
     userId = existing[0].id;
     await c.env.DB.update(schema.authUsers)
-      .set({ name, phone: phone ?? existing[0].phone, updatedAt: now })
+      .set({
+        name,
+        phone: phone ?? existing[0].phone,
+        membership: membership ?? existing[0].membership,
+        updatedAt: now,
+      })
       .where(eq(schema.authUsers.id, userId));
-    user = { ...existing[0], name, phone: phone ?? existing[0].phone, updatedAt: now };
+    user = {
+      ...existing[0],
+      name,
+      phone: phone ?? existing[0].phone,
+      membership: membership ?? existing[0].membership,
+      updatedAt: now,
+    };
   } else {
     userId = crypto.randomUUID();
     const [newUser] = await c.env.DB.insert(schema.authUsers)
@@ -178,6 +204,7 @@ app.post("/api/v1/auth/borrower", async (c) => {
         name,
         email,
         phone,
+        membership,
         emailVerified: true,
         role: "USER",
         createdAt: now,
@@ -358,18 +385,6 @@ app.get("/api/v1/catalogue", async (c) => {
   return c.json(await listCatalogue(c.env, pickupAt, returnAt));
 });
 
-app.get("/api/v1/chapters", async (c) => {
-  const chapters = await c.env.DB.select({
-    id: schema.chapters.id,
-    name: schema.chapters.name,
-    shortCode: schema.chapters.shortCode,
-  })
-    .from(schema.chapters)
-    .where(eq(schema.chapters.active, true))
-    .orderBy(asc(schema.chapters.name));
-  return c.json(chapters);
-});
-
 app.get("/api/v1/equipment/:id/availability", async (c) => {
   const { pickupAt, returnAt } = intervalFromQuery(new URL(c.req.url).searchParams);
   const item = await c.env.DB.select({ id: schema.equipmentItems.id })
@@ -379,13 +394,13 @@ app.get("/api/v1/equipment/:id/availability", async (c) => {
     )
     .limit(1);
   if (!item.length) return jsonError(c, 404, "NOT_FOUND", "Equipment not found.");
-  const availableAssets = await findAvailableAssets(
+  const qty = await availableQuantity(
     c.env.CLIENT as unknown as SqlExecutor,
     item[0].id,
     pickupAt,
     returnAt
   );
-  return c.json({ availableQuantity: availableAssets.length });
+  return c.json({ available: qty > 0 });
 });
 
 app.use("/api/v1/reservations", requireUser);
@@ -393,8 +408,7 @@ app.use("/api/v1/reservations/*", requireUser);
 
 const createReservationSchema = z
   .object({
-    borrowerType: z.enum(["PERSON", "CHAPTER"]),
-    chapterId: z.string().min(1).optional(),
+    borrowerType: z.literal("PERSON").optional(),
     pickupAt: millisIso,
     returnAt: millisIso,
     note: z.string().max(500).optional(),
@@ -461,6 +475,8 @@ app.delete("/api/v1/reservations/:id", async (c) => {
 app.get("/api/v1/notifications", async (c) => {
   const actor = await resolveIdentity(c);
   if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue.");
+  const offset = Math.max(0, Number(c.req.query("offset") ?? 0));
+  const limit = Math.min(100, Math.max(1, Number(c.req.query("limit") ?? 100)));
   const notifications = await c.env.DB.select({
     id: schema.notifications.id,
     type: schema.notifications.type,
@@ -473,8 +489,23 @@ app.get("/api/v1/notifications", async (c) => {
     .from(schema.notifications)
     .where(eq(schema.notifications.userId, actor.id))
     .orderBy(desc(schema.notifications.createdAt))
-    .limit(100);
+    .offset(offset)
+    .limit(limit);
   return c.json(notifications);
+});
+
+app.get("/api/v1/notifications/summary", async (c) => {
+  const actor = await resolveIdentity(c);
+  if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue.");
+  const rows = await c.env.CLIENT.execute({
+    sql: "SELECT COUNT(*) AS total, SUM(CASE WHEN read_at IS NULL THEN 1 ELSE 0 END) AS unread FROM notifications WHERE user_id=?",
+    args: [actor.id],
+  });
+  const row = rows.rows[0];
+  return c.json({
+    total: Number(row?.total ?? 0),
+    unread: Number(row?.unread ?? 0),
+  });
 });
 
 app.post("/api/v1/notifications/refresh", async (c) => {
@@ -483,6 +514,16 @@ app.post("/api/v1/notifications/refresh", async (c) => {
   const created =
     actor.role === "USER" ? await refreshReturnNotificationsForUser(c.env, actor.id) : 0;
   return c.json({ ok: true, notificationsCreated: created });
+});
+
+app.patch("/api/v1/notifications/read-all", async (c) => {
+  const actor = await resolveIdentity(c);
+  if (!actor) return jsonError(c, 401, "UNAUTHENTICATED", "Sign in to continue.");
+  const result = await c.env.CLIENT.execute({
+    sql: "UPDATE notifications SET read_at=? WHERE user_id=? AND read_at IS NULL",
+    args: [Date.now(), actor.id],
+  });
+  return c.json({ ok: true, changes: result.rowsAffected });
 });
 
 app.patch("/api/v1/notifications/:id/read", async (c) => {
@@ -500,7 +541,30 @@ app.use("/api/v1/board", requireBoard);
 app.use("/api/v1/board/*", requireBoard);
 
 app.get("/api/v1/board/dashboard", async (c) => c.json(await boardDashboard(c.env)));
-app.get("/api/v1/board/reservations", async (c) => c.json(await listBoardReservations(c.env)));
+app.get("/api/v1/board/reservations", async (c) => {
+  const startStr = c.req.query("start");
+  const endStr = c.req.query("end");
+  let start: number | undefined;
+  let end: number | undefined;
+  if (startStr !== undefined || endStr !== undefined) {
+    if (
+      !startStr ||
+      !endStr ||
+      !Number.isFinite(Date.parse(startStr)) ||
+      !Number.isFinite(Date.parse(endStr))
+    ) {
+      return jsonError(c, 400, "VALIDATION", "Valid start and end dates are required.");
+    }
+    start = Date.parse(startStr);
+    end = Date.parse(endStr);
+    if (start >= end) {
+      return jsonError(c, 400, "VALIDATION", "Start date must be before end date.");
+    }
+  }
+  const offset = Math.max(0, Number(c.req.query("offset") ?? 0));
+  const limit = Math.min(100, Math.max(1, Number(c.req.query("limit") ?? 100)));
+  return c.json(await listBoardReservations(c.env, { offset, limit, start, end }));
+});
 
 app.get("/api/v1/board/reservations/:id/borrower", async (c) => {
   const reservation = await getReservation(c.env, c.req.param("id"));
@@ -525,10 +589,24 @@ app.get("/api/v1/board/reservations/:id/borrower", async (c) => {
       " AND EXISTS (SELECT 1 FROM reservation_assets ra WHERE ra.reservation_id=r.id AND ra.actual_pickup_at IS NOT NULL)",
     args: [reservation.borrower.id],
   });
+  const materials = await c.env.CLIENT.execute({
+    sql:
+      "SELECT COUNT(CASE WHEN ra.actual_pickup_at IS NOT NULL THEN 1 END) AS collected_count, " +
+      "COUNT(CASE WHEN ra.state='BORROWED' THEN 1 END) AS borrowed_count " +
+      "FROM reservations r INNER JOIN reservation_assets ra ON ra.reservation_id=r.id WHERE " +
+      (reservation.borrower.type === "PERSON"
+        ? "r.borrower_type='PERSON' AND r.borrower_user_id=?"
+        : "r.borrower_type='CHAPTER' AND r.chapter_id=?"),
+    args: [reservation.borrower.id],
+  });
+  const collectedTotal = Number(materials.rows[0]?.collected_count ?? 0);
+  const borrowedNow = Number(materials.rows[0]?.borrowed_count ?? 0);
   return c.json({
     ...person,
     borrowingCount: Number(count.rows[0]?.count ?? 0),
     chapterName: reservation.borrower.type === "CHAPTER" ? reservation.borrower.name : null,
+    totalCollected: collectedTotal,
+    stillBorrowed: borrowedNow,
   });
 });
 
@@ -842,6 +920,19 @@ app.delete("/api/v1/board/equipment/:id", requireBoard, async (c) => {
       const usableCount = Number(capacityRow?.count ?? 0);
       await assertCanReduceCapacity(tx, id, usableCount, "delete this equipment");
 
+      const lines = await one<{ count: number }>(
+        tx,
+        "SELECT COUNT(*) AS count FROM reservation_lines WHERE equipment_item_id=?",
+        [id]
+      );
+      if (Number(lines?.count ?? 0) > 0) {
+        throw new DomainError(
+          409,
+          "RESERVATION_CONFLICT",
+          "Cannot delete equipment associated with existing reservations."
+        );
+      }
+
       await tx.execute({ sql: "DELETE FROM assets WHERE equipment_item_id=?", args: [id] });
       await tx.execute({ sql: "DELETE FROM equipment_items WHERE id=?", args: [id] });
       await tx.execute({
@@ -1030,6 +1121,51 @@ app.get("/api/v1/board/chapters", async (c) => {
   return c.json(chapters);
 });
 
+app.patch("/api/v1/board/reservations/:id/chapter", async (c) => {
+  const parsed = z
+    .object({ chapterId: z.string().min(1).nullable() })
+    .strict()
+    .safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return jsonError(c, 400, "VALIDATION", "Choose a valid project or team.");
+  const reservationId = c.req.param("id");
+  const reservation = await getReservation(c.env, reservationId);
+  if (!reservation) return jsonError(c, 404, "NOT_FOUND", "Reservation not found.");
+  const chapterId = parsed.data.chapterId;
+  if (chapterId) {
+    const chapter = await c.env.DB.select({ id: schema.chapters.id })
+      .from(schema.chapters)
+      .where(and(eq(schema.chapters.id, chapterId), eq(schema.chapters.active, true)))
+      .limit(1);
+    if (!chapter.length)
+      return jsonError(c, 400, "VALIDATION", "That project or team is unavailable.");
+  }
+  const actor = c.get("actor");
+  const now = Date.now();
+  await c.env.CLIENT.execute({
+    sql: "UPDATE reservations SET borrower_type=?,borrower_user_id=?,chapter_id=?,updated_at=? WHERE id=?",
+    args: [
+      chapterId ? "CHAPTER" : "PERSON",
+      chapterId ? null : reservation.requestedBy.id,
+      chapterId,
+      now,
+      reservationId,
+    ],
+  });
+  await c.env.CLIENT.execute({
+    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+    args: [
+      randomId("audit"),
+      actor.id,
+      "RESERVATION",
+      reservationId,
+      "RESERVATION_PROJECT_ASSIGNED",
+      now,
+      JSON.stringify({ chapterId }),
+    ],
+  });
+  return c.json(await getReservation(c.env, reservationId));
+});
+
 app.post("/api/v1/board/chapters", async (c) => {
   const parsed = z
     .object({
@@ -1108,6 +1244,7 @@ app.get("/api/v1/board/users", requireSuperadmin, async (c) => {
     name: schema.authUsers.name,
     email: schema.authUsers.email,
     role: schema.authUsers.role,
+    disabledAt: schema.authUsers.disabledAt,
     emailVerified: schema.authUsers.emailVerified,
     createdAt: schema.authUsers.createdAt,
   })
@@ -1135,55 +1272,63 @@ app.post("/api/v1/board/users", requireSuperadmin, async (c) => {
       parsed.error.issues[0]?.message ?? "Enter a name, email, password (min 12 chars), and role."
     );
 
-  // Check for duplicate email
-  const existing = await c.env.DB.select({ id: schema.authUsers.id })
-    .from(schema.authUsers)
-    .where(eq(schema.authUsers.email, parsed.data.email.toLowerCase()))
-    .limit(1);
-  if (existing.length > 0)
-    return jsonError(c, 409, "RESERVATION_CONFLICT", "An account with that email already exists.");
-
-  // Hash password using scrypt via Better Auth's internal mechanism (Web Crypto PBKDF2 fallback)
   const passwordHash = await hashPassword(parsed.data.password);
-
   const userId = randomId("user");
   const timestamp = Date.now();
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO user(id,name,email,emailVerified,role,createdAt,updatedAt) VALUES(?,?,?,1,?,?,?)",
-    args: [
-      userId,
-      parsed.data.name,
-      parsed.data.email.toLowerCase(),
-      parsed.data.role,
-      timestamp,
-      timestamp,
-    ],
-  });
-  // Store password in the account table (Better Auth credential store: accountId must equal userId)
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO account(id,accountId,providerId,userId,password,createdAt,updatedAt) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("account"),
-      userId, // accountId must equal userId for credential provider
-      "credential",
-      userId,
-      passwordHash,
-      timestamp,
-      timestamp,
-    ],
-  });
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("audit"),
-      c.get("actor").id,
-      "USER",
-      userId,
-      "USER_CREATED",
-      timestamp,
-      JSON.stringify({ role: parsed.data.role, email: parsed.data.email.toLowerCase() }),
-    ],
-  });
+
+  try {
+    await write(c.env, async (tx) => {
+      const existing = await one<{ id: string }>(tx, "SELECT id FROM user WHERE email = ?", [
+        parsed.data.email.toLowerCase(),
+      ]);
+      if (existing)
+        throw new DomainError(
+          409,
+          "RESERVATION_CONFLICT",
+          "An account with that email already exists."
+        );
+
+      await tx.execute({
+        sql: "INSERT INTO user(id,name,email,emailVerified,role,createdAt,updatedAt) VALUES(?,?,?,1,?,?,?)",
+        args: [
+          userId,
+          parsed.data.name,
+          parsed.data.email.toLowerCase(),
+          parsed.data.role,
+          timestamp,
+          timestamp,
+        ],
+      });
+      await tx.execute({
+        sql: "INSERT INTO account(id,accountId,providerId,userId,password,createdAt,updatedAt) VALUES(?,?,?,?,?,?,?)",
+        args: [
+          randomId("account"),
+          userId,
+          "credential",
+          userId,
+          passwordHash,
+          timestamp,
+          timestamp,
+        ],
+      });
+      await tx.execute({
+        sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+        args: [
+          randomId("audit"),
+          c.get("actor").id,
+          "USER",
+          userId,
+          "USER_CREATED",
+          timestamp,
+          JSON.stringify({ role: parsed.data.role, email: parsed.data.email.toLowerCase() }),
+        ],
+      });
+    });
+  } catch (error) {
+    if (error instanceof DomainError) return jsonError(c, error.status, error.code, error.message);
+    throw error;
+  }
+
   return c.json(
     {
       id: userId,
@@ -1289,6 +1434,55 @@ app.patch("/api/v1/board/users/:id/role", requireSuperadmin, async (c) => {
   return c.json({ ok: true, role: parsed.data.role });
 });
 
+app.patch("/api/v1/board/users/:id/access", requireSuperadmin, async (c) => {
+  const parsed = z
+    .object({ enabled: z.boolean() })
+    .strict()
+    .safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return jsonError(c, 400, "VALIDATION", "Choose whether access is enabled.");
+  const targetId = c.req.param("id");
+  if (targetId === c.get("actor").id && !parsed.data.enabled) {
+    return jsonError(c, 409, "RESERVATION_CONFLICT", "You cannot disable your own access.");
+  }
+  const user = await c.env.DB.select({ id: schema.authUsers.id })
+    .from(schema.authUsers)
+    .where(eq(schema.authUsers.id, targetId))
+    .limit(1);
+  if (!user[0]) return jsonError(c, 404, "NOT_FOUND", "Account not found.");
+
+  const now = Date.now();
+  await write(c.env, async (tx) => {
+    if (parsed.data.enabled) {
+      await tx.execute({
+        sql: "UPDATE user SET disabled_at=NULL, updatedAt=? WHERE id=?",
+        args: [now, targetId],
+      });
+    } else {
+      await tx.execute({
+        sql: "UPDATE user SET disabled_at=?, updatedAt=? WHERE id=?",
+        args: [now, now, targetId],
+      });
+      await tx.execute({
+        sql: "DELETE FROM session WHERE userId=?",
+        args: [targetId],
+      });
+    }
+    await tx.execute({
+      sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+      args: [
+        randomId("audit"),
+        c.get("actor").id,
+        "USER",
+        targetId,
+        parsed.data.enabled ? "USER_ACCESS_ENABLED" : "USER_ACCESS_DISABLED",
+        now,
+        JSON.stringify({ enabled: parsed.data.enabled }),
+      ],
+    });
+  });
+  return c.json({ ok: true, enabled: parsed.data.enabled });
+});
+
 app.delete("/api/v1/board/users/:id", requireSuperadmin, async (c) => {
   const targetId = c.req.param("id");
   if (targetId === c.get("actor").id) {
@@ -1319,85 +1513,103 @@ app.delete("/api/v1/board/users/:id", requireSuperadmin, async (c) => {
     );
   }
 
-  // 1. Delete notifications for this user
-  await c.env.DB.delete(schema.notifications).where(eq(schema.notifications.userId, targetId));
-
-  // 2. Anonymize/unlink board actions on other users' reservations
-  await c.env.DB.update(schema.reservations)
-    .set({ approvedByUserId: null })
-    .where(eq(schema.reservations.approvedByUserId, targetId));
-  await c.env.DB.update(schema.reservationAssets)
-    .set({ checkedOutByUserId: null })
-    .where(eq(schema.reservationAssets.checkedOutByUserId, targetId));
-  await c.env.DB.update(schema.reservationAssets)
-    .set({ checkedInByUserId: null })
-    .where(eq(schema.reservationAssets.checkedInByUserId, targetId));
-
-  // 3. Delete past (completed/cancelled/rejected) reservations belonging to this user
-  const userReservations = await c.env.DB.select({ id: schema.reservations.id })
-    .from(schema.reservations)
-    .where(
-      or(
-        eq(schema.reservations.requestedByUserId, targetId),
-        eq(schema.reservations.borrowerUserId, targetId)
-      )
+  // Check if user has historical borrowing records with physical handover
+  const historicalPickup = await c.env.CLIENT.execute({
+    sql: `SELECT 1 FROM reservation_assets ra
+          JOIN reservations r ON r.id = ra.reservation_id
+          WHERE (r.requested_by_user_id = ? OR r.borrower_user_id = ?)
+            AND ra.actual_pickup_at IS NOT NULL
+          LIMIT 1`,
+    args: [targetId, targetId],
+  });
+  if (historicalPickup.rows.length > 0) {
+    return jsonError(
+      c,
+      409,
+      "HISTORICAL_DATA",
+      "Historical users with borrowing records cannot be deleted. Disable access instead."
     );
-  for (const r of userReservations) {
-    await c.env.DB.delete(schema.reservationAssets).where(
-      eq(schema.reservationAssets.reservationId, r.id)
-    );
-    await c.env.DB.delete(schema.reservationLines).where(
-      eq(schema.reservationLines.reservationId, r.id)
-    );
-    await c.env.DB.delete(schema.reservations).where(eq(schema.reservations.id, r.id));
   }
 
-  // 4. Invalidate all sessions for this user
-  await c.env.DB.delete(schema.authSessions).where(eq(schema.authSessions.userId, targetId));
+  return c.json(
+    await write(c.env, async (tx) => {
+      // 1. Delete notifications for this user
+      await tx.execute({ sql: "DELETE FROM notifications WHERE user_id=?", args: [targetId] });
 
-  // 5. Delete credentials from account table
-  await c.env.CLIENT.execute({
-    sql: "DELETE FROM account WHERE userId=?",
-    args: [targetId],
-  });
+      // 2. Anonymize/unlink board actions on other users' reservations
+      await tx.execute({
+        sql: "UPDATE reservations SET approved_by_user_id=NULL WHERE approved_by_user_id=?",
+        args: [targetId],
+      });
+      await tx.execute({
+        sql: "UPDATE reservation_assets SET checked_out_by_user_id=NULL WHERE checked_out_by_user_id=?",
+        args: [targetId],
+      });
+      await tx.execute({
+        sql: "UPDATE reservation_assets SET checked_in_by_user_id=NULL WHERE checked_in_by_user_id=?",
+        args: [targetId],
+      });
 
-  // 6. Check if user has authored any immutable audit events
-  const hasAudit = await c.env.DB.select({ id: schema.auditEvents.id })
-    .from(schema.auditEvents)
-    .where(eq(schema.auditEvents.actorUserId, targetId))
-    .limit(1);
+      // 3. Delete past (completed/cancelled/rejected) reservations belonging to this user
+      const userReservations = await tx.execute({
+        sql: "SELECT id FROM reservations WHERE requested_by_user_id=? OR borrower_user_id=?",
+        args: [targetId, targetId],
+      });
+      for (const r of userReservations.rows as unknown as Array<{ id: string }>) {
+        await tx.execute({
+          sql: "DELETE FROM reservation_assets WHERE reservation_id=?",
+          args: [r.id],
+        });
+        await tx.execute({
+          sql: "DELETE FROM reservation_lines WHERE reservation_id=?",
+          args: [r.id],
+        });
+        await tx.execute({
+          sql: "DELETE FROM reservations WHERE id=?",
+          args: [r.id],
+        });
+      }
 
-  if (hasAudit.length > 0) {
-    // Preserve immutable audit trail without foreign key violation: deactivate and anonymize
-    await c.env.DB.update(schema.authUsers)
-      .set({
-        name: "Deleted User",
-        email: `disabled_${targetId}@deleted.local`,
-        phone: null,
-        role: "USER",
-        emailVerified: false,
-        updatedAt: new Date(),
-      })
-      .where(eq(schema.authUsers.id, targetId));
-  } else {
-    // Safe to hard delete user record
-    await c.env.DB.delete(schema.authUsers).where(eq(schema.authUsers.id, targetId));
-  }
+      // 4. Invalidate all sessions for this user
+      await tx.execute({ sql: "DELETE FROM session WHERE userId=?", args: [targetId] });
 
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("audit"),
-      c.get("actor").id,
-      "USER",
-      targetId,
-      "USER_DELETED",
-      Date.now(),
-      JSON.stringify({ email: existing[0].email, name: existing[0].name, role: existing[0].role }),
-    ],
-  });
+      // 5. Delete credentials from account table
+      await tx.execute({ sql: "DELETE FROM account WHERE userId=?", args: [targetId] });
 
-  return c.json({ ok: true });
+      // 6. Check if user has authored any immutable audit events
+      const hasAudit = await tx.execute({
+        sql: "SELECT id FROM audit_events WHERE actor_user_id=? LIMIT 1",
+        args: [targetId],
+      });
+      if (hasAudit.rows.length > 0) {
+        await tx.execute({
+          sql: "UPDATE user SET name='Deleted User', email=?, phone=NULL, role='USER', emailVerified=0, updatedAt=? WHERE id=?",
+          args: [`disabled_${targetId}@deleted.local`, Date.now(), targetId],
+        });
+      } else {
+        await tx.execute({ sql: "DELETE FROM user WHERE id=?", args: [targetId] });
+      }
+
+      await tx.execute({
+        sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+        args: [
+          randomId("audit"),
+          c.get("actor").id,
+          "USER",
+          targetId,
+          "USER_DELETED",
+          Date.now(),
+          JSON.stringify({
+            email: existing[0].email,
+            name: existing[0].name,
+            role: existing[0].role,
+          }),
+        ],
+      });
+
+      return { ok: true };
+    })
+  );
 });
 
 app.get("/api/v1/board/audit", async (c) => c.json(await listBoardAudit(c.env)));

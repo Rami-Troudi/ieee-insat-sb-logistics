@@ -140,6 +140,11 @@ export const AssetQrStickerModal: React.FC<AssetQrStickerModalProps> = ({
     link.click();
   };
 
+  const escape = (text: string) =>
+    text.replace(
+      /[&<>"']/g,
+      (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!
+    );
   const handlePrint = () => {
     const printWindow = window.open("", "_blank");
     if (!printWindow) return;
@@ -148,7 +153,7 @@ export const AssetQrStickerModal: React.FC<AssetQrStickerModalProps> = ({
       <!DOCTYPE html>
       <html>
         <head>
-          <title>Print Label - ${asset.assetCode}</title>
+          <title>Print Label - ${escape(asset.assetCode)}</title>
           <style>
             @page {
               size: 70mm 45mm;
@@ -239,9 +244,9 @@ export const AssetQrStickerModal: React.FC<AssetQrStickerModalProps> = ({
             </div>
             <div class="content">
               <div class="info">
-                <div class="name">${asset.equipmentName}</div>
-                <div class="code-badge">${asset.assetCode}</div>
-                ${asset.serialNumber ? `<div style="font-size: 6pt; font-family: monospace; margin-top: 1mm;">SN: ${asset.serialNumber}</div>` : ""}
+                <div class="name">${escape(asset.equipmentName)}</div>
+                <div class="code-badge">${escape(asset.assetCode)}</div>
+                ${asset.serialNumber ? `<div style="font-size: 6pt; font-family: monospace; margin-top: 1mm;">SN: ${escape(asset.serialNumber)}</div>` : ""}
               </div>
               <div class="qr-box">
                 <img src="${canvasRef.current?.toDataURL("image/png")}" alt="QR" />
@@ -251,15 +256,20 @@ export const AssetQrStickerModal: React.FC<AssetQrStickerModalProps> = ({
               Scan with Desk Scanner to Handover or Return • sb.insat.tn
             </div>
           </div>
-          <script>
-            window.onload = function() {
-              window.print();
-              setTimeout(function() { window.close(); }, 500);
-            };
-          </script>
+
         </body>
       </html>
     `);
+    printWindow.addEventListener(
+      "load",
+      async () => {
+        await Promise.all(
+          Array.from(printWindow.document.images).map((img) => img.decode().catch(() => undefined))
+        );
+        printWindow.print();
+      },
+      { once: true }
+    );
     printWindow.document.close();
   };
 
