@@ -277,9 +277,11 @@ export const auditEvents = sqliteTable(
   "audit_events",
   {
     id: text("id").primaryKey(),
-    actorUserId: text("actor_user_id")
+    actorUserId: text("actor_user_id").references(() => authUsers.id, { onDelete: "restrict" }),
+    actorType: text("actor_type", { enum: ["USER", "SYSTEM"] })
       .notNull()
-      .references(() => authUsers.id, { onDelete: "restrict" }),
+      .default("USER"),
+    actorId: text("actor_id"),
     entityType: text("entity_type").notNull(),
     entityId: text("entity_id").notNull(),
     action: text("action").notNull(),

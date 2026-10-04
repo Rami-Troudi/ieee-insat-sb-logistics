@@ -170,6 +170,7 @@ export function createAuth(env: Env, origin: string) {
     },
     emailAndPassword: {
       enabled: true,
+      disableSignUp: true,
       minPasswordLength: 12,
       maxPasswordLength: 128,
     },
@@ -177,6 +178,7 @@ export function createAuth(env: Env, origin: string) {
       magicLink({
         expiresIn: 10 * 60,
         storeToken: "hashed",
+        disableSignUp: true,
         sendMagicLink: async ({ email, url }) => {
           await sendEmail(
             env,

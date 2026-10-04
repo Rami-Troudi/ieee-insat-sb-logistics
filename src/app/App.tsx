@@ -748,7 +748,7 @@ function Catalogue({
   const displayedItems = useMemo(() => {
     return items.filter((item) => {
       if (selectedCategory !== "ALL" && item.category !== selectedCategory) return false;
-      if (availableOnly && item.availableQuantity < 1) return false;
+      if (availableOnly && !item.available) return false;
       if (search.trim()) {
         const query = search.toLowerCase();
         return (
@@ -762,13 +762,13 @@ function Catalogue({
   }, [items, selectedCategory, availableOnly, search]);
 
   const handleAdd = (item: Item) => {
-    if (item.availableQuantity < 1) return;
+    if (!item.available) return;
     if (!user) {
       onOpenAuth();
       return;
     }
     const currentQty = cart[item.id] ?? 0;
-    if (currentQty >= item.availableQuantity) return;
+    if (currentQty >= 100) return;
     setCart({ ...cart, [item.id]: currentQty + 1 });
     setNotice(`${item.name} added to selection.`);
   };
@@ -960,11 +960,6 @@ function SelectionPage({
 }) {
   const navigate = useNavigate();
   const [items, setItems] = useState<Item[]>([]);
-  const [chapters, setChapters] = useState<Array<{ id: string; name: string; shortCode: string }>>(
-    []
-  );
-  const [borrowerType, setBorrowerType] = useState<"PERSON" | "CHAPTER">("PERSON");
-  const [chapterId, setChapterId] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -975,12 +970,6 @@ function SelectionPage({
       .then(setItems)
       .catch((e: Error) => setNotice(e.message));
   }, [start, end, setNotice]);
-
-  useEffect(() => {
-    api<Array<{ id: string; name: string; shortCode: string }>>("/api/v1/chapters")
-      .then(setChapters)
-      .catch(() => setChapters([]));
-  }, []);
 
   const cartItems = items.filter((item) => cart[item.id]);
 
@@ -994,8 +983,6 @@ function SelectionPage({
       const result = await api<Reservation>(
         "/api/v1/reservations",
         post({
-          borrowerType,
-          ...(borrowerType === "CHAPTER" ? { chapterId } : {}),
           pickupAt: isoFromInput(start),
           returnAt: isoFromInput(end),
           note,
@@ -1059,9 +1046,7 @@ function SelectionPage({
                     <p className="text-xs text-muted-foreground">{item.category}</p>
                     <h3 className="font-semibold text-sm text-foreground truncate">{item.name}</h3>
                     <p className="text-[11px] text-muted-foreground mt-0.5">
-                      {item.availableQuantity > 0
-                        ? "Available for this window"
-                        : "Unavailable for this window"}
+                      {item.available ? "Available for this window" : "Unavailable for this window"}
                     </p>
                   </div>
                   <div className="flex items-center border border-border rounded-lg bg-surface-subtle p-1">
@@ -1084,7 +1069,7 @@ function SelectionPage({
                     <button
                       type="button"
                       aria-label={`Increase ${item.name} quantity`}
-                      disabled={cart[item.id] >= item.availableQuantity}
+                      disabled={cart[item.id] >= 100}
                       onClick={() => setCart({ ...cart, [item.id]: cart[item.id] + 1 })}
                       className="w-8 h-8 rounded-md bg-card border border-border flex items-center justify-center text-foreground hover:bg-muted active:scale-95 transition-all text-sm font-bold disabled:opacity-40"
                     >
@@ -1136,58 +1121,6 @@ function SelectionPage({
               </span>
             </div>
 
-            <div className="space-y-2">
-              <label className="text-xs font-semibold text-foreground block">
-                Who is borrowing?
-              </label>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setBorrowerType("PERSON")}
-                  className={cn(
-                    "min-h-10 px-3 rounded-lg text-xs font-semibold border transition-all",
-                    borrowerType === "PERSON"
-                      ? "bg-primary text-primary-foreground border-primary shadow-xs"
-                      : "bg-surface-subtle border-input text-muted-foreground hover:text-foreground"
-                  )}
-                >
-                  Myself / Member
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setBorrowerType("CHAPTER")}
-                  className={cn(
-                    "min-h-10 px-3 rounded-lg text-xs font-semibold border transition-all",
-                    borrowerType === "CHAPTER"
-                      ? "bg-primary text-primary-foreground border-primary shadow-xs"
-                      : "bg-surface-subtle border-input text-muted-foreground hover:text-foreground"
-                  )}
-                >
-                  Chapter
-                </button>
-              </div>
-            </div>
-
-            {borrowerType === "CHAPTER" && (
-              <div className="space-y-1.5 animate-in fade-in duration-150">
-                <label className="text-xs font-semibold text-foreground block">
-                  Select Chapter
-                </label>
-                <select
-                  value={chapterId}
-                  onChange={(e) => setChapterId(e.target.value)}
-                  className="w-full min-h-10 rounded-lg border border-input bg-card px-3 py-2 text-xs font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                >
-                  <option value="">Select a chapter...</option>
-                  {chapters.map((ch) => (
-                    <option key={ch.id} value={ch.id}>
-                      {ch.name} ({ch.shortCode})
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-
             <div className="space-y-1.5">
               <label className="text-xs font-semibold text-foreground block">
                 Purpose / Notes (optional)
@@ -1202,7 +1135,7 @@ function SelectionPage({
 
             <Button
               className="w-full min-h-11 font-semibold gap-2 shadow-xs"
-              disabled={busy || !cartItems.length || (borrowerType === "CHAPTER" && !chapterId)}
+              disabled={busy || !cartItems.length}
               onClick={submit}
             >
               {busy ? "Submitting request…" : "Send reservation request"}
@@ -1611,6 +1544,9 @@ function BoardDashboard() {
 
 function BoardReservations({ setNotice }: { setNotice: (message: string) => void }) {
   const [reservations, setReservations] = useState<Reservation[]>([]);
+  const [chapters, setChapters] = useState<
+    Array<{ id: string; name: string; shortCode: string; active: boolean }>
+  >([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("ALL");
   const [candidates, setCandidates] = useState<AllocationCandidate[]>([]);
@@ -1677,7 +1613,23 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+    api<typeof chapters>("/api/v1/board/chapters")
+      .then(setChapters)
+      .catch((e: Error) => setNotice(e.message));
+  }, [refresh, setNotice]);
+
+  const assignChapter = async (reservation: Reservation, chapterId: string) => {
+    try {
+      await api(
+        `/api/v1/board/reservations/${reservation.id}/chapter`,
+        patch({ chapterId: chapterId || null })
+      );
+      setNotice("Project or team assignment updated.");
+      await refresh();
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : "Could not update project or team.");
+    }
+  };
 
   const openAllocation = async (reservation: Reservation) => {
     try {
@@ -1810,6 +1762,24 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
                       Requested by <strong className="text-foreground">{r.requestedBy.name}</strong>{" "}
                       ({r.requestedBy.email})
                     </p>
+                    <label className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+                      Project/team
+                      <select
+                        aria-label={`Assign project or team for ${r.borrower.name}`}
+                        value={r.borrower.type === "CHAPTER" ? r.borrower.id : ""}
+                        onChange={(e) => void assignChapter(r, e.target.value)}
+                        className="min-h-8 rounded-md border border-input bg-card px-2 text-foreground"
+                      >
+                        <option value="">Unassigned</option>
+                        {chapters
+                          .filter((ch) => ch.active || ch.id === r.borrower.id)
+                          .map((ch) => (
+                            <option key={ch.id} value={ch.id}>
+                              {ch.name} ({ch.shortCode})
+                            </option>
+                          ))}
+                      </select>
+                    </label>
                   </div>
                 </div>
 

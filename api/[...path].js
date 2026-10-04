@@ -277,7 +277,9 @@ var auditEvents = sqliteTable(
   "audit_events",
   {
     id: text("id").primaryKey(),
-    actorUserId: text("actor_user_id").notNull().references(() => authUsers.id, { onDelete: "restrict" }),
+    actorUserId: text("actor_user_id").references(() => authUsers.id, { onDelete: "restrict" }),
+    actorType: text("actor_type", { enum: ["USER", "SYSTEM"] }).notNull().default("USER"),
+    actorId: text("actor_id"),
     entityType: text("entity_type").notNull(),
     entityId: text("entity_id").notNull(),
     action: text("action").notNull(),
@@ -537,6 +539,7 @@ function createAuth(env, origin) {
     },
     emailAndPassword: {
       enabled: true,
+      disableSignUp: true,
       minPasswordLength: 12,
       maxPasswordLength: 128
     },
@@ -544,6 +547,7 @@ function createAuth(env, origin) {
       magicLink({
         expiresIn: 10 * 60,
         storeToken: "hashed",
+        disableSignUp: true,
         sendMagicLink: async ({ email, url }) => {
           await sendEmail(
             env,
@@ -736,6 +740,12 @@ function audit(tx, actorId, entityType, entityId, action, data = {}) {
     args: [id("audit"), actorId, entityType, entityId, action, Date.now(), JSON.stringify(data)]
   });
 }
+function auditSystem(tx, entityType, entityId, action, data = {}) {
+  return tx.execute({
+    sql: "INSERT INTO audit_events(id,actor_user_id,actor_type,actor_id,entity_type,entity_id,action,created_at,data) VALUES(?,NULL,'SYSTEM','reservation-maintenance',?,?,?,?,?)",
+    args: [id("audit"), entityType, entityId, action, Date.now(), JSON.stringify(data)]
+  });
+}
 async function notify(tx, userId, type, title, message, reservationId = null) {
   const notifId = id("notification");
   const now = Date.now();
@@ -878,12 +888,12 @@ async function listCatalogue(env, pickupAt, returnAt) {
   return Promise.all(
     items.map(async (item) => ({
       ...item,
-      availableQuantity: await availableQuantity(
+      available: await availableQuantity(
         env.CLIENT,
         item.id,
         pickupAt,
         returnAt
-      )
+      ) > 0
     }))
   );
 }
@@ -911,6 +921,7 @@ async function finalizeReservationIfFinished(tx, reservationId, now = Date.now()
   if (totalRequested > 0 && collectedCount === totalRequested && returnedCount === totalRequested) {
     shouldComplete = true;
   } else if (now >= returnAt && borrowedCount === 0) {
+    await releaseUncollectedAssets(tx, reservationId, now);
     shouldComplete = true;
   }
   if (shouldComplete) {
@@ -921,6 +932,29 @@ async function finalizeReservationIfFinished(tx, reservationId, now = Date.now()
     return true;
   }
   return false;
+}
+async function releaseUncollectedAssets(tx, reservationId, now) {
+  const reserved = await rows(
+    tx,
+    "SELECT asset_id FROM reservation_assets WHERE reservation_id=? AND state='RESERVED'",
+    [reservationId]
+  );
+  await tx.execute({
+    sql: "UPDATE reservation_assets SET state='RELEASED',updated_at=? WHERE reservation_id=? AND state='RESERVED'",
+    args: [now, reservationId]
+  });
+  for (const { asset_id } of reserved) {
+    const other = await one(
+      tx,
+      "SELECT COUNT(*) AS count FROM reservation_assets WHERE asset_id=? AND state='RESERVED'",
+      [asset_id]
+    );
+    if (!Number(other?.count ?? 0))
+      await tx.execute({
+        sql: "UPDATE assets SET state='AVAILABLE',updated_at=? WHERE id=? AND state='RESERVED'",
+        args: [now, asset_id]
+      });
+  }
 }
 async function expireUncollectedReservationsTx(tx, now) {
   const cutoff = now - 30 * 6e4;
@@ -955,7 +989,7 @@ async function expireUncollectedReservationsTx(tx, now) {
       "Your reservation was cancelled because equipment was not collected within 30 minutes of the scheduled pickup.",
       r.id
     );
-    await audit(tx, r.requested_by_user_id, "RESERVATION", r.id, "RESERVATION_CANCELLED", {
+    await auditSystem(tx, "RESERVATION", r.id, "RESERVATION_CANCELLED", {
       reason: "MISSED_PICKUP_30_MIN",
       pickupClosedAt: now
     });
@@ -969,12 +1003,20 @@ async function expireUncollectedReservations(env, now = Date.now()) {
 async function reconcileExpiredReservations(env, now = Date.now()) {
   await write(env, async (tx) => {
     await expireUncollectedReservationsTx(tx, now);
+    const expired = await rows(
+      tx,
+      "SELECT id FROM reservations WHERE status='APPROVED' AND return_at<=? AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id=reservations.id AND state='RESERVED')>0",
+      [now]
+    );
+    for (const { id: reservationId } of expired)
+      await releaseUncollectedAssets(tx, reservationId, now);
     await tx.execute({
       sql: `UPDATE reservations
             SET status = 'COMPLETED', updated_at = ?
             WHERE status = 'APPROVED'
               AND return_at <= ?
-              AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state = 'BORROWED') = 0`,
+              AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state = 'BORROWED') = 0
+              AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state = 'RESERVED') = 0`,
       args: [now, now]
     });
     await tx.execute({
@@ -1130,12 +1172,6 @@ async function createReservation(env, actor, input) {
   if (!input.items.length || input.items.some((item) => !Number.isInteger(item.quantity) || item.quantity < 1)) {
     throw new DomainError(400, "VALIDATION", "Add at least one item with a positive quantity.");
   }
-  if (input.borrowerType === "CHAPTER" && !input.chapterId) {
-    throw new DomainError(400, "VALIDATION", "Choose a chapter to borrow this equipment.");
-  }
-  if (input.borrowerType === "PERSON" && input.chapterId) {
-    throw new DomainError(400, "VALIDATION", "A personal reservation cannot name a chapter.");
-  }
   const duplicateItems = new Set(input.items.map((item) => item.equipmentItemId));
   if (duplicateItems.size !== input.items.length) {
     throw new DomainError(
@@ -1146,19 +1182,6 @@ async function createReservation(env, actor, input) {
   }
   const reservationId = id("reservation");
   await write(env, async (tx) => {
-    if (input.borrowerType === "CHAPTER") {
-      const chapter = await one(
-        tx,
-        "SELECT id FROM chapters WHERE id=? AND active=1",
-        [input.chapterId]
-      );
-      if (!chapter)
-        throw new DomainError(
-          400,
-          "VALIDATION",
-          "That chapter is unavailable for new reservations."
-        );
-    }
     for (const line of input.items) {
       const equipment = await one(
         tx,
@@ -1192,9 +1215,9 @@ async function createReservation(env, actor, input) {
       args: [
         reservationId,
         actor.id,
-        input.borrowerType,
-        input.borrowerType === "PERSON" ? actor.id : null,
-        input.borrowerType === "CHAPTER" ? input.chapterId : null,
+        "PERSON",
+        actor.id,
+        null,
         input.pickupAt,
         input.returnAt,
         input.note?.trim() || null,
@@ -1909,8 +1932,8 @@ async function listBoardAudit(env) {
   return rows(
     env.CLIENT,
     `SELECT a.id,a.entity_type AS entityType,a.entity_id AS entityId,a.action,a.created_at AS createdAt,
-            a.data,u.name AS actorName
-       FROM audit_events a INNER JOIN user u ON u.id=a.actor_user_id
+            a.data,CASE WHEN a.actor_type='SYSTEM' THEN 'System \xB7 ' || a.actor_id ELSE u.name END AS actorName
+       FROM audit_events a LEFT JOIN user u ON u.id=a.actor_user_id
       ORDER BY a.created_at DESC LIMIT 100`
   );
 }
@@ -2245,14 +2268,6 @@ app.get("/api/v1/catalogue", async (c) => {
   const { pickupAt, returnAt } = intervalFromQuery(new URL(c.req.url).searchParams);
   return c.json(await listCatalogue(c.env, pickupAt, returnAt));
 });
-app.get("/api/v1/chapters", async (c) => {
-  const chapters2 = await c.env.DB.select({
-    id: schema_exports.chapters.id,
-    name: schema_exports.chapters.name,
-    shortCode: schema_exports.chapters.shortCode
-  }).from(schema_exports.chapters).where(eq2(schema_exports.chapters.active, true)).orderBy(asc(schema_exports.chapters.name));
-  return c.json(chapters2);
-});
 app.get("/api/v1/equipment/:id/availability", async (c) => {
   const { pickupAt, returnAt } = intervalFromQuery(new URL(c.req.url).searchParams);
   const item = await c.env.DB.select({ id: schema_exports.equipmentItems.id }).from(schema_exports.equipmentItems).where(
@@ -2265,13 +2280,12 @@ app.get("/api/v1/equipment/:id/availability", async (c) => {
     pickupAt,
     returnAt
   );
-  return c.json({ availableQuantity: qty });
+  return c.json({ available: qty > 0 });
 });
 app.use("/api/v1/reservations", requireUser);
 app.use("/api/v1/reservations/*", requireUser);
 var createReservationSchema = z.object({
-  borrowerType: z.enum(["PERSON", "CHAPTER"]),
-  chapterId: z.string().min(1).optional(),
+  borrowerType: z.literal("PERSON").optional(),
   pickupAt: millisIso,
   returnAt: millisIso,
   note: z.string().max(500).optional(),
@@ -2862,6 +2876,44 @@ app.delete("/api/v1/board/assets/:id", requireBoard, async (c) => {
 app.get("/api/v1/board/chapters", async (c) => {
   const chapters2 = await c.env.DB.select().from(schema_exports.chapters).orderBy(asc(schema_exports.chapters.name));
   return c.json(chapters2);
+});
+app.patch("/api/v1/board/reservations/:id/chapter", async (c) => {
+  const parsed = z.object({ chapterId: z.string().min(1).nullable() }).strict().safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return jsonError(c, 400, "VALIDATION", "Choose a valid project or team.");
+  const reservationId = c.req.param("id");
+  const reservation = await getReservation(c.env, reservationId);
+  if (!reservation) return jsonError(c, 404, "NOT_FOUND", "Reservation not found.");
+  const chapterId = parsed.data.chapterId;
+  if (chapterId) {
+    const chapter = await c.env.DB.select({ id: schema_exports.chapters.id }).from(schema_exports.chapters).where(and2(eq2(schema_exports.chapters.id, chapterId), eq2(schema_exports.chapters.active, true))).limit(1);
+    if (!chapter.length)
+      return jsonError(c, 400, "VALIDATION", "That project or team is unavailable.");
+  }
+  const actor = c.get("actor");
+  const now = Date.now();
+  await c.env.CLIENT.execute({
+    sql: "UPDATE reservations SET borrower_type=?,borrower_user_id=?,chapter_id=?,updated_at=? WHERE id=?",
+    args: [
+      chapterId ? "CHAPTER" : "PERSON",
+      chapterId ? null : reservation.requestedBy.id,
+      chapterId,
+      now,
+      reservationId
+    ]
+  });
+  await c.env.CLIENT.execute({
+    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+    args: [
+      randomId("audit"),
+      actor.id,
+      "RESERVATION",
+      reservationId,
+      "RESERVATION_PROJECT_ASSIGNED",
+      now,
+      JSON.stringify({ chapterId })
+    ]
+  });
+  return c.json(await getReservation(c.env, reservationId));
 });
 app.post("/api/v1/board/chapters", async (c) => {
   const parsed = z.object({

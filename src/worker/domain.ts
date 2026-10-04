@@ -53,6 +53,19 @@ function audit(
   });
 }
 
+function auditSystem(
+  tx: SqlExecutor,
+  entityType: string,
+  entityId: string,
+  action: string,
+  data: unknown = {}
+) {
+  return tx.execute({
+    sql: "INSERT INTO audit_events(id,actor_user_id,actor_type,actor_id,entity_type,entity_id,action,created_at,data) VALUES(?,NULL,'SYSTEM','reservation-maintenance',?,?,?,?,?)",
+    args: [id("audit"), entityType, entityId, action, Date.now(), JSON.stringify(data)],
+  });
+}
+
 async function notify(
   tx: SqlExecutor,
   userId: string,
@@ -270,23 +283,24 @@ export interface CatalogueItem {
   description: string;
   category: string;
   imageUrl: string | null;
-  availableQuantity: number;
+  available: boolean;
 }
 
 export async function listCatalogue(env: Env, pickupAt: number, returnAt: number) {
-  const items = await rows<Omit<CatalogueItem, "availableQuantity">>(
+  const items = await rows<Omit<CatalogueItem, "available">>(
     env.CLIENT as unknown as SqlExecutor,
     "SELECT id,name,description,category,image_url AS imageUrl FROM equipment_items WHERE active=1 ORDER BY category,name"
   );
   return Promise.all(
     items.map(async (item) => ({
       ...item,
-      availableQuantity: await availableQuantity(
-        env.CLIENT as unknown as SqlExecutor,
-        item.id,
-        pickupAt,
-        returnAt
-      ),
+      available:
+        (await availableQuantity(
+          env.CLIENT as unknown as SqlExecutor,
+          item.id,
+          pickupAt,
+          returnAt
+        )) > 0,
     }))
   );
 }
@@ -390,7 +404,7 @@ export async function finalizeReservationIfFinished(
   if (totalRequested > 0 && collectedCount === totalRequested && returnedCount === totalRequested) {
     shouldComplete = true;
   } else if (now >= returnAt && borrowedCount === 0) {
-    // 2. If returnAt <= now and currently borrowed == 0 -> COMPLETED
+    await releaseUncollectedAssets(tx, reservationId, now);
     shouldComplete = true;
   }
 
@@ -403,6 +417,30 @@ export async function finalizeReservationIfFinished(
   }
 
   return false;
+}
+
+async function releaseUncollectedAssets(tx: SqlExecutor, reservationId: string, now: number) {
+  const reserved = await rows<{ asset_id: string }>(
+    tx,
+    "SELECT asset_id FROM reservation_assets WHERE reservation_id=? AND state='RESERVED'",
+    [reservationId]
+  );
+  await tx.execute({
+    sql: "UPDATE reservation_assets SET state='RELEASED',updated_at=? WHERE reservation_id=? AND state='RESERVED'",
+    args: [now, reservationId],
+  });
+  for (const { asset_id } of reserved) {
+    const other = await one<{ count: number }>(
+      tx,
+      "SELECT COUNT(*) AS count FROM reservation_assets WHERE asset_id=? AND state='RESERVED'",
+      [asset_id]
+    );
+    if (!Number(other?.count ?? 0))
+      await tx.execute({
+        sql: "UPDATE assets SET state='AVAILABLE',updated_at=? WHERE id=? AND state='RESERVED'",
+        args: [now, asset_id],
+      });
+  }
 }
 
 async function expireUncollectedReservationsTx(tx: SqlExecutor, now: number) {
@@ -443,7 +481,7 @@ async function expireUncollectedReservationsTx(tx: SqlExecutor, now: number) {
       "Your reservation was cancelled because equipment was not collected within 30 minutes of the scheduled pickup.",
       r.id
     );
-    await audit(tx, r.requested_by_user_id, "RESERVATION", r.id, "RESERVATION_CANCELLED", {
+    await auditSystem(tx, "RESERVATION", r.id, "RESERVATION_CANCELLED", {
       reason: "MISSED_PICKUP_30_MIN",
       pickupClosedAt: now,
     });
@@ -459,6 +497,13 @@ export async function expireUncollectedReservations(env: Env, now = Date.now()):
 export async function reconcileExpiredReservations(env: Env, now = Date.now()) {
   await write(env, async (tx) => {
     await expireUncollectedReservationsTx(tx, now);
+    const expired = await rows<{ id: string }>(
+      tx,
+      "SELECT id FROM reservations WHERE status='APPROVED' AND return_at<=? AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id=reservations.id AND state='RESERVED')>0",
+      [now]
+    );
+    for (const { id: reservationId } of expired)
+      await releaseUncollectedAssets(tx, reservationId, now);
 
     // 1. Expired approved reservations with 0 currently borrowed units -> COMPLETED
     await tx.execute({
@@ -466,7 +511,8 @@ export async function reconcileExpiredReservations(env: Env, now = Date.now()) {
             SET status = 'COMPLETED', updated_at = ?
             WHERE status = 'APPROVED'
               AND return_at <= ?
-              AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state = 'BORROWED') = 0`,
+              AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state = 'BORROWED') = 0
+              AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state = 'RESERVED') = 0`,
       args: [now, now],
     });
 
@@ -638,8 +684,6 @@ export async function listBoardReservations(
 }
 
 export interface CreateReservationInput {
-  borrowerType: "PERSON" | "CHAPTER";
-  chapterId?: string;
   pickupAt: number;
   returnAt: number;
   note?: string;
@@ -671,12 +715,6 @@ export async function createReservation(
   ) {
     throw new DomainError(400, "VALIDATION", "Add at least one item with a positive quantity.");
   }
-  if (input.borrowerType === "CHAPTER" && !input.chapterId) {
-    throw new DomainError(400, "VALIDATION", "Choose a chapter to borrow this equipment.");
-  }
-  if (input.borrowerType === "PERSON" && input.chapterId) {
-    throw new DomainError(400, "VALIDATION", "A personal reservation cannot name a chapter.");
-  }
   const duplicateItems = new Set(input.items.map((item) => item.equipmentItemId));
   if (duplicateItems.size !== input.items.length) {
     throw new DomainError(
@@ -688,19 +726,6 @@ export async function createReservation(
 
   const reservationId = id("reservation");
   await write(env, async (tx) => {
-    if (input.borrowerType === "CHAPTER") {
-      const chapter = await one<{ id: string }>(
-        tx,
-        "SELECT id FROM chapters WHERE id=? AND active=1",
-        [input.chapterId!]
-      );
-      if (!chapter)
-        throw new DomainError(
-          400,
-          "VALIDATION",
-          "That chapter is unavailable for new reservations."
-        );
-    }
     for (const line of input.items) {
       const equipment = await one<{ id: string }>(
         tx,
@@ -735,9 +760,9 @@ export async function createReservation(
       args: [
         reservationId,
         actor.id,
-        input.borrowerType,
-        input.borrowerType === "PERSON" ? actor.id : null,
-        input.borrowerType === "CHAPTER" ? input.chapterId! : null,
+        "PERSON",
+        actor.id,
+        null,
         input.pickupAt,
         input.returnAt,
         input.note?.trim() || null,
@@ -1639,8 +1664,8 @@ export async function listBoardAudit(env: Env) {
   return rows<Record<string, unknown>>(
     env.CLIENT as unknown as SqlExecutor,
     `SELECT a.id,a.entity_type AS entityType,a.entity_id AS entityId,a.action,a.created_at AS createdAt,
-            a.data,u.name AS actorName
-       FROM audit_events a INNER JOIN user u ON u.id=a.actor_user_id
+            a.data,CASE WHEN a.actor_type='SYSTEM' THEN 'System · ' || a.actor_id ELSE u.name END AS actorName
+       FROM audit_events a LEFT JOIN user u ON u.id=a.actor_user_id
       ORDER BY a.created_at DESC LIMIT 100`
   );
 }

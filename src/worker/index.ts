@@ -385,18 +385,6 @@ app.get("/api/v1/catalogue", async (c) => {
   return c.json(await listCatalogue(c.env, pickupAt, returnAt));
 });
 
-app.get("/api/v1/chapters", async (c) => {
-  const chapters = await c.env.DB.select({
-    id: schema.chapters.id,
-    name: schema.chapters.name,
-    shortCode: schema.chapters.shortCode,
-  })
-    .from(schema.chapters)
-    .where(eq(schema.chapters.active, true))
-    .orderBy(asc(schema.chapters.name));
-  return c.json(chapters);
-});
-
 app.get("/api/v1/equipment/:id/availability", async (c) => {
   const { pickupAt, returnAt } = intervalFromQuery(new URL(c.req.url).searchParams);
   const item = await c.env.DB.select({ id: schema.equipmentItems.id })
@@ -412,7 +400,7 @@ app.get("/api/v1/equipment/:id/availability", async (c) => {
     pickupAt,
     returnAt
   );
-  return c.json({ availableQuantity: qty });
+  return c.json({ available: qty > 0 });
 });
 
 app.use("/api/v1/reservations", requireUser);
@@ -420,8 +408,7 @@ app.use("/api/v1/reservations/*", requireUser);
 
 const createReservationSchema = z
   .object({
-    borrowerType: z.enum(["PERSON", "CHAPTER"]),
-    chapterId: z.string().min(1).optional(),
+    borrowerType: z.literal("PERSON").optional(),
     pickupAt: millisIso,
     returnAt: millisIso,
     note: z.string().max(500).optional(),
@@ -1132,6 +1119,51 @@ app.delete("/api/v1/board/assets/:id", requireBoard, async (c) => {
 app.get("/api/v1/board/chapters", async (c) => {
   const chapters = await c.env.DB.select().from(schema.chapters).orderBy(asc(schema.chapters.name));
   return c.json(chapters);
+});
+
+app.patch("/api/v1/board/reservations/:id/chapter", async (c) => {
+  const parsed = z
+    .object({ chapterId: z.string().min(1).nullable() })
+    .strict()
+    .safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return jsonError(c, 400, "VALIDATION", "Choose a valid project or team.");
+  const reservationId = c.req.param("id");
+  const reservation = await getReservation(c.env, reservationId);
+  if (!reservation) return jsonError(c, 404, "NOT_FOUND", "Reservation not found.");
+  const chapterId = parsed.data.chapterId;
+  if (chapterId) {
+    const chapter = await c.env.DB.select({ id: schema.chapters.id })
+      .from(schema.chapters)
+      .where(and(eq(schema.chapters.id, chapterId), eq(schema.chapters.active, true)))
+      .limit(1);
+    if (!chapter.length)
+      return jsonError(c, 400, "VALIDATION", "That project or team is unavailable.");
+  }
+  const actor = c.get("actor");
+  const now = Date.now();
+  await c.env.CLIENT.execute({
+    sql: "UPDATE reservations SET borrower_type=?,borrower_user_id=?,chapter_id=?,updated_at=? WHERE id=?",
+    args: [
+      chapterId ? "CHAPTER" : "PERSON",
+      chapterId ? null : reservation.requestedBy.id,
+      chapterId,
+      now,
+      reservationId,
+    ],
+  });
+  await c.env.CLIENT.execute({
+    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+    args: [
+      randomId("audit"),
+      actor.id,
+      "RESERVATION",
+      reservationId,
+      "RESERVATION_PROJECT_ASSIGNED",
+      now,
+      JSON.stringify({ chapterId }),
+    ],
+  });
+  return c.json(await getReservation(c.env, reservationId));
 });
 
 app.post("/api/v1/board/chapters", async (c) => {

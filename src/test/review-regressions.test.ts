@@ -3,7 +3,11 @@ import { createClient, type Client } from "@libsql/client";
 import { serializeSignedCookie } from "better-call";
 import { readFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { expireUncollectedReservations, deliverNotificationEmails } from "../worker/domain";
+import {
+  expireUncollectedReservations,
+  reconcileExpiredReservations,
+  deliverNotificationEmails,
+} from "../worker/domain";
 import { isAllowedOrigin } from "../worker/auth";
 import { app } from "../worker/index";
 import { createDatabase } from "../worker/database";
@@ -72,6 +76,9 @@ beforeEach(async () => {
   );
   await client.executeMultiple(
     await readFile(new URL("../../drizzle/0004_review_invariants.sql", import.meta.url), "utf8")
+  );
+  await client.executeMultiple(
+    await readFile(new URL("../../drizzle/0005_system_audit_actor.sql", import.meta.url), "utf8")
   );
   env = {
     CLIENT: client,
@@ -187,12 +194,15 @@ describe("review regressions", () => {
       encodeURIComponent(r.body.pickupAt) +
       "&returnAt=" +
       encodeURIComponent(r.body.returnAt);
-    expect(await (await request("/api/v1/catalogue" + query)).json()).toMatchObject([
-      { availableQuantity: 0 },
-    ]);
-    expect(
-      await (await request(`/api/v1/equipment/${itemId}/availability` + query)).json()
-    ).toMatchObject({ availableQuantity: 0 });
+    const catalogue = (await request("/api/v1/catalogue" + query).then((r) => r.json())) as Array<
+      Record<string, unknown>
+    >;
+    expect(catalogue[0]?.available).toBe(false);
+    expect(catalogue[0]?.availableQuantity).toBeUndefined();
+    const availability = (await request(`/api/v1/equipment/${itemId}/availability` + query).then(
+      (r) => r.json()
+    )) as Record<string, unknown>;
+    expect(availability).toEqual({ available: false });
   });
   it("Regression: failed equipment deletion has already deleted assets", async () => {
     await loan();
@@ -278,6 +288,94 @@ describe("review regressions", () => {
 });
 
 describe("maintenance boundary checks", () => {
+  it("releases uncollected reserved units before completing a partial pickup", async () => {
+    const now = Date.now();
+    for (let i = 2; i <= 5; i++)
+      await client.execute({
+        sql: "INSERT INTO assets(id,equipment_item_id,asset_code,qr_token,state,active,created_at,updated_at) VALUES(?,?,?,?,'AVAILABLE',1,?,?)",
+        args: [`asset-${i}`, itemId, `SB-METER-0${i}`, String(i).repeat(64), now, now],
+      });
+    const created = await request(
+      "/api/v1/reservations",
+      sendJson({
+        borrowerType: "PERSON",
+        pickupAt: new Date(now + 60000).toISOString(),
+        returnAt: new Date(now + 3600000).toISOString(),
+        items: [{ equipmentItemId: itemId, quantity: 5 }],
+      }),
+      memberCookie
+    );
+    expect(created.status).toBe(201);
+    const reservation = (await created.json()) as { id: string };
+    expect(
+      (
+        await request(
+          `/api/v1/board/reservations/${reservation.id}/approve`,
+          sendJson({}),
+          boardCookie
+        )
+      ).status
+    ).toBe(200);
+    const lineId = String(
+      (
+        await client.execute("SELECT id FROM reservation_lines WHERE reservation_id=?", [
+          reservation.id,
+        ])
+      ).rows[0]?.id
+    );
+    const assignedIds = ["asset-one", "asset-2", "asset-3", "asset-4", "asset-5"];
+    for (let i = 0; i < assignedIds.length; i++)
+      await client.execute({
+        sql: "INSERT INTO reservation_assets(id,reservation_id,reservation_line_id,asset_id,state,created_at,updated_at) VALUES(?,?,?,?,'RESERVED',?,?)",
+        args: [`assignment-${i + 1}`, reservation.id, lineId, assignedIds[i], now, now],
+      });
+    await client.execute(
+      "UPDATE assets SET state='RESERVED' WHERE id IN ('asset-one','asset-2','asset-3','asset-4','asset-5')"
+    );
+    const assigned = await client.execute(
+      "SELECT asset_id FROM reservation_assets WHERE reservation_id=? ORDER BY asset_id",
+      [reservation.id]
+    );
+    expect(assigned.rows).toHaveLength(5);
+    for (const row of assigned.rows.slice(0, 3)) {
+      const assetId = String(row.asset_id);
+      await client.execute(
+        "UPDATE reservation_assets SET state='RETURNED',actual_pickup_at=?,actual_return_at=?,updated_at=? WHERE reservation_id=? AND asset_id=?",
+        [now - 2000, now - 1000, now, reservation.id, assetId]
+      );
+      await client.execute("UPDATE assets SET state='AVAILABLE',updated_at=? WHERE id=?", [
+        now,
+        assetId,
+      ]);
+    }
+    await client.execute("UPDATE reservations SET pickup_at=?,return_at=? WHERE id=?", [
+      now - 3600000,
+      now - 500,
+      reservation.id,
+    ]);
+    await reconcileExpiredReservations(env, now);
+    expect(
+      (await client.execute("SELECT status FROM reservations WHERE id=?", [reservation.id])).rows[0]
+        ?.status
+    ).toBe("COMPLETED");
+    expect(
+      Number(
+        (
+          await client.execute(
+            "SELECT COUNT(*) count FROM reservation_assets WHERE reservation_id=? AND state='RELEASED'",
+            [reservation.id]
+          )
+        ).rows[0]?.count
+      )
+    ).toBe(2);
+    expect(
+      Number(
+        (await client.execute("SELECT COUNT(*) count FROM assets WHERE state='RESERVED'")).rows[0]
+          ?.count
+      )
+    ).toBe(0);
+  });
+
   it("30-minute expiry is idempotent and frees quantity", async () => {
     const now = Date.now();
     const r = await (
@@ -301,6 +399,17 @@ describe("maintenance boundary checks", () => {
       (await client.execute("SELECT COUNT(*) count FROM notifications WHERE type='PICKUP_EXPIRED'"))
         .rows[0].count
     ).toBe(1);
+    expect(
+      (
+        await client.execute(
+          "SELECT actor_type,actor_id,actor_user_id FROM audit_events WHERE action='RESERVATION_CANCELLED'"
+        )
+      ).rows[0]
+    ).toMatchObject({
+      actor_type: "SYSTEM",
+      actor_id: "reservation-maintenance",
+      actor_user_id: null,
+    });
   });
   it("email failures retry without losing outbox rows", async () => {
     const now = Date.now();

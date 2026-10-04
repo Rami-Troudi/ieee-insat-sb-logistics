@@ -32,7 +32,7 @@ async function signup(page: Page, name: string) {
     (cookie) => cookie.name === "better-auth.session_token"
   )!;
 }
-test("chapter requests can be declined and borrowers can cancel future reservations", async ({
+test("Board assigns project or team before declining; borrowers can cancel future reservations", async ({
   page,
 }) => {
   const cookie = await signup(page, "Chapter Borrower");
@@ -42,14 +42,14 @@ test("chapter requests can be declined and borrowers can cancel future reservati
     .first()
     .click();
   await page.getByRole("link", { name: /View selection/i }).click();
-  await page.getByRole("button", { name: "Chapter", exact: true }).click();
-  await page.locator("select").selectOption("e2e-chapter");
   await expect(page.getByText(/30 minutes/).first()).toBeVisible();
   await page.getByRole("button", { name: /Send reservation request/i }).click();
   await expect(page).toHaveURL(/\/app\/reservations/);
   await login(page, sessions.boardCookie);
   await page.goto("/board/reservations");
-  const article = page.locator("article").filter({ hasText: "Robotics Club" });
+  const article = page.locator("article").filter({ hasText: "Chapter Borrower" }).first();
+  await article.getByLabel(/Assign project or team/).selectOption("e2e-chapter");
+  await expect(article.getByText("Robotics Club").first()).toBeVisible();
   await article.getByRole("button", { name: "Decline", exact: true }).click();
   await expect(article.getByText("Declined", { exact: true })).toBeVisible();
   await login(page, cookie.name + "=" + cookie.value);
