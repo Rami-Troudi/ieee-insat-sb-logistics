@@ -98,7 +98,7 @@ test("borrower filters retain overdue, partial return and declined reservations"
     totalQuantity: 2,
     createdAt: new Date().toISOString(),
   };
-  await page.route("**/api/v1/reservations", (route) =>
+  await page.route("**/api/v1/reservations*", (route) =>
     route.fulfill({
       json: [
         { ...base, id: "partial", status: "APPROVED", derivedStatus: "PARTIALLY_RETURNED" },
@@ -239,6 +239,13 @@ test("missed pickup cancellation and notifications are visible in the browser", 
     Date.now() + 60_000,
     loan.id,
   ]);
+  expect(
+    (
+      await page.request.get("/api/cron/return-reminders", {
+        headers: { Authorization: "Bearer e2e-maintenance-secret" },
+      })
+    ).status()
+  ).toBe(200);
   await page.goto("/app/reservations");
   await expect(page.getByText("Cancelled", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: /^Notifications/ }).click();

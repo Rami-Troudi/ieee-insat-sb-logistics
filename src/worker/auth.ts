@@ -5,108 +5,51 @@ import type { Env } from "./env";
 import { escapeHtml, sendEmail } from "./email";
 import { schema } from "./database";
 
+function configuredOrigins(env: Env): string[] {
+  return [env.APP_ORIGIN, env.VERCEL_URL, env.VERCEL_PROJECT_PRODUCTION_URL]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => {
+      const url = new URL(value.includes("://") ? value : `https://${value}`);
+      if (url.pathname !== "/" || url.search || url.hash || url.username || url.password)
+        throw new Error("Configured URLs must be origins without paths or credentials.");
+      if (
+        url.protocol !== "https:" &&
+        !(env.ENVIRONMENT !== "production" && ["localhost", "127.0.0.1"].includes(url.hostname))
+      )
+        throw new Error("Configured origins must use HTTPS.");
+      return url.origin;
+    });
+}
+
 export function isAllowedOrigin(origin: string, env: Env, requestUrl: string): boolean {
-  let trusted: string;
   try {
-    trusted = trustedAuthOrigin(env, requestUrl);
+    const url = new URL(origin);
+    if (url.origin !== origin) return false;
+    const allowed = configuredOrigins(env);
+    if (allowed.includes(origin)) return true;
+    const request = new URL(requestUrl);
+    const local = (value: URL) => ["localhost", "127.0.0.1"].includes(value.hostname);
+    return (
+      ["development", "test"].includes(env.ENVIRONMENT) &&
+      local(url) &&
+      local(request) &&
+      url.protocol === request.protocol &&
+      [request.port, "5173", "5174", "5175", "5188", "8787"].includes(url.port)
+    );
   } catch {
     return false;
   }
-  if (origin === trusted) return true;
-
-  try {
-    const originUrl = new URL(origin);
-    const trustedUrl = new URL(trusted);
-    const localHostnames = ["localhost", "127.0.0.1"];
-    const isOriginLocal = localHostnames.includes(originUrl.hostname);
-    const isTrustedLocal = localHostnames.includes(trustedUrl.hostname);
-
-    if (originUrl.hostname.endsWith(".vercel.app")) {
-      const allowedVercelHosts = new Set<string>();
-      if (env.VERCEL_URL) allowedVercelHosts.add(env.VERCEL_URL.replace(/^https?:\/\//, ""));
-      if (env.VERCEL_PROJECT_PRODUCTION_URL)
-        allowedVercelHosts.add(env.VERCEL_PROJECT_PRODUCTION_URL.replace(/^https?:\/\//, ""));
-      if (trustedUrl.hostname.endsWith(".vercel.app")) allowedVercelHosts.add(trustedUrl.hostname);
-      if (env.APP_ORIGIN) {
-        try {
-          const appUrl = new URL(env.APP_ORIGIN);
-          if (appUrl.hostname.endsWith(".vercel.app")) allowedVercelHosts.add(appUrl.hostname);
-        } catch {
-          // Ignore invalid URL
-        }
-      }
-
-      if (allowedVercelHosts.has(originUrl.hostname)) return true;
-
-      for (const trustedHost of allowedVercelHosts) {
-        const prefix = trustedHost.replace(/\.vercel\.app$/, "");
-        if (originUrl.hostname.startsWith(`${prefix}-`)) {
-          return true;
-        }
-      }
-      return false;
-    }
-
-    if (isOriginLocal && isTrustedLocal && originUrl.protocol === trustedUrl.protocol) {
-      const allowedPorts = new Set([trustedUrl.port, "5173", "5174", "5175", "5188", "8787"]);
-      if (allowedPorts.has(originUrl.port) && allowedPorts.has(trustedUrl.port)) {
-        return true;
-      }
-    }
-  } catch {
-    return false;
-  }
-  return false;
 }
 
 export function trustedAuthOrigin(env: Env, requestUrl: string, originHeader?: string) {
-  const requestOrigin = new URL(requestUrl);
-  const configuredHosts = new Set(
-    [env.VERCEL_URL, env.VERCEL_PROJECT_PRODUCTION_URL]
-      .filter((host): host is string => Boolean(host))
-      .map((host) => host.replace(/^https?:\/\//, ""))
-  );
-  const local = ["localhost", "127.0.0.1"].includes(requestOrigin.hostname);
-
-  if (originHeader && isAllowedOrigin(originHeader, env, requestUrl)) {
-    return new URL(originHeader).origin;
-  }
-
-  if (env.APP_ORIGIN) {
-    const appOrigin = new URL(env.APP_ORIGIN);
-    if (
-      appOrigin.pathname !== "/" ||
-      appOrigin.search ||
-      appOrigin.hash ||
-      appOrigin.username ||
-      appOrigin.password
-    ) {
-      throw new Error("APP_ORIGIN must be an origin without a path.");
-    }
-    if (appOrigin.protocol !== "https:" && !local) throw new Error("APP_ORIGIN must use HTTPS.");
-    if (!local && requestOrigin.origin !== appOrigin.origin) {
-      if (
-        requestOrigin.hostname.endsWith(".vercel.app") &&
-        appOrigin.hostname.endsWith(".vercel.app")
-      ) {
-        return appOrigin.origin;
-      }
-      throw new Error("Untrusted application origin.");
-    }
-    if (
-      local &&
-      (env.ENVIRONMENT === "development" || env.ENVIRONMENT === "test") &&
-      ["localhost", "127.0.0.1"].includes(appOrigin.hostname)
-    ) {
-      return appOrigin.origin;
-    }
-    return local ? requestOrigin.origin : appOrigin.origin;
-  }
-  if (local) return requestOrigin.origin;
-  if (!configuredHosts.has(requestOrigin.host) && !requestOrigin.hostname.endsWith(".vercel.app")) {
-    throw new Error("Untrusted deployment origin.");
-  }
-  return requestOrigin.origin;
+  const request = new URL(requestUrl);
+  const allowed = configuredOrigins(env);
+  const local =
+    ["development", "test"].includes(env.ENVIRONMENT) &&
+    ["localhost", "127.0.0.1"].includes(request.hostname);
+  if (!local && !allowed.includes(request.origin)) throw new Error("Untrusted deployment origin.");
+  if (originHeader && isAllowedOrigin(originHeader, env, requestUrl)) return originHeader;
+  return env.APP_ORIGIN ? new URL(env.APP_ORIGIN).origin : request.origin;
 }
 
 export function createAuth(env: Env, origin: string) {

@@ -7,6 +7,15 @@ var __export = (target, all) => {
 // src/worker/serverless.ts
 import { getRequestListener } from "@hono/node-server";
 
+// src/shared/contracts.ts
+var PAGE_SIZE = 100;
+function pagination(offset = 0, limit = PAGE_SIZE) {
+  return {
+    offset: Number.isFinite(offset) ? Math.max(0, Math.floor(offset)) : 0,
+    limit: Number.isFinite(limit) ? Math.min(PAGE_SIZE, Math.max(1, Math.floor(limit))) : PAGE_SIZE
+  };
+}
+
 // src/worker/index.ts
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -363,12 +372,12 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { magicLink } from "better-auth/plugins";
 
 // src/worker/email.ts
-async function sendEmail(env, to, subject, htmlContent) {
+async function sendEmail(env, to, subject, htmlContent, idempotencyKey, timeoutMs = 8e3) {
   if (!env.BREVO_API_KEY || !env.BREVO_SENDER_EMAIL) {
     throw new Error("Email delivery is not configured.");
   }
   const response = await fetch("https://api.brevo.com/v3/smtp/email", {
-    signal: AbortSignal.timeout(8e3),
+    signal: AbortSignal.timeout(Math.max(1, timeoutMs)),
     method: "POST",
     headers: {
       accept: "application/json",
@@ -382,10 +391,15 @@ async function sendEmail(env, to, subject, htmlContent) {
       },
       to: [{ email: to }],
       subject,
-      htmlContent
+      htmlContent,
+      ...idempotencyKey ? { headers: { idempotencyKey } } : {}
     })
   });
-  if (!response.ok) throw new Error("Email delivery failed");
+  if (!response.ok) {
+    const error = await response.json().catch(() => null);
+    if (idempotencyKey && error?.code === "duplicate_parameter") return;
+    throw new Error("Email delivery failed");
+  }
 }
 function escapeHtml(value) {
   return value.replace(
@@ -401,84 +415,36 @@ function escapeHtml(value) {
 }
 
 // src/worker/auth.ts
+function configuredOrigins(env) {
+  return [env.APP_ORIGIN, env.VERCEL_URL, env.VERCEL_PROJECT_PRODUCTION_URL].filter((value) => Boolean(value)).map((value) => {
+    const url = new URL(value.includes("://") ? value : `https://${value}`);
+    if (url.pathname !== "/" || url.search || url.hash || url.username || url.password)
+      throw new Error("Configured URLs must be origins without paths or credentials.");
+    if (url.protocol !== "https:" && !(env.ENVIRONMENT !== "production" && ["localhost", "127.0.0.1"].includes(url.hostname)))
+      throw new Error("Configured origins must use HTTPS.");
+    return url.origin;
+  });
+}
 function isAllowedOrigin(origin, env, requestUrl) {
-  let trusted;
   try {
-    trusted = trustedAuthOrigin(env, requestUrl);
+    const url = new URL(origin);
+    if (url.origin !== origin) return false;
+    const allowed = configuredOrigins(env);
+    if (allowed.includes(origin)) return true;
+    const request = new URL(requestUrl);
+    const local = (value) => ["localhost", "127.0.0.1"].includes(value.hostname);
+    return ["development", "test"].includes(env.ENVIRONMENT) && local(url) && local(request) && url.protocol === request.protocol && [request.port, "5173", "5174", "5175", "5188", "8787"].includes(url.port);
   } catch {
     return false;
   }
-  if (origin === trusted) return true;
-  try {
-    const originUrl = new URL(origin);
-    const trustedUrl = new URL(trusted);
-    const localHostnames = ["localhost", "127.0.0.1"];
-    const isOriginLocal = localHostnames.includes(originUrl.hostname);
-    const isTrustedLocal = localHostnames.includes(trustedUrl.hostname);
-    if (originUrl.hostname.endsWith(".vercel.app")) {
-      const allowedVercelHosts = /* @__PURE__ */ new Set();
-      if (env.VERCEL_URL) allowedVercelHosts.add(env.VERCEL_URL.replace(/^https?:\/\//, ""));
-      if (env.VERCEL_PROJECT_PRODUCTION_URL)
-        allowedVercelHosts.add(env.VERCEL_PROJECT_PRODUCTION_URL.replace(/^https?:\/\//, ""));
-      if (trustedUrl.hostname.endsWith(".vercel.app")) allowedVercelHosts.add(trustedUrl.hostname);
-      if (env.APP_ORIGIN) {
-        try {
-          const appUrl = new URL(env.APP_ORIGIN);
-          if (appUrl.hostname.endsWith(".vercel.app")) allowedVercelHosts.add(appUrl.hostname);
-        } catch {
-        }
-      }
-      if (allowedVercelHosts.has(originUrl.hostname)) return true;
-      for (const trustedHost of allowedVercelHosts) {
-        const prefix = trustedHost.replace(/\.vercel\.app$/, "");
-        if (originUrl.hostname.startsWith(`${prefix}-`)) {
-          return true;
-        }
-      }
-      return false;
-    }
-    if (isOriginLocal && isTrustedLocal && originUrl.protocol === trustedUrl.protocol) {
-      const allowedPorts = /* @__PURE__ */ new Set([trustedUrl.port, "5173", "5174", "5175", "5188", "8787"]);
-      if (allowedPorts.has(originUrl.port) && allowedPorts.has(trustedUrl.port)) {
-        return true;
-      }
-    }
-  } catch {
-    return false;
-  }
-  return false;
 }
 function trustedAuthOrigin(env, requestUrl, originHeader) {
-  const requestOrigin = new URL(requestUrl);
-  const configuredHosts = new Set(
-    [env.VERCEL_URL, env.VERCEL_PROJECT_PRODUCTION_URL].filter((host) => Boolean(host)).map((host) => host.replace(/^https?:\/\//, ""))
-  );
-  const local = ["localhost", "127.0.0.1"].includes(requestOrigin.hostname);
-  if (originHeader && isAllowedOrigin(originHeader, env, requestUrl)) {
-    return new URL(originHeader).origin;
-  }
-  if (env.APP_ORIGIN) {
-    const appOrigin = new URL(env.APP_ORIGIN);
-    if (appOrigin.pathname !== "/" || appOrigin.search || appOrigin.hash || appOrigin.username || appOrigin.password) {
-      throw new Error("APP_ORIGIN must be an origin without a path.");
-    }
-    if (appOrigin.protocol !== "https:" && !local) throw new Error("APP_ORIGIN must use HTTPS.");
-    if (!local && requestOrigin.origin !== appOrigin.origin) {
-      if (requestOrigin.hostname.endsWith(".vercel.app") && appOrigin.hostname.endsWith(".vercel.app")) {
-        return appOrigin.origin;
-      }
-      throw new Error("Untrusted application origin.");
-    }
-    if (local && (env.ENVIRONMENT === "development" || env.ENVIRONMENT === "test") && ["localhost", "127.0.0.1"].includes(appOrigin.hostname)) {
-      return appOrigin.origin;
-    }
-    return local ? requestOrigin.origin : appOrigin.origin;
-  }
-  if (local) return requestOrigin.origin;
-  if (!configuredHosts.has(requestOrigin.host) && !requestOrigin.hostname.endsWith(".vercel.app")) {
-    throw new Error("Untrusted deployment origin.");
-  }
-  return requestOrigin.origin;
+  const request = new URL(requestUrl);
+  const allowed = configuredOrigins(env);
+  const local = ["development", "test"].includes(env.ENVIRONMENT) && ["localhost", "127.0.0.1"].includes(request.hostname);
+  if (!local && !allowed.includes(request.origin)) throw new Error("Untrusted deployment origin.");
+  if (originHeader && isAllowedOrigin(originHeader, env, requestUrl)) return originHeader;
+  return env.APP_ORIGIN ? new URL(env.APP_ORIGIN).origin : request.origin;
 }
 function createAuth(env, origin) {
   let isLocal = false;
@@ -669,7 +635,7 @@ var requireSuperadmin = createMiddleware(async (c, next) => {
 });
 
 // src/worker/domain.ts
-import { DateTime } from "luxon";
+import { DateTime as DateTime2 } from "luxon";
 
 // src/worker/security.ts
 var DomainError = class extends Error {
@@ -707,6 +673,110 @@ async function isRateLimited(env, key, max, windowMs = 6e4) {
 function requestIp(c) {
   const forwarded = c.req.header("x-forwarded-for")?.split(",", 1)[0]?.trim();
   return forwarded || c.req.header("x-real-ip") || "unknown";
+}
+function authenticationIp(c) {
+  if (["development", "test"].includes(c.env.ENVIRONMENT))
+    return c.req.header("x-forwarded-for")?.split(",", 1)[0]?.trim() || c.req.header("x-real-ip") || "unknown";
+  return c.req.header("CF-Connecting-IP") || "unknown";
+}
+
+// src/worker/notification-delivery.ts
+import { DateTime } from "luxon";
+function relevant(row, now) {
+  if (!row.user_email || now - Number(row.created_at) > 24 * 60 * 6e4) return false;
+  const borrowed = Number(row.borrowed_count) > 0;
+  const due = Number(row.return_at);
+  const label = DateTime.fromMillis(due, { zone: DISPLAY_TIME_ZONE }).toFormat(
+    "ccc, d LLL 'at' HH:mm"
+  );
+  if (row.type === "RESERVATION_APPROVED")
+    return row.status === "APPROVED" && !Number(row.collected_count) && now < Number(row.pickup_at) + 30 * 6e4 && Number(row.updated_at) <= Number(row.created_at);
+  if (row.type === "RETURN_DUE_SOON")
+    return row.status === "APPROVED" && borrowed && due > now && due <= now + 60 * 6e4 && row.message.includes(label);
+  if (row.type === "RETURN_OVERDUE")
+    return row.status === "APPROVED" && borrowed && due <= now && row.message.includes(label);
+  if (row.type === "PICKUP_EXPIRED")
+    return row.status === "CANCELLED" && !Number(row.collected_count);
+  if (row.type === "RESERVATION_DECLINED") return row.status === "DECLINED";
+  return ![
+    "RESERVATION_APPROVED",
+    "RETURN_DUE_SOON",
+    "RETURN_OVERDUE",
+    "PICKUP_EXPIRED",
+    "RESERVATION_DECLINED"
+  ].includes(row.type);
+}
+async function deliverNotificationEmails(env, now = Date.now(), deadline = Date.now() + 16e3) {
+  if (!env.BREVO_API_KEY || !env.BREVO_SENDER_EMAIL) return { sent: 0, skipped: 0, pending: 0 };
+  let sent = 0, skipped = 0;
+  for (let count = 0; count < 25 && Date.now() + 8e3 < deadline; count++) {
+    const token = crypto.randomUUID();
+    const claimed = await write(env, async (tx) => {
+      const row2 = await one(
+        tx,
+        "SELECT notification_id FROM notification_emails WHERE (status='PENDING' AND next_attempt_at<=?) OR (status='SENDING' AND (lease_until IS NULL OR lease_until<=?)) ORDER BY next_attempt_at,notification_id LIMIT 1",
+        [now, Date.now()]
+      );
+      if (!row2) return null;
+      await tx.execute({
+        sql: "UPDATE notification_emails SET status='SENDING',lease_token=?,lease_until=?,first_attempt_at=COALESCE(first_attempt_at,?) WHERE notification_id=?",
+        args: [token, Date.now() + 6e4, Date.now(), row2.notification_id]
+      });
+      return row2.notification_id;
+    });
+    if (!claimed) break;
+    const row = await one(
+      env.CLIENT,
+      `SELECT ne.notification_id,ne.first_attempt_at,n.type,n.title,n.message,n.created_at,u.email AS user_email,
+       r.status,r.pickup_at,r.return_at,r.updated_at,
+       (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id=r.id AND state='BORROWED') AS borrowed_count,
+       (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id=r.id AND actual_pickup_at IS NOT NULL) AS collected_count
+       FROM notification_emails ne JOIN notifications n ON n.id=ne.notification_id
+       LEFT JOIN user u ON u.id=n.user_id AND u.disabled_at IS NULL LEFT JOIN reservations r ON r.id=n.reservation_id
+       WHERE ne.notification_id=? AND ne.lease_token=?`,
+      [claimed, token]
+    );
+    if (!row || !relevant(row, now) || Date.now() - Number(row.first_attempt_at) > 14 * 6e4) {
+      await env.CLIENT.execute({
+        sql: "UPDATE notification_emails SET status='SKIPPED',skip_reason=?,lease_token=NULL,lease_until=NULL WHERE notification_id=? AND lease_token=?",
+        args: [
+          row && Date.now() - Number(row.first_attempt_at) > 14 * 6e4 ? "DELIVERY_UNCERTAIN" : "OBSOLETE",
+          claimed,
+          token
+        ]
+      });
+      skipped++;
+      continue;
+    }
+    let accepted = false;
+    try {
+      await sendEmail(
+        env,
+        row.user_email,
+        row.title,
+        `<p>${escapeHtml(row.message)}</p>`,
+        claimed,
+        Math.min(8e3, deadline - Date.now())
+      );
+      accepted = true;
+      await env.CLIENT.execute({
+        sql: "UPDATE notification_emails SET status='SENT',attempts=attempts+1,sent_at=?,next_attempt_at=0,lease_token=NULL,lease_until=NULL WHERE notification_id=? AND lease_token=?",
+        args: [Date.now(), claimed, token]
+      });
+      sent++;
+    } catch {
+      if (!accepted)
+        await env.CLIENT.execute({
+          sql: "UPDATE notification_emails SET status='PENDING',attempts=attempts+1,next_attempt_at=?,lease_token=NULL,lease_until=NULL WHERE notification_id=? AND lease_token=?",
+          args: [now + 6e4, claimed, token]
+        });
+    }
+  }
+  const remaining = await one(
+    env.CLIENT,
+    "SELECT COUNT(*) AS count FROM notification_emails WHERE status IN ('PENDING','SENDING')"
+  );
+  return { sent, skipped, pending: Number(remaining?.count ?? 0) };
 }
 
 // src/worker/domain.ts
@@ -920,7 +990,7 @@ async function finalizeReservationIfFinished(tx, reservationId, now = Date.now()
   let shouldComplete = false;
   if (totalRequested > 0 && collectedCount === totalRequested && returnedCount === totalRequested) {
     shouldComplete = true;
-  } else if (now >= returnAt && borrowedCount === 0) {
+  } else if (now >= returnAt && borrowedCount === 0 && collectedCount > 0) {
     await releaseUncollectedAssets(tx, reservationId, now);
     shouldComplete = true;
   }
@@ -956,7 +1026,7 @@ async function releaseUncollectedAssets(tx, reservationId, now) {
       });
   }
 }
-async function expireUncollectedReservationsTx(tx, now) {
+async function expireUncollectedReservationsTx(tx, now, deadline = Infinity) {
   const cutoff = now - 30 * 6e4;
   const candidates = await rows(
     tx,
@@ -968,19 +1038,17 @@ async function expireUncollectedReservationsTx(tx, now) {
          SELECT COUNT(*)
          FROM reservation_assets ra
          WHERE ra.reservation_id = r.id AND ra.actual_pickup_at IS NOT NULL
-       ) = 0`,
+       ) = 0 ORDER BY r.pickup_at,r.id LIMIT 100`,
     [cutoff]
   );
   let expiredCount = 0;
   for (const r of candidates) {
+    if (Date.now() >= deadline) break;
     await tx.execute({
       sql: "UPDATE reservations SET status = 'CANCELLED', pickup_closed_at = ?, updated_at = ? WHERE id = ? AND status IN ('PENDING', 'APPROVED')",
       args: [now, now, r.id]
     });
-    await tx.execute({
-      sql: "UPDATE reservation_assets SET state = 'RELEASED', updated_at = ? WHERE reservation_id = ? AND state = 'RESERVED'",
-      args: [now, r.id]
-    });
+    await releaseUncollectedAssets(tx, r.id, now);
     await notify(
       tx,
       r.requested_by_user_id,
@@ -997,43 +1065,31 @@ async function expireUncollectedReservationsTx(tx, now) {
   }
   return expiredCount;
 }
-async function expireUncollectedReservations(env, now = Date.now()) {
-  return write(env, (tx) => expireUncollectedReservationsTx(tx, now));
+async function expireUncollectedReservations(env, now = Date.now(), deadline = Infinity) {
+  return write(env, (tx) => expireUncollectedReservationsTx(tx, now, deadline));
 }
-async function reconcileExpiredReservations(env, now = Date.now()) {
+async function reconcileExpiredReservations(env, now = Date.now(), deadline = Infinity) {
   await write(env, async (tx) => {
-    await expireUncollectedReservationsTx(tx, now);
-    const expired = await rows(
+    await expireUncollectedReservationsTx(tx, now, deadline);
+    const candidates = await rows(
       tx,
-      "SELECT id FROM reservations WHERE status='APPROVED' AND return_at<=? AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id=reservations.id AND state='RESERVED')>0",
+      "SELECT id FROM reservations WHERE status='APPROVED' AND NOT EXISTS (SELECT 1 FROM reservation_assets WHERE reservation_id=reservations.id AND state='BORROWED') AND (return_at<=? OR (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id=reservations.id AND state='RETURNED')=(SELECT SUM(quantity) FROM reservation_lines WHERE reservation_id=reservations.id)) ORDER BY updated_at,id LIMIT 100",
       [now]
     );
-    for (const { id: reservationId } of expired)
-      await releaseUncollectedAssets(tx, reservationId, now);
-    await tx.execute({
-      sql: `UPDATE reservations
-            SET status = 'COMPLETED', updated_at = ?
-            WHERE status = 'APPROVED'
-              AND return_at <= ?
-              AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state = 'BORROWED') = 0
-              AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state = 'RESERVED') = 0`,
-      args: [now, now]
-    });
-    await tx.execute({
-      sql: `UPDATE reservations
-            SET status = 'COMPLETED', updated_at = ?
-            WHERE status = 'APPROVED'
-              AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state = 'BORROWED') = 0
-              AND (SELECT COALESCE(SUM(quantity), 0) FROM reservation_lines WHERE reservation_id = reservations.id) > 0
-              AND (SELECT COALESCE(SUM(quantity), 0) FROM reservation_lines WHERE reservation_id = reservations.id) = (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state = 'RETURNED')
-              AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state NOT IN ('RESERVED', 'RELEASED')) = (SELECT COALESCE(SUM(quantity), 0) FROM reservation_lines WHERE reservation_id = reservations.id)`,
-      args: [now]
-    });
+    for (const { id: id2 } of candidates) {
+      if (Date.now() >= deadline) break;
+      await finalizeReservationIfFinished(tx, id2, now);
+    }
   });
 }
 async function getReservation(env, reservationId, includeAssets = false) {
+  return (await getReservations(env, [reservationId], includeAssets))[0] ?? null;
+}
+async function getReservations(env, ids, includeAssets = false) {
+  if (!ids.length) return [];
   const executor = env.CLIENT;
-  const reservation = await one(
+  const placeholders = ids.map(() => "?").join(",");
+  const reservations2 = await rows(
     executor,
     `SELECT r.id,r.requested_by_user_id,u.name AS requester_name,u.email AS requester_email,
             r.borrower_type,r.borrower_user_id,r.chapter_id,bu.name AS borrower_name,ch.name AS chapter_name,
@@ -1042,28 +1098,34 @@ async function getReservation(env, reservationId, includeAssets = false) {
        INNER JOIN user u ON u.id=r.requested_by_user_id
        LEFT JOIN user bu ON bu.id=r.borrower_user_id
        LEFT JOIN chapters ch ON ch.id=r.chapter_id
-      WHERE r.id=?`,
-    [reservationId]
+      WHERE r.id IN (${placeholders})`,
+    ids
   );
-  if (!reservation) return null;
-  if (reservation.status === "APPROVED") {
-    const finalized = await finalizeReservationIfFinished(executor, reservationId);
-    if (finalized) {
-      reservation.status = "COMPLETED";
-    }
-  }
-  const lineRows = await rows(
+  const lines = await rows(
     executor,
-    `SELECT l.id,l.equipment_item_id,e.name AS equipment_name,l.quantity,
+    `SELECT l.reservation_id,l.id,l.equipment_item_id,e.name AS equipment_name,l.quantity,
             ra.asset_id,a.asset_code,ra.state AS asset_state,a.state AS asset_state_now
        FROM reservation_lines l
        INNER JOIN equipment_items e ON e.id=l.equipment_item_id
        LEFT JOIN reservation_assets ra ON ra.reservation_line_id=l.id
        LEFT JOIN assets a ON a.id=ra.asset_id
-      WHERE l.reservation_id=?
+      WHERE l.reservation_id IN (${placeholders})
       ORDER BY e.name,a.asset_code`,
-    [reservationId]
+    ids
   );
+  const grouped = /* @__PURE__ */ new Map();
+  for (const line of lines) {
+    const group = grouped.get(line.reservation_id) ?? [];
+    group.push(line);
+    grouped.set(line.reservation_id, group);
+  }
+  const byId = new Map(reservations2.map((reservation) => [reservation.id, reservation]));
+  return ids.flatMap((id2) => {
+    const reservation = byId.get(id2);
+    return reservation ? [reservationDto(reservation, grouped.get(id2) ?? [], includeAssets)] : [];
+  });
+}
+function reservationDto(reservation, lineRows, includeAssets) {
   const grouped = /* @__PURE__ */ new Map();
   const assignmentStates = [];
   for (const line of lineRows) {
@@ -1102,7 +1164,7 @@ async function getReservation(env, reservationId, includeAssets = false) {
     derivedStatus = "PARTIALLY_RETURNED";
   } else if (borrowedCount > 0) {
     derivedStatus = "BORROWED";
-  } else if (reservation.status === "APPROVED" && now >= Number(reservation.return_at) && borrowedCount === 0) {
+  } else if (reservation.status === "APPROVED" && now >= Number(reservation.return_at) && borrowedCount === 0 && collectedCount > 0) {
     derivedStatus = "RETURNED";
   } else if (reservation.status === "COMPLETED") {
     derivedStatus = "RETURNED";
@@ -1131,29 +1193,34 @@ async function getReservation(env, reservationId, includeAssets = false) {
     createdAt: new Date(Number(reservation.created_at)).toISOString()
   };
 }
-async function listReservations(env, ownerId) {
-  await reconcileExpiredReservations(env);
+async function listReservations(env, ownerId, options = {}) {
+  const { offset, limit } = pagination(options.offset, options.limit);
   const ids = await rows(
     env.CLIENT,
-    "SELECT id FROM reservations WHERE requested_by_user_id=? ORDER BY pickup_at DESC LIMIT 200",
-    [ownerId]
+    "SELECT id FROM reservations WHERE requested_by_user_id=? ORDER BY pickup_at DESC,id LIMIT ? OFFSET ?",
+    [ownerId, limit, offset]
   );
-  return Promise.all(ids.map(({ id: reservationId }) => getReservation(env, reservationId)));
+  return getReservations(
+    env,
+    ids.map(({ id: id2 }) => id2)
+  );
 }
 async function listBoardReservations(env, options = {}) {
-  await reconcileExpiredReservations(env);
-  const limit = Math.min(100, Math.max(1, options.limit ?? 100));
-  const offset = Math.max(0, options.offset ?? 0);
+  const { limit, offset } = pagination(options.offset, options.limit);
   let sql2 = "SELECT id FROM reservations";
   const args = [];
   if (options.start !== void 0 && options.end !== void 0) {
     sql2 += " WHERE pickup_at < ? AND ? < return_at";
     args.push(options.end, options.start);
   }
-  sql2 += " ORDER BY CASE status WHEN 'PENDING' THEN 0 WHEN 'APPROVED' THEN 1 ELSE 2 END, pickup_at ASC LIMIT ? OFFSET ?";
+  sql2 += " ORDER BY CASE status WHEN 'PENDING' THEN 0 WHEN 'APPROVED' THEN 1 ELSE 2 END, pickup_at ASC,id LIMIT ? OFFSET ?";
   args.push(limit, offset);
   const ids = await rows(env.CLIENT, sql2, args);
-  return Promise.all(ids.map(({ id: reservationId }) => getReservation(env, reservationId, true)));
+  return getReservations(
+    env,
+    ids.map(({ id: id2 }) => id2),
+    true
+  );
 }
 function validateWindow(pickupAt, returnAt, allowStarted = false) {
   if (!Number.isFinite(pickupAt) || !Number.isFinite(returnAt) || pickupAt >= returnAt) {
@@ -1252,7 +1319,7 @@ async function createReservation(env, actor, input) {
   });
   return getReservation(env, reservationId);
 }
-async function refreshReturnNotificationsForUser(env, userId, now = Date.now()) {
+async function refreshReturnNotificationsForUser(env, userId, now = Date.now(), deadline = Infinity) {
   return write(env, async (tx) => {
     const activeLoans = await rows(
       tx,
@@ -1262,8 +1329,9 @@ async function refreshReturnNotificationsForUser(env, userId, now = Date.now()) 
     const todayStart = tunisDayRange(now).start;
     let created = 0;
     for (const loan of activeLoans) {
+      if (Date.now() >= deadline) break;
       const returnAt = Number(loan.return_at);
-      const dueLabel = DateTime.fromMillis(returnAt, { zone: DISPLAY_TIME_ZONE }).toFormat(
+      const dueLabel = DateTime2.fromMillis(returnAt, { zone: DISPLAY_TIME_ZONE }).toFormat(
         "ccc, d LLL 'at' HH:mm"
       );
       if (returnAt > now && returnAt <= now + 60 * 6e4) {
@@ -1305,16 +1373,22 @@ async function refreshReturnNotificationsForUser(env, userId, now = Date.now()) 
     return created;
   });
 }
-async function refreshAllReturnNotifications(env, now = Date.now()) {
-  await reconcileExpiredReservations(env, now);
+async function refreshAllReturnNotifications(env, now = Date.now(), deadline = Infinity) {
   const borrowers = await rows(
     env.CLIENT,
-    "SELECT DISTINCT r.requested_by_user_id AS user_id FROM reservations r INNER JOIN reservation_assets ra ON ra.reservation_id=r.id WHERE r.status='APPROVED' AND ra.state='BORROWED'"
+    "SELECT DISTINCT r.requested_by_user_id AS user_id FROM reservations r INNER JOIN reservation_assets ra ON ra.reservation_id=r.id WHERE r.status='APPROVED' AND ra.state='BORROWED' AND r.requested_by_user_id > COALESCE((SELECT value FROM maintenance_state WHERE key='reminder_cursor'),'') ORDER BY user_id LIMIT 100"
   );
   let created = 0;
   for (const borrower of borrowers) {
-    created += await refreshReturnNotificationsForUser(env, borrower.user_id, now);
+    if (Date.now() >= deadline) break;
+    created += await refreshReturnNotificationsForUser(env, borrower.user_id, now, deadline);
+    await env.CLIENT.execute({
+      sql: "INSERT INTO maintenance_state(key,value) VALUES('reminder_cursor',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      args: [borrower.user_id]
+    });
   }
+  if (!borrowers.length)
+    await env.CLIENT.execute("DELETE FROM maintenance_state WHERE key='reminder_cursor'");
   return { borrowersChecked: borrowers.length, notificationsCreated: created };
 }
 async function approveReservation(env, actor, reservationId, _assignments) {
@@ -1331,6 +1405,8 @@ async function approveReservation(env, actor, reservationId, _assignments) {
         "RESERVATION_CONFLICT",
         "Only a pending reservation can be approved."
       );
+    if (Date.now() >= Number(reservation.pickup_at) + 30 * 6e4)
+      throw new DomainError(409, "PICKUP_EXPIRED", "The first pickup deadline has expired.");
     await checkQuantities(
       tx,
       reservationId,
@@ -1511,7 +1587,7 @@ async function rescheduleReservation(env, actor, reservationId, pickupAt, return
   await write(env, async (tx) => {
     const reservation = await one(
       tx,
-      "SELECT status FROM reservations WHERE id=?",
+      "SELECT status,pickup_at FROM reservations WHERE id=?",
       [reservationId]
     );
     if (!reservation) throw new DomainError(404, "NOT_FOUND", "Reservation not found.");
@@ -1521,6 +1597,8 @@ async function rescheduleReservation(env, actor, reservationId, pickupAt, return
         "RESERVATION_CONFLICT",
         "Only an approved reservation can be rescheduled."
       );
+    if (Date.now() >= Number(reservation.pickup_at) + 30 * 6e4)
+      throw new DomainError(409, "PICKUP_EXPIRED", "The first pickup deadline has expired.");
     const pickedUp = await one(
       tx,
       "SELECT COUNT(*) AS count FROM reservation_assets WHERE reservation_id=? AND actual_pickup_at IS NOT NULL",
@@ -1595,6 +1673,13 @@ async function collectMaterial(tx, actor, reservationId, assetId, timestamp) {
     throw new DomainError(409, "TOO_EARLY", "The pickup window has not started yet.");
   if (timestamp >= Number(reservation.return_at))
     throw new DomainError(409, "RESERVATION_EXPIRED", "The reservation window has expired.");
+  const priorPickup = await one(
+    tx,
+    "SELECT COUNT(*) AS count FROM reservation_assets WHERE reservation_id=? AND actual_pickup_at IS NOT NULL",
+    [reservationId]
+  );
+  if (!Number(priorPickup?.count) && timestamp >= Number(reservation.pickup_at) + 30 * 6e4)
+    throw new DomainError(409, "PICKUP_EXPIRED", "The first pickup deadline has expired.");
   const asset = await one(
     tx,
     "SELECT a.equipment_item_id,a.state,a.active,e.active AS equipment_active FROM assets a JOIN equipment_items e ON e.id=a.equipment_item_id WHERE a.id=?",
@@ -1759,14 +1844,6 @@ async function scanAsset(env, actor, qrToken, idempotencyKey, reservationId, ope
       if (operation === "RETURNED") {
         throw new DomainError(409, "ALREADY_RETURNED", "This asset has no active checkout.");
       }
-      const equipment = await one(
-        tx,
-        "SELECT active FROM equipment_items WHERE id=?",
-        [asset.equipment_item_id]
-      );
-      if (!equipment || !equipment.active) {
-        throw new DomainError(409, "ASSET_UNAVAILABLE", "This equipment is currently inactive.");
-      }
       let targetReservationId = reservationId;
       if (!targetReservationId) {
         const eligible = await rows(
@@ -1837,7 +1914,7 @@ async function scanAsset(env, actor, qrToken, idempotencyKey, reservationId, ope
   });
 }
 function tunisDayRange(timestamp = Date.now()) {
-  const localStart = DateTime.fromMillis(timestamp, { zone: DISPLAY_TIME_ZONE }).startOf("day");
+  const localStart = DateTime2.fromMillis(timestamp, { zone: DISPLAY_TIME_ZONE }).startOf("day");
   return {
     start: localStart.toUTC().toMillis(),
     end: localStart.plus({ days: 1 }).toUTC().toMillis()
@@ -1882,11 +1959,15 @@ async function boardDashboard(env) {
     returnsToday: Number(returns?.count ?? 0),
     currentlyBorrowed: Number(borrowed?.count ?? 0),
     overdue: Number(overdue?.count ?? 0),
-    nextPickups: await Promise.all(
-      nextPickups.map(({ id: reservationId }) => getReservation(env, reservationId, true))
+    nextPickups: await getReservations(
+      env,
+      nextPickups.map(({ id: id2 }) => id2),
+      true
     ),
-    nextReturns: await Promise.all(
-      nextReturns.map(({ id: reservationId }) => getReservation(env, reservationId, true))
+    nextReturns: await getReservations(
+      env,
+      nextReturns.map(({ id: id2 }) => id2),
+      true
     )
   };
 }
@@ -1894,7 +1975,6 @@ async function calendarEvents(env, start, end, filters = {}) {
   if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end || end - start > 93 * 864e5) {
     throw new DomainError(400, "INVALID_TIME_RANGE", "Choose a calendar range under 93 days.");
   }
-  await reconcileExpiredReservations(env);
   const ids = await rows(
     env.CLIENT,
     `SELECT DISTINCT r.id FROM reservations r
@@ -1903,8 +1983,10 @@ async function calendarEvents(env, start, end, filters = {}) {
       ORDER BY r.pickup_at`,
     [end, start]
   );
-  const reservations2 = await Promise.all(
-    ids.map(({ id: reservationId }) => getReservation(env, reservationId, true))
+  const reservations2 = await getReservations(
+    env,
+    ids.map(({ id: id2 }) => id2),
+    true
   );
   return reservations2.filter((reservation) => Boolean(reservation)).flatMap(
     (reservation) => reservation.items.filter(
@@ -1928,13 +2010,15 @@ async function calendarEvents(env, start, end, filters = {}) {
     }))
   );
 }
-async function listBoardAudit(env) {
+async function listBoardAudit(env, options = {}) {
+  const { offset, limit } = pagination(options.offset, options.limit);
   return rows(
     env.CLIENT,
     `SELECT a.id,a.entity_type AS entityType,a.entity_id AS entityId,a.action,a.created_at AS createdAt,
             a.data,CASE WHEN a.actor_type='SYSTEM' THEN 'System \xB7 ' || a.actor_id ELSE u.name END AS actorName
        FROM audit_events a LEFT JOIN user u ON u.id=a.actor_user_id
-      ORDER BY a.created_at DESC LIMIT 100`
+      ORDER BY a.created_at DESC,a.id LIMIT ? OFFSET ?`,
+    [limit, offset]
   );
 }
 function createQrToken() {
@@ -1943,55 +2027,27 @@ function createQrToken() {
 function randomId(prefix) {
   return id(prefix);
 }
-async function deliverNotificationEmails(env, now = Date.now()) {
-  if (!env.BREVO_API_KEY || !env.BREVO_SENDER_EMAIL) {
-    return { sent: 0, skipped: 0, pending: 0 };
-  }
-  const pendingRows = await rows(
-    env.CLIENT,
-    `SELECT ne.notification_id, ne.attempts, n.title, n.message, u.email AS user_email
-     FROM notification_emails ne
-     JOIN notifications n ON n.id = ne.notification_id
-     LEFT JOIN user u ON u.id = n.user_id
-     WHERE ne.status = 'PENDING' AND ne.next_attempt_at <= ?
-     ORDER BY ne.next_attempt_at ASC
-     LIMIT 25`,
-    [now]
-  );
-  let sent = 0;
-  let skipped = 0;
-  const startTime = Date.now();
-  for (const row of pendingRows) {
-    if (Date.now() - startTime > 16e3) break;
-    if (!row.user_email) {
-      await env.CLIENT.execute({
-        sql: "UPDATE notification_emails SET status = 'SKIPPED' WHERE notification_id = ?",
-        args: [row.notification_id]
-      });
-      skipped++;
-      continue;
-    }
-    try {
-      await sendEmail(env, row.user_email, row.title, `<p>${escapeHtml(row.message)}</p>`);
-      await env.CLIENT.execute({
-        sql: "UPDATE notification_emails SET status = 'SENT', attempts = attempts + 1, sent_at = ?, next_attempt_at = 0 WHERE notification_id = ?",
-        args: [Date.now(), row.notification_id]
-      });
-      sent++;
-    } catch {
-      await env.CLIENT.execute({
-        sql: "UPDATE notification_emails SET status = 'PENDING', attempts = attempts + 1, next_attempt_at = ? WHERE notification_id = ?",
-        args: [now + 5 * 6e4, row.notification_id]
-      });
-    }
-  }
-  return { sent, skipped, pending: pendingRows.length - sent - skipped };
-}
 async function runReservationMaintenance(env, now = Date.now()) {
-  const expiredReservations = await expireUncollectedReservations(env, now);
-  await reconcileExpiredReservations(env, now);
-  const reminders = await refreshAllReturnNotifications(env, now);
-  const emailResults = await deliverNotificationEmails(env, now);
+  const deadline = Date.now() + 2e4;
+  const expiredReservations = await expireUncollectedReservations(env, now, deadline);
+  if (Date.now() < deadline) await reconcileExpiredReservations(env, now, deadline);
+  const reminders = Date.now() < deadline ? await refreshAllReturnNotifications(env, now, deadline) : { notificationsCreated: 0 };
+  const emailResults = Date.now() < deadline ? await deliverNotificationEmails(env, now, deadline) : { sent: 0 };
+  if (Date.now() < deadline)
+    await write(env, async (tx) => {
+      await tx.execute({
+        sql: "DELETE FROM rate_limit_buckets WHERE key_hash IN (SELECT key_hash FROM rate_limit_buckets WHERE window_start<? LIMIT 500)",
+        args: [now - 24 * 60 * 6e4]
+      });
+      await tx.execute({
+        sql: "DELETE FROM idempotency_keys WHERE rowid IN (SELECT rowid FROM idempotency_keys WHERE created_at<? LIMIT 500)",
+        args: [now - 7 * 24 * 60 * 6e4]
+      });
+      await tx.execute({
+        sql: "DELETE FROM notifications WHERE id IN (SELECT n.id FROM notifications n LEFT JOIN notification_emails ne ON ne.notification_id=n.id WHERE n.created_at<? AND (ne.status IS NULL OR ne.status IN ('SENT','SKIPPED')) LIMIT 500)",
+        args: [now - 90 * 24 * 60 * 6e4]
+      });
+    });
   return {
     expiredReservations,
     remindersCreated: reminders.notificationsCreated,
@@ -2174,6 +2230,12 @@ app.post("/api/v1/auth/board-login", async (c) => {
     return jsonError(c, 400, "VALIDATION", "Staff email and password are required.");
   }
   const email = body.email.trim().toLowerCase();
+  const limits = await Promise.all([
+    isRateLimited(c.env, `auth:${authenticationIp(c)}`, c.env.AUTH_RATE_LIMIT_PER_MINUTE),
+    isRateLimited(c.env, `auth-account:${email}`, c.env.AUTH_RATE_LIMIT_PER_MINUTE)
+  ]);
+  if (limits.some(Boolean))
+    return jsonError(c, 429, "RATE_LIMITED", "Too many sign-in attempts. Try again shortly.");
   const auth = createAuth(c.env, trustedAuthOrigin(c.env, c.req.url, c.req.header("Origin")));
   const res = await auth.api.signInEmail({
     body: { email, password: body.password },
@@ -2298,7 +2360,9 @@ var createReservationSchema = z.object({
 }).strict();
 app.get(
   "/api/v1/reservations",
-  async (c) => c.json(await listReservations(c.env, c.get("actor").id))
+  async (c) => c.json(
+    await listReservations(c.env, c.get("actor").id, pagination(Number(c.req.query("offset") ?? 0)))
+  )
 );
 app.post("/api/v1/reservations", async (c) => {
   const parsed = createReservationSchema.safeParse(await c.req.json().catch(() => null));
@@ -2569,19 +2633,19 @@ app.get("/api/v1/board/inventory", async (c) => {
   const grouped = new Map(
     equipment.map((item) => [item.id, { ...item, assets: [] }])
   );
+  const assignments = await c.env.CLIENT.execute(`SELECT ra.asset_id,r.pickup_at AS pickupAt,r.return_at AS returnAt,
+    CASE WHEN r.borrower_type='PERSON' THEN u.name ELSE ch.name END AS borrowerName
+    FROM reservation_assets ra JOIN reservations r ON r.id=ra.reservation_id
+    LEFT JOIN user u ON u.id=r.borrower_user_id LEFT JOIN chapters ch ON ch.id=r.chapter_id
+    WHERE ra.state IN ('RESERVED','BORROWED') AND r.status IN ('APPROVED','CANCELLED') ORDER BY r.pickup_at`);
+  const nextByAsset = /* @__PURE__ */ new Map();
+  for (const assignment of assignments.rows)
+    if (!nextByAsset.has(String(assignment.asset_id)))
+      nextByAsset.set(String(assignment.asset_id), assignment);
   for (const raw of assets2.rows) {
     const item = grouped.get(String(raw.equipmentItemId));
     if (!item) continue;
-    const assignment = await c.env.CLIENT.execute({
-      sql: `SELECT r.pickup_at AS pickupAt,r.return_at AS returnAt,
-                   CASE WHEN r.borrower_type='PERSON' THEN u.name ELSE ch.name END AS borrowerName
-              FROM reservation_assets ra INNER JOIN reservations r ON r.id=ra.reservation_id
-              LEFT JOIN user u ON u.id=r.borrower_user_id LEFT JOIN chapters ch ON ch.id=r.chapter_id
-             WHERE ra.asset_id=? AND ra.state IN ('RESERVED','BORROWED') AND r.status IN ('APPROVED','CANCELLED')
-             ORDER BY r.pickup_at LIMIT 1`,
-      args: [String(raw.id)]
-    });
-    const nextReservation = assignment.rows[0];
+    const nextReservation = nextByAsset.get(String(raw.id));
     item.assets.push({
       id: raw.id,
       assetCode: raw.assetCode,
@@ -2615,29 +2679,31 @@ app.post("/api/v1/board/equipment", async (c) => {
     );
   const timestamp = Date.now();
   const itemId = randomId("equipment");
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO equipment_items(id,name,description,category,image_url,active,created_at,updated_at) VALUES(?,?,?,?,?,1,?,?)",
-    args: [
-      itemId,
-      parsed.data.name,
-      parsed.data.description,
-      parsed.data.category,
-      parsed.data.imageUrl ?? null,
-      timestamp,
-      timestamp
-    ]
-  });
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("audit"),
-      c.get("actor").id,
-      "EQUIPMENT",
-      itemId,
-      "EQUIPMENT_CREATED",
-      timestamp,
-      "{}"
-    ]
+  await write(c.env, async (tx) => {
+    await tx.execute({
+      sql: "INSERT INTO equipment_items(id,name,description,category,image_url,active,created_at,updated_at) VALUES(?,?,?,?,?,1,?,?)",
+      args: [
+        itemId,
+        parsed.data.name,
+        parsed.data.description,
+        parsed.data.category,
+        parsed.data.imageUrl ?? null,
+        timestamp,
+        timestamp
+      ]
+    });
+    await tx.execute({
+      sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+      args: [
+        randomId("audit"),
+        c.get("actor").id,
+        "EQUIPMENT",
+        itemId,
+        "EQUIPMENT_CREATED",
+        timestamp,
+        "{}"
+      ]
+    });
   });
   return c.json({ id: itemId, ...parsed.data, active: true, assets: [] }, 201);
 });
@@ -2754,34 +2820,36 @@ app.post("/api/v1/board/equipment/:id/assets", async (c) => {
   }).from(schema_exports.equipmentItems).where(eq2(schema_exports.equipmentItems.id, c.req.param("id"))).limit(1);
   if (!equipment[0] || !equipment[0].active)
     return jsonError(c, 404, "NOT_FOUND", "Active equipment was not found.");
+  const origin = trustedAuthOrigin(c.env, c.req.url);
   const assetId = randomId("asset");
   const qrToken = createQrToken();
   const timestamp = Date.now();
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO assets(id,equipment_item_id,asset_code,qr_token,serial_number,state,active,created_at,updated_at) VALUES(?,?,?,?,?,'AVAILABLE',1,?,?)",
-    args: [
-      assetId,
-      c.req.param("id"),
-      parsed.data.assetCode,
-      qrToken,
-      parsed.data.serialNumber ?? null,
-      timestamp,
-      timestamp
-    ]
+  await write(c.env, async (tx) => {
+    await tx.execute({
+      sql: "INSERT INTO assets(id,equipment_item_id,asset_code,qr_token,serial_number,state,active,created_at,updated_at) VALUES(?,?,?,?,?,'AVAILABLE',1,?,?)",
+      args: [
+        assetId,
+        c.req.param("id"),
+        parsed.data.assetCode,
+        qrToken,
+        parsed.data.serialNumber ?? null,
+        timestamp,
+        timestamp
+      ]
+    });
+    await tx.execute({
+      sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+      args: [
+        randomId("audit"),
+        c.get("actor").id,
+        "ASSET",
+        assetId,
+        "ASSET_CREATED",
+        timestamp,
+        JSON.stringify({ assetCode: parsed.data.assetCode })
+      ]
+    });
   });
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("audit"),
-      c.get("actor").id,
-      "ASSET",
-      assetId,
-      "ASSET_CREATED",
-      timestamp,
-      JSON.stringify({ assetCode: parsed.data.assetCode })
-    ]
-  });
-  const origin = trustedAuthOrigin(c.env, c.req.url);
   return c.json(
     {
       id: assetId,
@@ -2891,27 +2959,29 @@ app.patch("/api/v1/board/reservations/:id/chapter", async (c) => {
   }
   const actor = c.get("actor");
   const now = Date.now();
-  await c.env.CLIENT.execute({
-    sql: "UPDATE reservations SET borrower_type=?,borrower_user_id=?,chapter_id=?,updated_at=? WHERE id=?",
-    args: [
-      chapterId ? "CHAPTER" : "PERSON",
-      chapterId ? null : reservation.requestedBy.id,
-      chapterId,
-      now,
-      reservationId
-    ]
-  });
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("audit"),
-      actor.id,
-      "RESERVATION",
-      reservationId,
-      "RESERVATION_PROJECT_ASSIGNED",
-      now,
-      JSON.stringify({ chapterId })
-    ]
+  await write(c.env, async (tx) => {
+    await tx.execute({
+      sql: "UPDATE reservations SET borrower_type=?,borrower_user_id=?,chapter_id=?,updated_at=? WHERE id=?",
+      args: [
+        chapterId ? "CHAPTER" : "PERSON",
+        chapterId ? null : reservation.requestedBy.id,
+        chapterId,
+        now,
+        reservationId
+      ]
+    });
+    await tx.execute({
+      sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+      args: [
+        randomId("audit"),
+        actor.id,
+        "RESERVATION",
+        reservationId,
+        "RESERVATION_PROJECT_ASSIGNED",
+        now,
+        JSON.stringify({ chapterId })
+      ]
+    });
   });
   return c.json(await getReservation(c.env, reservationId));
 });
@@ -2924,9 +2994,21 @@ app.post("/api/v1/board/chapters", async (c) => {
     return jsonError(c, 400, "VALIDATION", "Enter a chapter name and short code.");
   const timestamp = Date.now();
   const chapterId = randomId("chapter");
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO chapters(id,name,short_code,active,created_at,updated_at) VALUES(?,?,?,1,?,?)",
-    args: [chapterId, parsed.data.name, parsed.data.shortCode.toUpperCase(), timestamp, timestamp]
+  await write(c.env, async (tx) => {
+    await tx.execute({
+      sql: "INSERT INTO chapters(id,name,short_code,active,created_at,updated_at) VALUES(?,?,?,1,?,?)",
+      args: [
+        chapterId,
+        parsed.data.name,
+        parsed.data.shortCode.toUpperCase(),
+        timestamp,
+        timestamp
+      ]
+    });
+    await tx.execute({
+      sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,'CHAPTER',?,'CHAPTER_CREATED',?,'{}')",
+      args: [randomId("audit"), c.get("actor").id, chapterId, timestamp]
+    });
   });
   return c.json(
     { id: chapterId, ...parsed.data, shortCode: parsed.data.shortCode.toUpperCase(), active: true },
@@ -2937,33 +3019,44 @@ app.patch("/api/v1/board/chapters/:id", async (c) => {
   const parsed = z.object({ active: z.boolean() }).strict().safeParse(await c.req.json().catch(() => null));
   if (!parsed.success)
     return jsonError(c, 400, "VALIDATION", "Choose whether this chapter is active.");
-  const result = await c.env.DB.update(schema_exports.chapters).set({ active: parsed.data.active, updatedAt: Date.now() }).where(eq2(schema_exports.chapters.id, c.req.param("id")));
-  if (!result.rowsAffected) return jsonError(c, 404, "NOT_FOUND", "Chapter not found.");
+  await write(c.env, async (tx) => {
+    const result = await tx.execute({
+      sql: "UPDATE chapters SET active=?,updated_at=? WHERE id=?",
+      args: [parsed.data.active ? 1 : 0, Date.now(), c.req.param("id")]
+    });
+    if (!result.rowsAffected) throw new DomainError(404, "NOT_FOUND", "Chapter not found.");
+    await tx.execute({
+      sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,'CHAPTER',?,'CHAPTER_UPDATED',?,?)",
+      args: [
+        randomId("audit"),
+        c.get("actor").id,
+        c.req.param("id"),
+        Date.now(),
+        JSON.stringify(parsed.data)
+      ]
+    });
+  });
   return c.json({ ok: true });
 });
 app.delete("/api/v1/board/chapters/:id", requireBoard, async (c) => {
   const id2 = c.req.param("id");
-  const reservations2 = await c.env.DB.select({ id: schema_exports.reservations.id }).from(schema_exports.reservations).where(eq2(schema_exports.reservations.chapterId, id2)).limit(1);
-  if (reservations2.length > 0)
-    return jsonError(
-      c,
-      409,
-      "RESERVATION_CONFLICT",
-      "Cannot delete a chapter that has reservations. Deactivate it instead."
-    );
-  const result = await c.env.DB.delete(schema_exports.chapters).where(eq2(schema_exports.chapters.id, id2));
-  if (!result.rowsAffected) return jsonError(c, 404, "NOT_FOUND", "Chapter not found.");
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("audit"),
-      c.get("actor").id,
-      "CHAPTER",
-      id2,
-      "CHAPTER_DELETED",
-      Date.now(),
-      "{}"
-    ]
+  await write(c.env, async (tx) => {
+    const reservations2 = await tx.execute({
+      sql: "SELECT id FROM reservations WHERE chapter_id=? LIMIT 1",
+      args: [id2]
+    });
+    if (reservations2.rows.length)
+      throw new DomainError(
+        409,
+        "RESERVATION_CONFLICT",
+        "Cannot delete a chapter that has reservations. Deactivate it instead."
+      );
+    const result = await tx.execute({ sql: "DELETE FROM chapters WHERE id=?", args: [id2] });
+    if (!result.rowsAffected) throw new DomainError(404, "NOT_FOUND", "Chapter not found.");
+    await tx.execute({
+      sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,'CHAPTER',?,'CHAPTER_DELETED',?,'{}')",
+      args: [randomId("audit"), c.get("actor").id, id2, Date.now()]
+    });
   });
   return c.json({ ok: true });
 });
@@ -2976,7 +3069,7 @@ app.get("/api/v1/board/users", requireSuperadmin, async (c) => {
     disabledAt: schema_exports.authUsers.disabledAt,
     emailVerified: schema_exports.authUsers.emailVerified,
     createdAt: schema_exports.authUsers.createdAt
-  }).from(schema_exports.authUsers).orderBy(asc(schema_exports.authUsers.name)).limit(500);
+  }).from(schema_exports.authUsers).orderBy(asc(schema_exports.authUsers.name), asc(schema_exports.authUsers.id)).limit(100).offset(pagination(Number(c.req.query("offset") ?? 0)).offset);
   return c.json(users);
 });
 app.post("/api/v1/board/users", requireSuperadmin, async (c) => {
@@ -3066,42 +3159,44 @@ app.put("/api/v1/board/users/:id/password", requireSuperadmin, async (c) => {
   const user = await c.env.DB.select({ id: schema_exports.authUsers.id, email: schema_exports.authUsers.email }).from(schema_exports.authUsers).where(eq2(schema_exports.authUsers.id, targetId)).limit(1);
   if (!user[0]) return jsonError(c, 404, "NOT_FOUND", "Account not found.");
   const passwordHash = await hashPassword(parsed.data.password);
-  const acct = await c.env.CLIENT.execute({
-    sql: "SELECT id FROM account WHERE userId=? AND providerId='credential' LIMIT 1",
-    args: [targetId]
-  });
-  if (acct.rows.length > 0) {
-    await c.env.CLIENT.execute({
-      sql: "UPDATE account SET password=?,updatedAt=? WHERE userId=? AND providerId='credential'",
-      args: [passwordHash, Date.now(), targetId]
+  await write(c.env, async (tx) => {
+    const acct = await tx.execute({
+      sql: "SELECT id FROM account WHERE userId=? AND providerId='credential' LIMIT 1",
+      args: [targetId]
     });
-  } else {
-    await c.env.CLIENT.execute({
-      sql: "INSERT INTO account(id,accountId,providerId,userId,password,createdAt,updatedAt) VALUES(?,?,?,?,?,?,?)",
+    if (acct.rows.length > 0) {
+      await tx.execute({
+        sql: "UPDATE account SET password=?,updatedAt=? WHERE userId=? AND providerId='credential'",
+        args: [passwordHash, Date.now(), targetId]
+      });
+    } else {
+      await tx.execute({
+        sql: "INSERT INTO account(id,accountId,providerId,userId,password,createdAt,updatedAt) VALUES(?,?,?,?,?,?,?)",
+        args: [
+          randomId("account"),
+          targetId,
+          // accountId must equal userId for credential provider
+          "credential",
+          targetId,
+          passwordHash,
+          Date.now(),
+          Date.now()
+        ]
+      });
+    }
+    await tx.execute({ sql: "DELETE FROM session WHERE userId=?", args: [targetId] });
+    await tx.execute({
+      sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
       args: [
-        randomId("account"),
+        randomId("audit"),
+        c.get("actor").id,
+        "USER",
         targetId,
-        // accountId must equal userId for credential provider
-        "credential",
-        targetId,
-        passwordHash,
+        "PASSWORD_RESET",
         Date.now(),
-        Date.now()
+        "{}"
       ]
     });
-  }
-  await c.env.DB.delete(schema_exports.authSessions).where(eq2(schema_exports.authSessions.userId, targetId));
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("audit"),
-      c.get("actor").id,
-      "USER",
-      targetId,
-      "PASSWORD_RESET",
-      Date.now(),
-      "{}"
-    ]
   });
   return c.json({ ok: true });
 });
@@ -3116,20 +3211,27 @@ app.patch("/api/v1/board/users/:id/role", requireSuperadmin, async (c) => {
       "RESERVATION_CONFLICT",
       "You cannot remove your own superadmin access."
     );
-  const previous = await c.env.DB.select({ role: schema_exports.authUsers.role }).from(schema_exports.authUsers).where(eq2(schema_exports.authUsers.id, targetId)).limit(1);
-  if (!previous[0]) return jsonError(c, 404, "NOT_FOUND", "Account not found.");
-  await c.env.DB.update(schema_exports.authUsers).set({ role: parsed.data.role, updatedAt: /* @__PURE__ */ new Date() }).where(eq2(schema_exports.authUsers.id, targetId));
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("audit"),
-      c.get("actor").id,
-      "USER",
-      targetId,
-      "ROLE_CHANGED",
-      Date.now(),
-      JSON.stringify({ before: previous[0].role, after: parsed.data.role })
-    ]
+  await write(c.env, async (tx) => {
+    const previous = await one(tx, "SELECT role FROM user WHERE id=?", [
+      targetId
+    ]);
+    if (!previous) throw new DomainError(404, "NOT_FOUND", "Account not found.");
+    await tx.execute({
+      sql: "UPDATE user SET role=?,updatedAt=? WHERE id=?",
+      args: [parsed.data.role, Date.now(), targetId]
+    });
+    await tx.execute({
+      sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+      args: [
+        randomId("audit"),
+        c.get("actor").id,
+        "USER",
+        targetId,
+        "ROLE_CHANGED",
+        Date.now(),
+        JSON.stringify({ before: previous.role, after: parsed.data.role })
+      ]
+    });
   });
   return c.json({ ok: true, role: parsed.data.role });
 });
@@ -3214,18 +3316,23 @@ app.delete("/api/v1/board/users/:id", requireSuperadmin, async (c) => {
   return c.json(
     await write(c.env, async (tx) => {
       await tx.execute({ sql: "DELETE FROM notifications WHERE user_id=?", args: [targetId] });
-      await tx.execute({
-        sql: "UPDATE reservations SET approved_by_user_id=NULL WHERE approved_by_user_id=?",
-        args: [targetId]
+      const staffHistory = await tx.execute({
+        sql: "SELECT 1 FROM reservations WHERE approved_by_user_id=? UNION ALL SELECT 1 FROM reservation_assets WHERE checked_out_by_user_id=? OR checked_in_by_user_id=? LIMIT 1",
+        args: [targetId, targetId, targetId]
       });
-      await tx.execute({
-        sql: "UPDATE reservation_assets SET checked_out_by_user_id=NULL WHERE checked_out_by_user_id=?",
-        args: [targetId]
-      });
-      await tx.execute({
-        sql: "UPDATE reservation_assets SET checked_in_by_user_id=NULL WHERE checked_in_by_user_id=?",
-        args: [targetId]
-      });
+      if (staffHistory.rows.length) {
+        await tx.execute({
+          sql: "UPDATE user SET disabled_at=?,updatedAt=? WHERE id=?",
+          args: [Date.now(), Date.now(), targetId]
+        });
+        await tx.execute({ sql: "DELETE FROM session WHERE userId=?", args: [targetId] });
+        await tx.execute({ sql: "DELETE FROM account WHERE userId=?", args: [targetId] });
+        await tx.execute({
+          sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,'USER',?,'USER_ACCESS_DISABLED',?,'{}')",
+          args: [randomId("audit"), c.get("actor").id, targetId, Date.now()]
+        });
+        return { ok: true, disabled: true };
+      }
       const userReservations = await tx.execute({
         sql: "SELECT id FROM reservations WHERE requested_by_user_id=? OR borrower_user_id=?",
         args: [targetId, targetId]
@@ -3278,7 +3385,10 @@ app.delete("/api/v1/board/users/:id", requireSuperadmin, async (c) => {
     })
   );
 });
-app.get("/api/v1/board/audit", async (c) => c.json(await listBoardAudit(c.env)));
+app.get(
+  "/api/v1/board/audit",
+  async (c) => c.json(await listBoardAudit(c.env, pagination(Number(c.req.query("offset") ?? 0))))
+);
 app.notFound((c) => jsonError(c, 404, "NOT_FOUND", "API endpoint not found."));
 
 // src/worker/runtime-env.ts

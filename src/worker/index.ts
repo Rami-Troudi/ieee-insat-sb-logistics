@@ -1,3 +1,4 @@
+import { pagination } from "../shared/contracts";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { requestId } from "hono/request-id";
@@ -36,7 +37,14 @@ import {
   write,
 } from "./domain";
 import type { SqlExecutor } from "./domain";
-import { DomainError, isRateLimited, jsonError, requestIp, sameOrigin } from "./security";
+import {
+  DomainError,
+  authenticationIp,
+  isRateLimited,
+  jsonError,
+  requestIp,
+  sameOrigin,
+} from "./security";
 
 type Variables = { actor: CurrentUser };
 export const app = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -254,6 +262,12 @@ app.post("/api/v1/auth/board-login", async (c) => {
     return jsonError(c, 400, "VALIDATION", "Staff email and password are required.");
   }
   const email = body.email.trim().toLowerCase();
+  const limits = await Promise.all([
+    isRateLimited(c.env, `auth:${authenticationIp(c)}`, c.env.AUTH_RATE_LIMIT_PER_MINUTE),
+    isRateLimited(c.env, `auth-account:${email}`, c.env.AUTH_RATE_LIMIT_PER_MINUTE),
+  ]);
+  if (limits.some(Boolean))
+    return jsonError(c, 429, "RATE_LIMITED", "Too many sign-in attempts. Try again shortly.");
   const auth = createAuth(c.env, trustedAuthOrigin(c.env, c.req.url, c.req.header("Origin")));
   const res = await auth.api
     .signInEmail({
@@ -425,7 +439,9 @@ const createReservationSchema = z
   .strict();
 
 app.get("/api/v1/reservations", async (c) =>
-  c.json(await listReservations(c.env, c.get("actor").id))
+  c.json(
+    await listReservations(c.env, c.get("actor").id, pagination(Number(c.req.query("offset") ?? 0)))
+  )
 );
 
 app.post("/api/v1/reservations", async (c) => {
@@ -760,19 +776,20 @@ app.get("/api/v1/board/inventory", async (c) => {
   const grouped = new Map(
     equipment.map((item) => [item.id, { ...item, assets: [] as Array<Record<string, unknown>> }])
   );
+  const assignments = await c.env.CLIENT
+    .execute(`SELECT ra.asset_id,r.pickup_at AS pickupAt,r.return_at AS returnAt,
+    CASE WHEN r.borrower_type='PERSON' THEN u.name ELSE ch.name END AS borrowerName
+    FROM reservation_assets ra JOIN reservations r ON r.id=ra.reservation_id
+    LEFT JOIN user u ON u.id=r.borrower_user_id LEFT JOIN chapters ch ON ch.id=r.chapter_id
+    WHERE ra.state IN ('RESERVED','BORROWED') AND r.status IN ('APPROVED','CANCELLED') ORDER BY r.pickup_at`);
+  const nextByAsset = new Map<string, Record<string, unknown>>();
+  for (const assignment of assignments.rows)
+    if (!nextByAsset.has(String(assignment.asset_id)))
+      nextByAsset.set(String(assignment.asset_id), assignment);
   for (const raw of assets.rows as unknown as Array<Record<string, unknown>>) {
     const item = grouped.get(String(raw.equipmentItemId));
     if (!item) continue;
-    const assignment = await c.env.CLIENT.execute({
-      sql: `SELECT r.pickup_at AS pickupAt,r.return_at AS returnAt,
-                   CASE WHEN r.borrower_type='PERSON' THEN u.name ELSE ch.name END AS borrowerName
-              FROM reservation_assets ra INNER JOIN reservations r ON r.id=ra.reservation_id
-              LEFT JOIN user u ON u.id=r.borrower_user_id LEFT JOIN chapters ch ON ch.id=r.chapter_id
-             WHERE ra.asset_id=? AND ra.state IN ('RESERVED','BORROWED') AND r.status IN ('APPROVED','CANCELLED')
-             ORDER BY r.pickup_at LIMIT 1`,
-      args: [String(raw.id)],
-    });
-    const nextReservation = assignment.rows[0] as unknown as Record<string, unknown> | undefined;
+    const nextReservation = nextByAsset.get(String(raw.id));
     item.assets.push({
       id: raw.id,
       assetCode: raw.assetCode,
@@ -812,29 +829,31 @@ app.post("/api/v1/board/equipment", async (c) => {
     );
   const timestamp = Date.now();
   const itemId = randomId("equipment");
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO equipment_items(id,name,description,category,image_url,active,created_at,updated_at) VALUES(?,?,?,?,?,1,?,?)",
-    args: [
-      itemId,
-      parsed.data.name,
-      parsed.data.description,
-      parsed.data.category,
-      parsed.data.imageUrl ?? null,
-      timestamp,
-      timestamp,
-    ],
-  });
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("audit"),
-      c.get("actor").id,
-      "EQUIPMENT",
-      itemId,
-      "EQUIPMENT_CREATED",
-      timestamp,
-      "{}",
-    ],
+  await write(c.env, async (tx) => {
+    await tx.execute({
+      sql: "INSERT INTO equipment_items(id,name,description,category,image_url,active,created_at,updated_at) VALUES(?,?,?,?,?,1,?,?)",
+      args: [
+        itemId,
+        parsed.data.name,
+        parsed.data.description,
+        parsed.data.category,
+        parsed.data.imageUrl ?? null,
+        timestamp,
+        timestamp,
+      ],
+    });
+    await tx.execute({
+      sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+      args: [
+        randomId("audit"),
+        c.get("actor").id,
+        "EQUIPMENT",
+        itemId,
+        "EQUIPMENT_CREATED",
+        timestamp,
+        "{}",
+      ],
+    });
   });
   return c.json({ id: itemId, ...parsed.data, active: true, assets: [] }, 201);
 });
@@ -971,34 +990,36 @@ app.post("/api/v1/board/equipment/:id/assets", async (c) => {
     .limit(1);
   if (!equipment[0] || !equipment[0].active)
     return jsonError(c, 404, "NOT_FOUND", "Active equipment was not found.");
+  const origin = trustedAuthOrigin(c.env, c.req.url);
   const assetId = randomId("asset");
   const qrToken = createQrToken();
   const timestamp = Date.now();
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO assets(id,equipment_item_id,asset_code,qr_token,serial_number,state,active,created_at,updated_at) VALUES(?,?,?,?,?,'AVAILABLE',1,?,?)",
-    args: [
-      assetId,
-      c.req.param("id"),
-      parsed.data.assetCode,
-      qrToken,
-      parsed.data.serialNumber ?? null,
-      timestamp,
-      timestamp,
-    ],
+  await write(c.env, async (tx) => {
+    await tx.execute({
+      sql: "INSERT INTO assets(id,equipment_item_id,asset_code,qr_token,serial_number,state,active,created_at,updated_at) VALUES(?,?,?,?,?,'AVAILABLE',1,?,?)",
+      args: [
+        assetId,
+        c.req.param("id"),
+        parsed.data.assetCode,
+        qrToken,
+        parsed.data.serialNumber ?? null,
+        timestamp,
+        timestamp,
+      ],
+    });
+    await tx.execute({
+      sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+      args: [
+        randomId("audit"),
+        c.get("actor").id,
+        "ASSET",
+        assetId,
+        "ASSET_CREATED",
+        timestamp,
+        JSON.stringify({ assetCode: parsed.data.assetCode }),
+      ],
+    });
   });
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("audit"),
-      c.get("actor").id,
-      "ASSET",
-      assetId,
-      "ASSET_CREATED",
-      timestamp,
-      JSON.stringify({ assetCode: parsed.data.assetCode }),
-    ],
-  });
-  const origin = trustedAuthOrigin(c.env, c.req.url);
   return c.json(
     {
       id: assetId,
@@ -1141,27 +1162,29 @@ app.patch("/api/v1/board/reservations/:id/chapter", async (c) => {
   }
   const actor = c.get("actor");
   const now = Date.now();
-  await c.env.CLIENT.execute({
-    sql: "UPDATE reservations SET borrower_type=?,borrower_user_id=?,chapter_id=?,updated_at=? WHERE id=?",
-    args: [
-      chapterId ? "CHAPTER" : "PERSON",
-      chapterId ? null : reservation.requestedBy.id,
-      chapterId,
-      now,
-      reservationId,
-    ],
-  });
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("audit"),
-      actor.id,
-      "RESERVATION",
-      reservationId,
-      "RESERVATION_PROJECT_ASSIGNED",
-      now,
-      JSON.stringify({ chapterId }),
-    ],
+  await write(c.env, async (tx) => {
+    await tx.execute({
+      sql: "UPDATE reservations SET borrower_type=?,borrower_user_id=?,chapter_id=?,updated_at=? WHERE id=?",
+      args: [
+        chapterId ? "CHAPTER" : "PERSON",
+        chapterId ? null : reservation.requestedBy.id,
+        chapterId,
+        now,
+        reservationId,
+      ],
+    });
+    await tx.execute({
+      sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+      args: [
+        randomId("audit"),
+        actor.id,
+        "RESERVATION",
+        reservationId,
+        "RESERVATION_PROJECT_ASSIGNED",
+        now,
+        JSON.stringify({ chapterId }),
+      ],
+    });
   });
   return c.json(await getReservation(c.env, reservationId));
 });
@@ -1183,9 +1206,21 @@ app.post("/api/v1/board/chapters", async (c) => {
     return jsonError(c, 400, "VALIDATION", "Enter a chapter name and short code.");
   const timestamp = Date.now();
   const chapterId = randomId("chapter");
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO chapters(id,name,short_code,active,created_at,updated_at) VALUES(?,?,?,1,?,?)",
-    args: [chapterId, parsed.data.name, parsed.data.shortCode.toUpperCase(), timestamp, timestamp],
+  await write(c.env, async (tx) => {
+    await tx.execute({
+      sql: "INSERT INTO chapters(id,name,short_code,active,created_at,updated_at) VALUES(?,?,?,1,?,?)",
+      args: [
+        chapterId,
+        parsed.data.name,
+        parsed.data.shortCode.toUpperCase(),
+        timestamp,
+        timestamp,
+      ],
+    });
+    await tx.execute({
+      sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,'CHAPTER',?,'CHAPTER_CREATED',?,'{}')",
+      args: [randomId("audit"), c.get("actor").id, chapterId, timestamp],
+    });
   });
   return c.json(
     { id: chapterId, ...parsed.data, shortCode: parsed.data.shortCode.toUpperCase(), active: true },
@@ -1200,40 +1235,45 @@ app.patch("/api/v1/board/chapters/:id", async (c) => {
     .safeParse(await c.req.json().catch(() => null));
   if (!parsed.success)
     return jsonError(c, 400, "VALIDATION", "Choose whether this chapter is active.");
-  const result = await c.env.DB.update(schema.chapters)
-    .set({ active: parsed.data.active, updatedAt: Date.now() })
-    .where(eq(schema.chapters.id, c.req.param("id")));
-  if (!result.rowsAffected) return jsonError(c, 404, "NOT_FOUND", "Chapter not found.");
+  await write(c.env, async (tx) => {
+    const result = await tx.execute({
+      sql: "UPDATE chapters SET active=?,updated_at=? WHERE id=?",
+      args: [parsed.data.active ? 1 : 0, Date.now(), c.req.param("id")],
+    });
+    if (!result.rowsAffected) throw new DomainError(404, "NOT_FOUND", "Chapter not found.");
+    await tx.execute({
+      sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,'CHAPTER',?,'CHAPTER_UPDATED',?,?)",
+      args: [
+        randomId("audit"),
+        c.get("actor").id,
+        c.req.param("id"),
+        Date.now(),
+        JSON.stringify(parsed.data),
+      ],
+    });
+  });
   return c.json({ ok: true });
 });
 
 app.delete("/api/v1/board/chapters/:id", requireBoard, async (c) => {
   const id = c.req.param("id");
-  // Check if chapter has any reservations
-  const reservations = await c.env.DB.select({ id: schema.reservations.id })
-    .from(schema.reservations)
-    .where(eq(schema.reservations.chapterId, id))
-    .limit(1);
-  if (reservations.length > 0)
-    return jsonError(
-      c,
-      409,
-      "RESERVATION_CONFLICT",
-      "Cannot delete a chapter that has reservations. Deactivate it instead."
-    );
-  const result = await c.env.DB.delete(schema.chapters).where(eq(schema.chapters.id, id));
-  if (!result.rowsAffected) return jsonError(c, 404, "NOT_FOUND", "Chapter not found.");
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("audit"),
-      c.get("actor").id,
-      "CHAPTER",
-      id,
-      "CHAPTER_DELETED",
-      Date.now(),
-      "{}",
-    ],
+  await write(c.env, async (tx) => {
+    const reservations = await tx.execute({
+      sql: "SELECT id FROM reservations WHERE chapter_id=? LIMIT 1",
+      args: [id],
+    });
+    if (reservations.rows.length)
+      throw new DomainError(
+        409,
+        "RESERVATION_CONFLICT",
+        "Cannot delete a chapter that has reservations. Deactivate it instead."
+      );
+    const result = await tx.execute({ sql: "DELETE FROM chapters WHERE id=?", args: [id] });
+    if (!result.rowsAffected) throw new DomainError(404, "NOT_FOUND", "Chapter not found.");
+    await tx.execute({
+      sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,'CHAPTER',?,'CHAPTER_DELETED',?,'{}')",
+      args: [randomId("audit"), c.get("actor").id, id, Date.now()],
+    });
   });
   return c.json({ ok: true });
 });
@@ -1249,8 +1289,9 @@ app.get("/api/v1/board/users", requireSuperadmin, async (c) => {
     createdAt: schema.authUsers.createdAt,
   })
     .from(schema.authUsers)
-    .orderBy(asc(schema.authUsers.name))
-    .limit(500);
+    .orderBy(asc(schema.authUsers.name), asc(schema.authUsers.id))
+    .limit(100)
+    .offset(pagination(Number(c.req.query("offset") ?? 0)).offset);
   return c.json(users);
 });
 
@@ -1356,43 +1397,45 @@ app.put("/api/v1/board/users/:id/password", requireSuperadmin, async (c) => {
   if (!user[0]) return jsonError(c, 404, "NOT_FOUND", "Account not found.");
 
   const passwordHash = await hashPassword(parsed.data.password);
-  // Upsert password in account table
-  const acct = await c.env.CLIENT.execute({
-    sql: "SELECT id FROM account WHERE userId=? AND providerId='credential' LIMIT 1",
-    args: [targetId],
-  });
-  if (acct.rows.length > 0) {
-    await c.env.CLIENT.execute({
-      sql: "UPDATE account SET password=?,updatedAt=? WHERE userId=? AND providerId='credential'",
-      args: [passwordHash, Date.now(), targetId],
+  await write(c.env, async (tx) => {
+    // Upsert password in account table
+    const acct = await tx.execute({
+      sql: "SELECT id FROM account WHERE userId=? AND providerId='credential' LIMIT 1",
+      args: [targetId],
     });
-  } else {
-    await c.env.CLIENT.execute({
-      sql: "INSERT INTO account(id,accountId,providerId,userId,password,createdAt,updatedAt) VALUES(?,?,?,?,?,?,?)",
+    if (acct.rows.length > 0) {
+      await tx.execute({
+        sql: "UPDATE account SET password=?,updatedAt=? WHERE userId=? AND providerId='credential'",
+        args: [passwordHash, Date.now(), targetId],
+      });
+    } else {
+      await tx.execute({
+        sql: "INSERT INTO account(id,accountId,providerId,userId,password,createdAt,updatedAt) VALUES(?,?,?,?,?,?,?)",
+        args: [
+          randomId("account"),
+          targetId, // accountId must equal userId for credential provider
+          "credential",
+          targetId,
+          passwordHash,
+          Date.now(),
+          Date.now(),
+        ],
+      });
+    }
+    // Invalidate all sessions for this user
+    await tx.execute({ sql: "DELETE FROM session WHERE userId=?", args: [targetId] });
+    await tx.execute({
+      sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
       args: [
-        randomId("account"),
-        targetId, // accountId must equal userId for credential provider
-        "credential",
+        randomId("audit"),
+        c.get("actor").id,
+        "USER",
         targetId,
-        passwordHash,
+        "PASSWORD_RESET",
         Date.now(),
-        Date.now(),
+        "{}",
       ],
     });
-  }
-  // Invalidate all sessions for this user
-  await c.env.DB.delete(schema.authSessions).where(eq(schema.authSessions.userId, targetId));
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("audit"),
-      c.get("actor").id,
-      "USER",
-      targetId,
-      "PASSWORD_RESET",
-      Date.now(),
-      "{}",
-    ],
   });
   return c.json({ ok: true });
 });
@@ -1411,25 +1454,27 @@ app.patch("/api/v1/board/users/:id/role", requireSuperadmin, async (c) => {
       "RESERVATION_CONFLICT",
       "You cannot remove your own superadmin access."
     );
-  const previous = await c.env.DB.select({ role: schema.authUsers.role })
-    .from(schema.authUsers)
-    .where(eq(schema.authUsers.id, targetId))
-    .limit(1);
-  if (!previous[0]) return jsonError(c, 404, "NOT_FOUND", "Account not found.");
-  await c.env.DB.update(schema.authUsers)
-    .set({ role: parsed.data.role, updatedAt: new Date() })
-    .where(eq(schema.authUsers.id, targetId));
-  await c.env.CLIENT.execute({
-    sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
-    args: [
-      randomId("audit"),
-      c.get("actor").id,
-      "USER",
+  await write(c.env, async (tx) => {
+    const previous = await one<{ role: string }>(tx, "SELECT role FROM user WHERE id=?", [
       targetId,
-      "ROLE_CHANGED",
-      Date.now(),
-      JSON.stringify({ before: previous[0].role, after: parsed.data.role }),
-    ],
+    ]);
+    if (!previous) throw new DomainError(404, "NOT_FOUND", "Account not found.");
+    await tx.execute({
+      sql: "UPDATE user SET role=?,updatedAt=? WHERE id=?",
+      args: [parsed.data.role, Date.now(), targetId],
+    });
+    await tx.execute({
+      sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,?,?,?,?,?)",
+      args: [
+        randomId("audit"),
+        c.get("actor").id,
+        "USER",
+        targetId,
+        "ROLE_CHANGED",
+        Date.now(),
+        JSON.stringify({ before: previous.role, after: parsed.data.role }),
+      ],
+    });
   });
   return c.json({ ok: true, role: parsed.data.role });
 });
@@ -1536,19 +1581,23 @@ app.delete("/api/v1/board/users/:id", requireSuperadmin, async (c) => {
       // 1. Delete notifications for this user
       await tx.execute({ sql: "DELETE FROM notifications WHERE user_id=?", args: [targetId] });
 
-      // 2. Anonymize/unlink board actions on other users' reservations
-      await tx.execute({
-        sql: "UPDATE reservations SET approved_by_user_id=NULL WHERE approved_by_user_id=?",
-        args: [targetId],
+      const staffHistory = await tx.execute({
+        sql: "SELECT 1 FROM reservations WHERE approved_by_user_id=? UNION ALL SELECT 1 FROM reservation_assets WHERE checked_out_by_user_id=? OR checked_in_by_user_id=? LIMIT 1",
+        args: [targetId, targetId, targetId],
       });
-      await tx.execute({
-        sql: "UPDATE reservation_assets SET checked_out_by_user_id=NULL WHERE checked_out_by_user_id=?",
-        args: [targetId],
-      });
-      await tx.execute({
-        sql: "UPDATE reservation_assets SET checked_in_by_user_id=NULL WHERE checked_in_by_user_id=?",
-        args: [targetId],
-      });
+      if (staffHistory.rows.length) {
+        await tx.execute({
+          sql: "UPDATE user SET disabled_at=?,updatedAt=? WHERE id=?",
+          args: [Date.now(), Date.now(), targetId],
+        });
+        await tx.execute({ sql: "DELETE FROM session WHERE userId=?", args: [targetId] });
+        await tx.execute({ sql: "DELETE FROM account WHERE userId=?", args: [targetId] });
+        await tx.execute({
+          sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,?,'USER',?,'USER_ACCESS_DISABLED',?,'{}')",
+          args: [randomId("audit"), c.get("actor").id, targetId, Date.now()],
+        });
+        return { ok: true, disabled: true };
+      }
 
       // 3. Delete past (completed/cancelled/rejected) reservations belonging to this user
       const userReservations = await tx.execute({
@@ -1612,7 +1661,9 @@ app.delete("/api/v1/board/users/:id", requireSuperadmin, async (c) => {
   );
 });
 
-app.get("/api/v1/board/audit", async (c) => c.json(await listBoardAudit(c.env)));
+app.get("/api/v1/board/audit", async (c) =>
+  c.json(await listBoardAudit(c.env, pagination(Number(c.req.query("offset") ?? 0))))
+);
 
 app.notFound((c) => jsonError(c, 404, "NOT_FOUND", "API endpoint not found."));
 

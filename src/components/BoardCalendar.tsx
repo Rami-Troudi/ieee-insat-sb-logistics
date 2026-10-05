@@ -6,7 +6,7 @@ import dayGridPlugin from "@fullcalendar/daygrid";
 import timeGridPlugin from "@fullcalendar/timegrid";
 import interactionPlugin from "@fullcalendar/interaction";
 import luxonPlugin from "@fullcalendar/luxon3";
-import type { Reservation } from "@/app/App";
+import type { ReservationDTO as Reservation } from "@/shared/contracts";
 import { LoadingState } from "@/components/shared/LoadingState";
 import { ErrorState } from "@/components/shared/FeedbackStates";
 import { StatusBadge, type DomainStatus } from "@/components/shared/StatusBadge";
@@ -115,7 +115,7 @@ export default function BoardCalendar() {
 
           const itemCodes = r.items
             .map((i) =>
-              `${i.quantity} units · ${i.name} ${i.assignedAssets?.map((a) => a.assetCode).join(" ") || ""}`.trim()
+              `${i.quantity}× ${i.name} ${i.assignedAssets?.map((a) => a.assetCode).join(" ") || ""}`.trim()
             )
             .join(", ");
 

@@ -55,8 +55,14 @@ test("member requests equipment, Board approves it, and the reservation appears 
   await expect(page.getByRole("heading", { name: "Scan equipment" })).toBeVisible();
   await expect(page.getByText("0/1 collected · 0/1 returned")).toBeVisible();
   await page.goto("/board/calendar");
-  await page.getByRole("button", { name: "Next week" }).click();
-  await expect(page.getByText(/1× E2E Digital Multimeter/)).toBeVisible();
+  const today = new Date();
+  const pickup = new Date(reservation.pickupAt);
+  const daysUntilMonday = (8 - today.getDay()) % 7 || 7;
+  const nextMonday = new Date(today);
+  nextMonday.setDate(today.getDate() + daysUntilMonday);
+  nextMonday.setHours(0, 0, 0, 0);
+  if (pickup >= nextMonday) await page.getByRole("button", { name: "Next week" }).click();
+  await expect(page.getByText(/Alex Member \(1× E2E Digital Multimeter/).first()).toBeVisible();
 });
 
 test("guest can sign up passwordlessly and the layout works at a narrow viewport", async ({

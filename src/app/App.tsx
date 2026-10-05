@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -9,18 +11,10 @@ import {
 } from "react";
 import { BrowserRouter, Link, useLocation, useNavigate } from "react-router-dom";
 import { DateTime } from "luxon";
-import FullCalendar from "@fullcalendar/react";
-import type { EventClickArg, EventInput } from "@fullcalendar/core";
-import dayGridPlugin from "@fullcalendar/daygrid";
-import timeGridPlugin from "@fullcalendar/timegrid";
-import interactionPlugin from "@fullcalendar/interaction";
-import luxonPlugin from "@fullcalendar/luxon3";
-import { BrowserQRCodeReader } from "@zxing/browser";
 import { QRCodeSVG } from "qrcode.react";
 import {
   Activity,
   ArrowDownToLine,
-  ArrowLeft,
   ArrowRight,
   CalendarDays,
   Check,
@@ -42,7 +36,6 @@ import {
   Eye,
   EyeOff,
   X,
-  XCircle,
 } from "lucide-react";
 
 import { DesktopSidebar } from "@/components/shared/DesktopSidebar";
@@ -59,7 +52,28 @@ import {
   AssetQrStickerModal,
   type AssetStickerData,
 } from "@/components/equipment/AssetQrStickerModal";
-import { exportQrLabels } from "@/components/equipment/exportQrLabels";
+import { readSelection, storeSelection } from "@/lib/selection-storage";
+import type { ReservationDTO } from "@/shared/contracts";
+import { api, allPages, post, patch } from "@/lib/api";
+import { fmtDay, fmtTime, titleCase } from "@/lib/format";
+const BoardCalendar = lazy(() => import("@/components/BoardCalendar"));
+const BoardScan = lazy(() => import("@/components/BoardScan"));
+async function exportQrLabels(
+  name: string,
+  assets: Array<
+    Pick<InventoryItem["assets"][number], "assetCode" | "qrUrl" | "serialNumber" | "state">
+  >
+) {
+  const preview = window.open("", "_blank");
+  if (!preview) throw new Error("Allow popups for this site to export QR labels.");
+  try {
+    const module = await import("@/components/equipment/exportQrLabels");
+    module.exportQrLabels(name, assets, preview);
+  } catch (error) {
+    preview.close();
+    throw error;
+  }
+}
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -82,27 +96,7 @@ export type User = {
   disabledAt?: number | null;
 };
 export type Item = EquipmentItem;
-export type Reservation = {
-  id: string;
-  requestedBy: { id: string; name: string; email: string };
-  borrower: { type: "PERSON" | "CHAPTER"; id: string; name: string };
-  items: Array<{
-    lineId: string;
-    equipmentItemId: string;
-    name: string;
-    quantity: number;
-    assignedAssets?: Array<{ id: string; assetCode: string; state: string }>;
-  }>;
-  pickupAt: string;
-  returnAt: string;
-  note: string | null;
-  status: string;
-  derivedStatus: string;
-  collectedCount: number;
-  returnedCount: number;
-  totalQuantity: number;
-  createdAt: string;
-};
+export type Reservation = ReservationDTO;
 export type InventoryItem = Item & {
   active: boolean;
   assets: Array<{
@@ -118,12 +112,9 @@ export type AllocationCandidate = {
   lineId: string;
   assets: Array<{ id: string; assetCode: string; serialNumber: string | null; state: string }>;
 };
-type ApiError = { error?: { message?: string; code?: string } };
 
-const fmtDay = (iso: string) => DateTime.fromISO(iso).setZone(TZ).toFormat("ccc, d LLL");
-const fmtTime = (iso: string) => DateTime.fromISO(iso).setZone(TZ).toFormat("HH:mm");
 const fmtWindow = (start: string, end: string) =>
-  `${fmtDay(start)} · ${fmtTime(start)}–${fmtTime(end)}`;
+  `${fmtDay(start)} · ${fmtTime(start)}–${DateTime.fromISO(start).setZone(TZ).toISODate() === DateTime.fromISO(end).setZone(TZ).toISODate() ? "" : fmtDay(end) + " · "}${fmtTime(end)}`;
 const dateInput = (date: DateTime) => date.setZone(TZ).toFormat("yyyy-LL-dd'T'HH:mm");
 const isoFromInput = (value: string) =>
   DateTime.fromFormat(value, "yyyy-LL-dd'T'HH:mm", { zone: TZ }).toUTC().toISO() ?? "";
@@ -132,20 +123,6 @@ const initialStart = () =>
     .setZone(TZ)
     .plus({ days: 1 })
     .set({ hour: 9, minute: 0, second: 0, millisecond: 0 });
-
-async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers = new Headers(init.headers);
-  if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-  const response = await fetch(path, { ...init, headers, credentials: "same-origin" });
-  const body = (await response.json().catch(() => ({}))) as T & ApiError;
-  if (!response.ok) throw new Error(body.error?.message ?? `Request failed (${response.status}).`);
-  return body;
-}
-const post = (body?: unknown): RequestInit => ({
-  method: "POST",
-  body: JSON.stringify(body ?? {}),
-});
-const patch = (body: unknown): RequestInit => ({ method: "PATCH", body: JSON.stringify(body) });
 
 function useNotice() {
   const [notice, setNotice] = useState("");
@@ -159,10 +136,6 @@ function useNotice() {
 
 function roleLabel(role: Role) {
   return role === "SUPERADMIN" ? "Superadmin" : role === "BOARD" ? "Board Member" : "Member";
-}
-
-function titleCase(value: string) {
-  return value.toLowerCase().replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 function generateSecurePassword(length = 16): string {
@@ -199,7 +172,7 @@ function AppFrame() {
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [cart, setCart] = useState<Record<string, number>>(() => {
     try {
-      return JSON.parse(sessionStorage.getItem("sb-item-selection") ?? "{}");
+      return readSelection(sessionStorage);
     } catch {
       return {};
     }
@@ -210,7 +183,13 @@ function AppFrame() {
       const saved = sessionStorage.getItem("sb-reservation-window");
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (parsed.start && parsed.end) return parsed.start;
+        if (
+          typeof parsed?.start === "string" &&
+          typeof parsed?.end === "string" &&
+          isoFromInput(parsed.start) &&
+          isoFromInput(parsed.end)
+        )
+          return parsed.start;
       }
     } catch {
       /* Fall back to the default reservation window. */
@@ -222,7 +201,13 @@ function AppFrame() {
       const saved = sessionStorage.getItem("sb-reservation-window");
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (parsed.start && parsed.end) return parsed.end;
+        if (
+          typeof parsed?.start === "string" &&
+          typeof parsed?.end === "string" &&
+          isoFromInput(parsed.start) &&
+          isoFromInput(parsed.end)
+        )
+          return parsed.end;
       }
     } catch {
       /* Fall back to the default reservation window. */
@@ -246,7 +231,11 @@ function AppFrame() {
   const cartCount = Object.values(cart).reduce((sum, quantity) => sum + quantity, 0);
 
   useEffect(() => {
-    sessionStorage.setItem("sb-item-selection", JSON.stringify(cart));
+    try {
+      storeSelection(sessionStorage, cart);
+    } catch {
+      /* Storage may be disabled. */
+    }
   }, [cart]);
 
   const refreshUser = useCallback(async () => {
@@ -449,13 +438,21 @@ function PageRouter(props: {
     case "/board/reservations":
       return <BoardReservations setNotice={props.setNotice} />;
     case "/board/calendar":
-      return <BoardCalendar />;
+      return (
+        <Suspense fallback={<LoadingState message="Loading calendar…" />}>
+          <BoardCalendar />
+        </Suspense>
+      );
     case "/board/inventory":
       return <BoardInventory setNotice={props.setNotice} />;
     case "/board/chapters":
       return <BoardChapters setNotice={props.setNotice} />;
     case "/board/scan":
-      return <BoardScan initialToken={params.get("token") ?? ""} setNotice={props.setNotice} />;
+      return (
+        <Suspense fallback={<LoadingState message="Loading scanner…" />}>
+          <BoardScan initialToken={params.get("token") ?? ""} setNotice={props.setNotice} />
+        </Suspense>
+      );
     case "/board/accounts":
       return props.user?.role === "SUPERADMIN" ? (
         <Accounts setNotice={props.setNotice} />
@@ -726,20 +723,36 @@ function Catalogue({
 
   const cartCount = Object.values(cart).reduce((sum, qty) => sum + qty, 0);
 
+  const [loadError, setLoadError] = useState("");
+  const [retry, setRetry] = useState(0);
   useEffect(() => {
-    if (!start || !end || Date.parse(isoFromInput(end)) <= Date.parse(isoFromInput(start))) {
+    const controller = new AbortController();
+    setLoadError("");
+    if (
+      !Number.isFinite(Date.parse(isoFromInput(start))) ||
+      !Number.isFinite(Date.parse(isoFromInput(end))) ||
+      Date.parse(isoFromInput(end)) <= Date.parse(isoFromInput(start))
+    ) {
       setItems([]);
       setLoading(false);
-      return;
+      return () => controller.abort();
     }
     setLoading(true);
     api<Item[]>(
-      `/api/v1/catalogue?pickupAt=${encodeURIComponent(isoFromInput(start))}&returnAt=${encodeURIComponent(isoFromInput(end))}`
+      `/api/v1/catalogue?pickupAt=${encodeURIComponent(isoFromInput(start))}&returnAt=${encodeURIComponent(isoFromInput(end))}`,
+      { signal: controller.signal }
     )
-      .then(setItems)
-      .catch((error: Error) => setNotice(error.message))
-      .finally(() => setLoading(false));
-  }, [start, end, setNotice]);
+      .then((items) => {
+        if (!controller.signal.aborted) setItems(items);
+      })
+      .catch((error: Error) => {
+        if (!controller.signal.aborted) setLoadError(error.message);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [start, end, retry]);
 
   const categories = useMemo(() => {
     return Array.from(new Set(items.map((item) => item.category)));
@@ -877,6 +890,7 @@ function Catalogue({
         </div>
       </div>
 
+      {loadError && <ErrorState description={loadError} onRetry={() => setRetry((r) => r + 1)} />}
       {/* Equipment Grid: Section 15 */}
       {loading ? (
         <LoadingState message="Checking equipment availability for your dates…" />
@@ -963,13 +977,31 @@ function SelectionPage({
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
 
+  const [loadError, setLoadError] = useState("");
+  const [retry, setRetry] = useState(0);
   useEffect(() => {
+    const controller = new AbortController();
+    setLoadError("");
+    if (
+      !Number.isFinite(Date.parse(isoFromInput(start))) ||
+      !Number.isFinite(Date.parse(isoFromInput(end))) ||
+      Date.parse(isoFromInput(end)) <= Date.parse(isoFromInput(start))
+    ) {
+      setItems([]);
+      return () => controller.abort();
+    }
     api<Item[]>(
-      `/api/v1/catalogue?pickupAt=${encodeURIComponent(isoFromInput(start))}&returnAt=${encodeURIComponent(isoFromInput(end))}`
+      `/api/v1/catalogue?pickupAt=${encodeURIComponent(isoFromInput(start))}&returnAt=${encodeURIComponent(isoFromInput(end))}`,
+      { signal: controller.signal }
     )
-      .then(setItems)
-      .catch((e: Error) => setNotice(e.message));
-  }, [start, end, setNotice]);
+      .then((items) => {
+        if (!controller.signal.aborted) setItems(items);
+      })
+      .catch((e: Error) => {
+        if (!controller.signal.aborted) setLoadError(e.message);
+      });
+    return () => controller.abort();
+  }, [start, end, retry]);
 
   const cartItems = items.filter((item) => cart[item.id]);
 
@@ -1001,13 +1033,14 @@ function SelectionPage({
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-6">
+      {loadError && <ErrorState description={loadError} onRetry={() => setRetry((r) => r + 1)} />}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-foreground">
             Selected items
           </h1>
           <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">
-            The Board confirms individual asset codes before your reservation is approved.
+            The Board approves quantities. Individual material labels are recorded at pickup.
           </p>
         </div>
         <Button asChild variant="outline" size="sm" className="gap-1.5">
@@ -1158,7 +1191,7 @@ function MyReservations({ user }: { user: User }) {
   );
 
   const refresh = () =>
-    api<Reservation[]>("/api/v1/reservations")
+    allPages<Reservation>("/api/v1/reservations")
       .then(setReservations)
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
@@ -1383,6 +1416,8 @@ function MyReservations({ user }: { user: User }) {
 }
 
 function BoardDashboard() {
+  const [loadError, setLoadError] = useState("");
+  const [retry, setRetry] = useState(0);
   const [data, setData] = useState<{
     pickupsToday: number;
     returnsToday: number;
@@ -1395,11 +1430,12 @@ function BoardDashboard() {
   useEffect(() => {
     api<typeof data>("/api/v1/board/dashboard")
       .then(setData)
-      .catch(() => setData(null));
-  }, []);
+      .catch((error: Error) => setLoadError(error.message));
+  }, [retry]);
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-6">
+      {loadError && <ErrorState description={loadError} onRetry={() => setRetry((r) => r + 1)} />}
       <PageHeading
         eyebrow="BOARD · OVERVIEW"
         title="Logistics Dashboard"
@@ -1547,6 +1583,8 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
   const [chapters, setChapters] = useState<
     Array<{ id: string; name: string; shortCode: string; active: boolean }>
   >([]);
+  const [loadError, setLoadError] = useState("");
+  const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("ALL");
   const [candidates, setCandidates] = useState<AllocationCandidate[]>([]);
@@ -1589,11 +1627,14 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
 
   const refresh = useCallback(
     () =>
-      api<Reservation[]>("/api/v1/board/reservations")
-        .then(setReservations)
-        .catch((e: Error) => setNotice(e.message))
+      allPages<Reservation>("/api/v1/board/reservations")
+        .then((rows) => {
+          setReservations(rows);
+          setLoadError("");
+        })
+        .catch((e: Error) => setLoadError(e.message))
         .finally(() => setLoading(false)),
-    [setNotice]
+    []
   );
 
   const handleForceDelete = async () => {
@@ -1614,7 +1655,10 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
   useEffect(() => {
     void refresh();
     api<typeof chapters>("/api/v1/board/chapters")
-      .then(setChapters)
+      .then((data) => {
+        setChapters(data);
+        setLoadError("");
+      })
       .catch((e: Error) => setNotice(e.message));
   }, [refresh, setNotice]);
 
@@ -1662,7 +1706,9 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
     }
   };
 
-  const shown = reservations.filter((r) => filter === "ALL" || r.status === filter);
+  const filtered = reservations.filter((r) => filter === "ALL" || r.status === filter);
+  const currentPage = Math.min(page, Math.max(0, Math.ceil(filtered.length / 50) - 1));
+  const shown = filtered.slice(currentPage * 50, (currentPage + 1) * 50);
   const confirmHandover = async () => {
     if (!handoverTarget || handingOver) return;
     setHandingOver(true);
@@ -1707,7 +1753,10 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
           <button
             key={status}
             type="button"
-            onClick={() => setFilter(status)}
+            onClick={() => {
+              setFilter(status);
+              setPage(0);
+            }}
             className={cn(
               "min-h-10 px-3.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all flex items-center gap-2 border active:scale-95 focus-visible:ring-2 focus-visible:ring-primary",
               filter === status
@@ -1730,6 +1779,23 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
         ))}
       </div>
 
+      {loadError && <ErrorState description={loadError} onRetry={() => void refresh()} />}
+      <div className="flex items-center gap-3">
+        <Button variant="outline" disabled={!currentPage} onClick={() => setPage(currentPage - 1)}>
+          Previous page
+        </Button>
+        <span>
+          Page {currentPage + 1} of {Math.max(1, Math.ceil(filtered.length / 50))} ·{" "}
+          {filtered.length} reservations
+        </span>
+        <Button
+          variant="outline"
+          disabled={(currentPage + 1) * 50 >= filtered.length}
+          onClick={() => setPage(currentPage + 1)}
+        >
+          Next page
+        </Button>
+      </div>
       {loading ? (
         <LoadingState message="Loading reservation requests…" />
       ) : shown.length ? (
@@ -2083,192 +2149,9 @@ function BoardReservations({ setNotice }: { setNotice: (message: string) => void
   );
 }
 
-function BoardCalendar() {
-  const [events, setEvents] = useState<EventInput[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [selectedEvent, setSelectedEvent] = useState<EventInput | null>(null);
-
-  useEffect(() => {
-    api<Reservation[]>("/api/v1/board/reservations")
-      .then((reservations) => {
-        // Calendar Event State Colors:
-        // APPROVED → IEEE Blue (#00629B)
-        // BORROWED / ACTIVE → INSAT Violet (#981D97)
-        // RETURNING / due today → IEEE Cyan (#00B5E2)
-        // OVERDUE → Red (#BA0C2F)
-        // COMPLETED → Slate (#506680)
-        const todayStr = DateTime.now().setZone(TZ).toISODate();
-        const calEvents: EventInput[] = reservations
-          .filter(
-            (r) =>
-              ["APPROVED", "COMPLETED", "ACTIVE", "BORROWED"].includes(r.status) ||
-              r.derivedStatus === "OVERDUE"
-          )
-          .flatMap((r) => {
-            const isCompleted = r.status === "COMPLETED" || r.derivedStatus === "RETURNED";
-            const isOverdue = r.derivedStatus === "OVERDUE";
-            const isBorrowed =
-              !isCompleted &&
-              (["ACTIVE", "BORROWED"].includes(r.status) || r.collectedCount > r.returnedCount);
-            const isReturningToday =
-              !isCompleted &&
-              !isOverdue &&
-              DateTime.fromISO(r.returnAt).setZone(TZ).toISODate() === todayStr;
-
-            let bgColor = "#00629B"; // default IEEE Blue
-            if (isCompleted)
-              bgColor = "#506680"; // Completed slate
-            else if (isOverdue)
-              bgColor = "#BA0C2F"; // Red
-            else if (isReturningToday)
-              bgColor = "#00B5E2"; // IEEE Cyan
-            else if (isBorrowed)
-              bgColor = "#981D97"; // INSAT Violet
-            else bgColor = "#00629B"; // IEEE Blue
-
-            return r.items.map((item) => {
-              const assignedCodes = (item.assignedAssets || []).map((a) => a.assetCode).join(", ");
-              const itemLabel = `${item.quantity}× ${item.name}`;
-              const title = `${itemLabel} · ${r.borrower.name}${assignedCodes ? ` (${assignedCodes})` : ""}`;
-              return {
-                id: `${r.id}-${item.lineId}`,
-                title,
-                start: r.pickupAt,
-                end: r.returnAt,
-                backgroundColor: bgColor,
-                borderColor: "transparent",
-                textColor: "#FFFFFF",
-                extendedProps: {
-                  reservation: r,
-                  borrower: r.borrower.name,
-                  itemName: item.name,
-                  quantity: item.quantity,
-                  assignedCodes,
-                  collectedCount: r.collectedCount,
-                  returnedCount: r.returnedCount,
-                  status: r.derivedStatus,
-                },
-              };
-            });
-          });
-        setEvents(calEvents);
-      })
-      .catch(() => setEvents([]))
-      .finally(() => setLoading(false));
-  }, []);
-
-  const handleEventClick = (info: EventClickArg) => {
-    setSelectedEvent(info.event.extendedProps);
-  };
-
-  return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-6">
-      <PageHeading
-        eyebrow="BOARD · SCHEDULE"
-        title="Reservation Calendar"
-        description="Temporal view of all approved, active, and completed equipment loans."
-      />
-
-      {/* Calendar Legend: Section 20 */}
-      <div className="flex flex-wrap items-center gap-3 text-xs">
-        <span className="text-muted-foreground font-medium">Event Legend:</span>
-        <div className="flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded-full bg-[#00629B]" />
-          <span>Approved</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded-full bg-[#981D97]" />
-          <span>Borrowed</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded-full bg-[#00B5E2]" />
-          <span>Due Today</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded-full bg-[#BA0C2F]" />
-          <span>Overdue</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded-full bg-[#506680]" />
-          <span>Completed</span>
-        </div>
-      </div>
-
-      <div className="p-4 bg-card border border-border rounded-xl shadow-xs">
-        {loading ? (
-          <LoadingState message="Loading calendar schedule…" />
-        ) : (
-          <FullCalendar
-            plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin, luxonPlugin]}
-            initialView="timeGridWeek"
-            firstDay={1}
-            timeZone={TZ}
-            headerToolbar={{
-              left: "prev,next today",
-              center: "title",
-              right: "dayGridMonth,timeGridWeek,timeGridDay",
-            }}
-            events={events}
-            eventClick={handleEventClick}
-            height="auto"
-          />
-        )}
-      </div>
-
-      {/* Event Details Dialog */}
-      <Dialog open={Boolean(selectedEvent)} onOpenChange={() => setSelectedEvent(null)}>
-        <DialogContent className="max-w-md p-6 bg-card border-border sm:rounded-2xl space-y-3">
-          <DialogHeader>
-            <DialogTitle>{selectedEvent?.borrower}</DialogTitle>
-            <DialogDescription>Reservation Schedule Details</DialogDescription>
-          </DialogHeader>
-          {selectedEvent && (
-            <div className="space-y-3 text-xs text-foreground">
-              <div>
-                <span className="text-muted-foreground block font-medium">Status</span>
-                <StatusBadge status={selectedEvent.status as DomainStatus} className="mt-1" />
-              </div>
-              <div>
-                <span className="text-muted-foreground block font-medium">
-                  Equipment & Quantity
-                </span>
-                <p className="font-semibold text-sm mt-0.5">
-                  {selectedEvent.quantity}× {selectedEvent.itemName}
-                </p>
-                {selectedEvent.assignedCodes && (
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    Physical units: {selectedEvent.assignedCodes}
-                  </p>
-                )}
-              </div>
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <div>
-                  <span className="text-muted-foreground block font-medium">Collected</span>
-                  <p className="font-semibold mt-0.5">{selectedEvent.collectedCount} units</p>
-                </div>
-                <div>
-                  <span className="text-muted-foreground block font-medium">Returned</span>
-                  <p className="font-semibold mt-0.5">{selectedEvent.returnedCount} units</p>
-                </div>
-              </div>
-              <div>
-                <span className="text-muted-foreground block font-medium">Window</span>
-                <p className="mt-0.5">
-                  {fmtWindow(
-                    selectedEvent.reservation.pickupAt,
-                    selectedEvent.reservation.returnAt
-                  )}
-                </p>
-              </div>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
-
 function BoardInventory({ setNotice }: { setNotice: (message: string) => void }) {
+  const [loadError, setLoadError] = useState("");
+  const [retry, setRetry] = useState(0);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [name, setName] = useState("");
@@ -2289,15 +2172,18 @@ function BoardInventory({ setNotice }: { setNotice: (message: string) => void })
   const refresh = useCallback(
     () =>
       api<InventoryItem[]>("/api/v1/board/inventory")
-        .then(setInventory)
-        .catch((e: Error) => setNotice(e.message))
+        .then((data) => {
+          setInventory(data);
+          setLoadError("");
+        })
+        .catch((error: Error) => setLoadError(error.message))
         .finally(() => setLoading(false)),
-    [setNotice]
+    []
   );
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, [refresh, retry]);
 
   const createEquipment = async (event: FormEvent) => {
     event.preventDefault();
@@ -2360,6 +2246,7 @@ function BoardInventory({ setNotice }: { setNotice: (message: string) => void })
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-6">
+      {loadError && <ErrorState description={loadError} onRetry={() => setRetry((r) => r + 1)} />}
       <PageHeading
         eyebrow="BOARD · INVENTORY"
         title="Equipment Inventory"
@@ -2370,7 +2257,7 @@ function BoardInventory({ setNotice }: { setNotice: (message: string) => void })
               variant="outline"
               size="sm"
               disabled={loading || inventory.length === 0}
-              onClick={() => {
+              onClick={async () => {
                 try {
                   const allAssets = inventory.flatMap((i) =>
                     i.assets.map((a) => ({
@@ -2380,7 +2267,7 @@ function BoardInventory({ setNotice }: { setNotice: (message: string) => void })
                       state: a.state,
                     }))
                   );
-                  exportQrLabels("Equipment", allAssets);
+                  await exportQrLabels("Equipment", allAssets);
                 } catch (e) {
                   setNotice(e instanceof Error ? e.message : "Failed to export QR codes.");
                 }
@@ -2465,6 +2352,22 @@ function BoardInventory({ setNotice }: { setNotice: (message: string) => void })
                     </div>
                     <div className="text-[10px] text-muted-foreground">Available</div>
                   </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={!item.assets.length}
+                    onClick={async () => {
+                      try {
+                        await exportQrLabels(item.name, item.assets);
+                      } catch (error) {
+                        setNotice(
+                          error instanceof Error ? error.message : "Could not export labels."
+                        );
+                      }
+                    }}
+                  >
+                    Export {item.name} QR codes
+                  </Button>
                   <Button
                     variant="outline"
                     size="sm"
@@ -2705,436 +2608,9 @@ function BoardInventory({ setNotice }: { setNotice: (message: string) => void })
 }
 
 // Section 21, 22, 23: Dedicated QR Scanner Implementation
-function BoardScan({
-  initialToken,
-  setNotice,
-}: {
-  initialToken: string;
-  setNotice: (message: string) => void;
-}) {
-  const [token, setToken] = useState(initialToken);
-  const [reservation, setReservation] = useState<Reservation | null>(null);
-  const openReservation = useCallback(async (id: string) => {
-    const detail = await api<Reservation>(`/api/v1/board/reservations/${encodeURIComponent(id)}`);
-    if (!["APPROVED", "COMPLETED", "CANCELLED"].includes(detail.status))
-      throw new Error("This reservation has not been approved.");
-    setReservation(detail);
-  }, []);
-  useEffect(() => {
-    const id = new URLSearchParams(window.location.search).get("res");
-    if (id) void openReservation(id).catch((e: Error) => setNotice(e.message));
-  }, [openReservation, setNotice]);
-  const [busy, setBusy] = useState(false);
-  const [cameraActive, setCameraActive] = useState(false);
-  const [scanError, setScanError] = useState<{ title: string; message: string } | null>(null);
-  const [result, setResult] = useState<{
-    operation: string;
-    assetName: string;
-    assetCode: string;
-    borrowerName?: string;
-    returnAt?: string;
-  } | null>(null);
-  const [selectionPrompt, setSelectionPrompt] = useState<{
-    qrToken: string;
-    assetName: string;
-    assetCode: string;
-    reservations: Array<{
-      id: string;
-      borrowerName: string;
-      chapterName?: string | null;
-      pickupAt: string;
-      returnAt: string;
-      quantity: number;
-      uncollectedCount: number;
-    }>;
-  } | null>(null);
-
-  const video = useRef<HTMLVideoElement>(null);
-  const controls = useRef<{ stop: () => void } | null>(null);
-  const reader = useRef<BrowserQRCodeReader | null>(null);
-  const isScanningRef = useRef(false);
-  const lastScannedRef = useRef<{ code: string; time: number } | null>(null);
-  const selectionPromptRef = useRef(selectionPrompt);
-  selectionPromptRef.current = selectionPrompt;
-
-  const stop = () => {
-    controls.current?.stop();
-    controls.current = null;
-    isScanningRef.current = false;
-    setCameraActive(false);
-  };
-  useEffect(() => () => stop(), []);
-
-  const executeScan = async (rawCode: string, explicitReservationId?: string) => {
-    setBusy(true);
-    setResult(null);
-    setScanError(null);
-    const value = rawCode.match(/[a-f0-9]{64}/i)?.[0] ?? rawCode.trim();
-    try {
-      let reservationId: string | null = null;
-      try {
-        reservationId = new URL(rawCode.trim(), window.location.origin).searchParams.get("res");
-      } catch {
-        /* A raw material token is also accepted. */
-      }
-      if (reservationId) {
-        await openReservation(reservationId);
-        setToken("");
-        setNotice("Reservation opened. Scan equipment to record borrow or return.");
-        setTimeout(() => {
-          isScanningRef.current = false;
-        }, 1500);
-        return;
-      }
-      const targetReservationId = explicitReservationId ?? reservation?.id;
-      const scanned = await api<
-        | {
-            operation: string;
-            assetName: string;
-            assetCode: string;
-            borrowerName?: string;
-            returnAt?: string;
-            code?: undefined;
-          }
-        | {
-            code: "RESERVATION_SELECTION_REQUIRED";
-            assetName: string;
-            assetCode: string;
-            reservations: Array<{
-              id: string;
-              borrowerName: string;
-              chapterName?: string | null;
-              pickupAt: string;
-              returnAt: string;
-              quantity: number;
-              uncollectedCount: number;
-            }>;
-            operation?: undefined;
-          }
-      >("/api/v1/board/scan", {
-        ...post({
-          qrToken: value,
-          ...(targetReservationId ? { reservationId: targetReservationId } : {}),
-        }),
-        headers: { "Idempotency-Key": crypto.randomUUID() },
-      });
-
-      if (scanned && scanned.code === "RESERVATION_SELECTION_REQUIRED") {
-        setSelectionPrompt({
-          qrToken: value,
-          assetName: scanned.assetName,
-          assetCode: scanned.assetCode,
-          reservations: scanned.reservations,
-        });
-        return;
-      }
-
-      setResult(scanned);
-      setToken("");
-      if (reservation)
-        setReservation(await api<Reservation>(`/api/v1/board/reservations/${reservation.id}`));
-      setNotice(
-        scanned?.operation === "RETURNED"
-          ? `${scanned.assetName} #${scanned.assetCode} returned to the desk.`
-          : `${scanned.assetName} #${scanned.assetCode} checked out to ${scanned.borrowerName || "borrower"}.`
-      );
-      setTimeout(() => {
-        isScanningRef.current = false;
-      }, 1500);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Scan could not be processed.";
-      setScanError({
-        title: msg.includes("cooldown") ? "Scan cooldown active" : "Handover rejected",
-        message: msg,
-      });
-      setTimeout(() => {
-        isScanningRef.current = false;
-      }, 2000);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const beginCamera = async () => {
-    if (!video.current) return;
-    try {
-      reader.current ??= new BrowserQRCodeReader();
-      controls.current = await reader.current.decodeFromVideoDevice(
-        undefined,
-        video.current,
-        (decoded) => {
-          if (!decoded) return;
-          if (isScanningRef.current || selectionPromptRef.current) return;
-
-          const text = decoded.getText();
-          const matched = text.match(/(?:^|\/)([a-f0-9]{64})(?:\?.*)?$/i);
-          const code = matched?.[1] ?? text;
-
-          const now = Date.now();
-          if (
-            lastScannedRef.current &&
-            lastScannedRef.current.code === code &&
-            now - lastScannedRef.current.time < 3000
-          ) {
-            return;
-          }
-
-          isScanningRef.current = true;
-          lastScannedRef.current = { code, time: now };
-          setToken(code);
-          void executeScan(code);
-        }
-      );
-      setCameraActive(true);
-    } catch (e) {
-      setNotice(
-        e instanceof Error ? e.message : "Camera is unavailable. Use manual token entry below."
-      );
-    }
-  };
-
-  const scan = async (event?: FormEvent) => {
-    event?.preventDefault();
-    if (!token.trim()) return;
-    await executeScan(token);
-  };
-
-  return (
-    <div className="max-w-2xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-6">
-      {/* Top Header */}
-      <div className="flex items-center justify-between pb-4 border-b border-border/70">
-        <div>
-          <div className="text-[11px] font-bold uppercase tracking-wider text-primary mb-1">
-            BOARD · HANDOVER
-          </div>
-          <h1 className="text-2xl font-bold tracking-tight text-foreground">Scan equipment</h1>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Scan an equipment QR to record its checkout or return.
-          </p>
-        </div>
-        <Button asChild variant="outline" size="sm" className="gap-1.5">
-          <Link to="/board">
-            <ArrowLeft className="w-4 h-4" />
-            <span>Dashboard</span>
-          </Link>
-        </Button>
-      </div>
-
-      {/* Section 21: Scanner Visual Identity (Base Navy #002855, Viewfinder Cyan #00B5E2) */}
-      {reservation && (
-        <section className="rounded-xl border border-border bg-card p-4 space-y-3">
-          <h2 className="font-semibold">
-            {reservation.borrower.name} · {titleCase(reservation.derivedStatus)}
-          </h2>
-          <p className="text-sm">
-            {reservation.collectedCount}/{reservation.totalQuantity} collected ·{" "}
-            {reservation.returnedCount}/{reservation.totalQuantity} returned
-          </p>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={busy}
-              onClick={() => setReservation(null)}
-            >
-              Close reservation
-            </Button>
-          </div>
-          <ul className="text-sm space-y-1">
-            {reservation.items.map((item) => (
-              <li key={item.lineId}>
-                {item.quantity} × {item.name} ·{" "}
-                {
-                  (item.assignedAssets ?? []).filter((asset) =>
-                    ["BORROWED", "RETURNED"].includes(asset.state)
-                  ).length
-                }{" "}
-                collected
-              </li>
-            ))}
-            {reservation.items.flatMap((item) =>
-              (item.assignedAssets ?? []).map((asset) => (
-                <li key={asset.id}>
-                  {item.name} · {asset.assetCode} · {titleCase(asset.state)}
-                </li>
-              ))
-            )}
-          </ul>
-          <p className="text-xs text-muted-foreground">
-            Scan equipment QR to record checkout or return. All materials must be returned before
-            the reservation is completed.
-          </p>
-        </section>
-      )}
-      <div className="rounded-2xl bg-[#002855] text-white p-6 shadow-elevation space-y-5 border border-[#003B7A]">
-        {/* Camera Viewport with Dominant Viewfinder */}
-        <div className="relative aspect-video w-full rounded-xl bg-black/80 overflow-hidden flex items-center justify-center border-2 border-[#00B5E2]/40">
-          <video
-            ref={video}
-            muted
-            playsInline
-            className="w-full h-full object-cover"
-            aria-label="QR scanner preview"
-          />
-
-          {/* Cyan Scanner Frame Reticle */}
-          <div className="absolute inset-8 sm:inset-12 pointer-events-none flex flex-col justify-between">
-            <div className="flex justify-between">
-              <span className="w-6 h-6 border-t-2 border-l-2 border-[#00B5E2]" />
-              <span className="w-6 h-6 border-t-2 border-r-2 border-[#00B5E2]" />
-            </div>
-            {!cameraActive && (
-              <div className="text-center space-y-1">
-                <QrCode className="w-10 h-10 text-[#00B5E2] mx-auto animate-pulse" />
-                <p className="text-xs text-white/90 font-medium">Keep QR code inside frame</p>
-              </div>
-            )}
-            <div className="flex justify-between">
-              <span className="w-6 h-6 border-b-2 border-l-2 border-[#00B5E2]" />
-              <span className="w-6 h-6 border-b-2 border-r-2 border-[#00B5E2]" />
-            </div>
-          </div>
-        </div>
-
-        {/* Camera Controls */}
-        <div className="flex items-center justify-center gap-3">
-          <Button
-            variant="scanner"
-            size="sm"
-            onClick={cameraActive ? stop : beginCamera}
-            className="gap-2 px-5 min-h-[44px]"
-          >
-            <QrCode className="w-4 h-4" />
-            <span>{cameraActive ? "Stop Camera" : "Start Camera"}</span>
-          </Button>
-        </div>
-
-        {/* Manual Token Fallback */}
-        <form onSubmit={scan} className="flex gap-2 pt-2 border-t border-white/15">
-          <Input
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            placeholder="Paste reservation QR URL or material QR token..."
-            className="font-mono text-xs flex-1 bg-white/10 text-white placeholder:text-white/50 border-white/20 focus-visible:ring-[#00B5E2]"
-          />
-          <Button
-            type="submit"
-            variant="scanner"
-            size="sm"
-            disabled={busy || !token.trim()}
-            className="shrink-0"
-          >
-            {busy ? "Processing…" : "Record Handover"}
-          </Button>
-        </form>
-
-        {/* Section 22: Scanner Success State */}
-        {result && (
-          <div className="p-4 rounded-xl border border-emerald-400/40 bg-emerald-950/80 text-white space-y-2 animate-in fade-in duration-200 shadow-sm">
-            <div className="flex items-center gap-2 font-bold text-sm text-emerald-300">
-              <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
-              <span>✓ {result.operation === "RETURNED" ? "Returned" : "Checked out"}</span>
-            </div>
-            <div className="text-xs space-y-0.5 pl-7">
-              <p className="font-semibold text-white">
-                {result.assetName} #{result.assetCode}
-              </p>
-              {result.operation === "RETURNED" ? (
-                <p className="text-emerald-300">is available again</p>
-              ) : (
-                <>
-                  {result.borrowerName && <p className="text-white/80">{result.borrowerName}</p>}
-                  {result.returnAt && (
-                    <p className="text-emerald-300">
-                      Return: {fmtDay(result.returnAt)} · {fmtTime(result.returnAt)}
-                    </p>
-                  )}
-                </>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Section 23: Reusable Scanner Error State */}
-        {scanError && (
-          <div className="p-4 rounded-xl border border-rose-400/40 bg-rose-950/80 text-white space-y-2 animate-in fade-in duration-200 shadow-sm">
-            <div className="flex items-center gap-2 font-bold text-sm text-rose-300">
-              <XCircle className="w-5 h-5 text-rose-400 shrink-0" />
-              <span>{scanError.title}</span>
-            </div>
-            <p className="text-xs text-white/90 pl-7">{scanError.message}</p>
-          </div>
-        )}
-      </div>
-
-      {/* Disambiguation Dialog when multiple reservations match */}
-      <Dialog
-        open={Boolean(selectionPrompt)}
-        onOpenChange={(open) => {
-          if (!open) {
-            setSelectionPrompt(null);
-            setTimeout(() => {
-              isScanningRef.current = false;
-            }, 500);
-          }
-        }}
-      >
-        <DialogContent className="max-w-md p-6 bg-card border-border sm:rounded-2xl space-y-4">
-          <DialogHeader>
-            <DialogTitle className="text-base font-bold">Select Eligible Reservation</DialogTitle>
-            <DialogDescription className="text-xs">
-              Multiple approved reservations qualify for {selectionPrompt?.assetName} #
-              {selectionPrompt?.assetCode}. Select which reservation to allocate this asset to:
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2">
-            {selectionPrompt?.reservations.map((r) => (
-              <button
-                key={r.id}
-                type="button"
-                onClick={() => {
-                  const pendingToken = selectionPrompt.qrToken;
-                  setSelectionPrompt(null);
-                  void executeScan(pendingToken, r.id);
-                }}
-                className="w-full text-left p-3 rounded-xl border border-border hover:border-primary/50 hover:bg-surface-subtle transition-all space-y-1"
-              >
-                <div className="flex items-center justify-between font-semibold text-xs text-foreground">
-                  <span>
-                    {r.chapterName ? `${r.chapterName} — ` : ""}
-                    {r.borrowerName}
-                  </span>
-                  <span className="text-[11px] text-primary">
-                    {r.uncollectedCount} {r.uncollectedCount === 1 ? "unit" : "units"} remaining
-                  </span>
-                </div>
-                <div className="text-[11px] text-muted-foreground">
-                  Return {fmtTime(r.returnAt)}
-                </div>
-              </button>
-            ))}
-          </div>
-          <div className="flex justify-end pt-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setSelectionPrompt(null);
-                setTimeout(() => {
-                  isScanningRef.current = false;
-                }, 500);
-              }}
-            >
-              Cancel
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
-
 function BoardChapters({ setNotice }: { setNotice: (message: string) => void }) {
+  const [loadError, setLoadError] = useState("");
+  const [retry, setRetry] = useState(0);
   const [chapters, setChapters] = useState<
     Array<{ id: string; name: string; shortCode: string; active: boolean }>
   >([]);
@@ -3146,14 +2622,17 @@ function BoardChapters({ setNotice }: { setNotice: (message: string) => void }) 
 
   const refresh = useCallback(() => {
     return api<typeof chapters>("/api/v1/board/chapters")
-      .then(setChapters)
-      .catch(() => setChapters([]))
+      .then((data) => {
+        setChapters(data);
+        setLoadError("");
+      })
+      .catch((error: Error) => setLoadError(error.message))
       .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, [refresh, retry]);
 
   const addChapter = async (e: FormEvent) => {
     e.preventDefault();
@@ -3180,6 +2659,7 @@ function BoardChapters({ setNotice }: { setNotice: (message: string) => void }) 
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-6">
+      {loadError && <ErrorState description={loadError} onRetry={() => setRetry((r) => r + 1)} />}
       <PageHeading
         eyebrow="BOARD · CHAPTERS"
         title="Chapter Borrowers"
@@ -3309,6 +2789,8 @@ function BoardChapters({ setNotice }: { setNotice: (message: string) => void }) 
 }
 
 function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
+  const [loadError, setLoadError] = useState("");
+  const [retry, setRetry] = useState(0);
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -3342,14 +2824,17 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
   const [deleteUserBusy, setDeleteUserBusy] = useState(false);
 
   const refresh = () =>
-    api<User[]>("/api/v1/board/users")
-      .then(setUsers)
-      .catch(() => setUsers([]))
+    allPages<User>("/api/v1/board/users")
+      .then((data) => {
+        setUsers(data);
+        setLoadError("");
+      })
+      .catch((error: Error) => setLoadError(error.message))
       .finally(() => setLoading(false));
 
   useEffect(() => {
     void refresh();
-  }, []);
+  }, [retry]);
 
   const openAddModal = () => {
     setNewName("");
@@ -3445,6 +2930,7 @@ function Accounts({ setNotice }: { setNotice: (message: string) => void }) {
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-6">
+      {loadError && <ErrorState description={loadError} onRetry={() => setRetry((r) => r + 1)} />}
       <PageHeading
         eyebrow="SUPERADMIN · SECURITY"
         title="User Accounts & Roles"
@@ -3902,13 +3388,17 @@ function AuditLog() {
       actorName: string;
     }>
   >([]);
+  const [retry, setRetry] = useState(0);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    api<typeof events>("/api/v1/board/audit")
-      .then(setEvents)
+    allPages<(typeof events)[number]>("/api/v1/board/audit")
+      .then((rows) => {
+        setEvents(rows);
+        setError("");
+      })
       .catch((e: Error) => setError(e.message));
-  }, []);
+  }, [retry]);
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-6">
@@ -3919,7 +3409,11 @@ function AuditLog() {
       />
 
       {error ? (
-        <ErrorState title="Could not load audit log" description={error} />
+        <ErrorState
+          title="Could not load audit log"
+          description={error}
+          onRetry={() => setRetry((r) => r + 1)}
+        />
       ) : events.length ? (
         <div className="rounded-xl border border-border bg-card overflow-hidden shadow-xs divide-y divide-border/60">
           {events.map((event) => (
