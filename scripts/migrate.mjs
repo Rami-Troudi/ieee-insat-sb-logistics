@@ -1,3 +1,4 @@
+import { migrationPreflight } from "./migration-preflight.mjs";
 import { createClient } from "@libsql/client";
 import { readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -29,6 +30,7 @@ try {
       args: [name],
     });
     if (existing.rows.length) continue;
+    await migrationPreflight(client);
     const sql = await readFile(resolve(directory, name), "utf8");
     const transaction = await client.transaction("write");
     try {

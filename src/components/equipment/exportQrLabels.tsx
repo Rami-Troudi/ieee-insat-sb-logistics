@@ -21,9 +21,13 @@ const escapeHtml = (value: string) =>
       })[character]!
   );
 
-export function exportQrLabels(equipmentName: string, assets: LabelAsset[]) {
+export function exportQrLabels(
+  equipmentName: string,
+  assets: LabelAsset[],
+  existingPreview?: Window
+) {
   if (!assets.length) throw new Error("This equipment type has no material labels to export.");
-  const preview = window.open("", "_blank");
+  const preview = existingPreview ?? window.open("", "_blank");
   if (!preview) throw new Error("Allow popups for this site to export QR labels.");
   const labels = assets
     .map((asset) => {

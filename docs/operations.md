@@ -23,9 +23,15 @@ The maintenance endpoint `GET /api/cron/return-reminders` cancels uncollected re
 
 **Production setup:** schedule this endpoint every minute. The checked-in `vercel.json` runs every minute and requires a Vercel plan supporting that frequency. For a Hobby deployment, remove the Vercel cron entry and configure an external minute scheduler that sends the Authorization header. See [Vercel scheduling limits](https://vercel.com/docs/cron-jobs/usage-and-pricing).
 
-Local `npm run dev:api` runs maintenance on startup and every minute. API requests also enforce expiry before reservation actions. Partially collected reservations keep the checked-out units active. At the return deadline, further pickup closes; once all collected units are returned, the reservation completes even if some requested units were never collected. Configure Brevo's key and verified sender to enable emails; without them, notifications remain available in the app and queued emails are not sent. Emails cover approval, return due soon, overdue returns, and missed-pickup cancellation. Failed delivery is retried after five minutes. Outdated reminders are skipped, and each maintenance call processes up to 25 queued emails, stopping before starting another provider request after 16 seconds. Monitor the queue and increase processing capacity if reservation volume grows. A provider accepting a message followed by a database write failure can result in duplicate delivery on retry.
+Local `npm run dev:api` runs maintenance on startup and every minute. Manual and QR pickup enforce the first-pickup cutoff transactionally, regardless of scheduler timing. DTO reads do not run maintenance. Partially collected loans may collect additional units before their return deadline; maintenance completes a partially collected loan after that deadline only once all physically collected units are returned. Never-collected expired loans are cancelled.
 
-Run `npm run db:migrate` before deploying this code; migration `0003_notification_emails.sql` creates the persistent email queue and `0004_review_invariants.sql` adds account access/profile fields, pickup closure tracking, unique credentials and assignment constraints. No provider credentials are stored in Git.
+Without Brevo configuration, notifications remain in the app and email work stays queued. Delivery revalidates reservation state and deadline text, checks age/access, and marks obsolete emails SKIPPED. Each message receives a 60-second lease and a stable provider idempotency key. Failed sends retry after one minute. Accepted messages whose SENT update fails keep their lease and recover with the same key. Ambiguity beyond 14 minutes is recorded as SKIPPED with `skip_reason='DELIVERY_UNCERTAIN'`; investigate provider delivery before deciding whether to send again. Provider deduplication is time-limited, so this does not claim unlimited exactly-once delivery. See [Brevo idempotency documentation](https://developers.brevo.com/docs/heterogenous-versions-batch-emails).
+
+The whole maintenance job shares a 20-second cooperative budget, with bounded reservation/reminder batches and at most 25 email claims. A request already in progress depends on its transport/runtime timeout. Monitor repeated job errors, PENDING/SENDING backlog and DELIVERY_UNCERTAIN records. Retention deletes old rate-limit buckets (one day), idempotency records (seven days), and terminal/no-email notifications (90 days) in batches of 500. Durable loan and audit history is retained.
+
+Configured APP_ORIGIN, VERCEL_URL and VERCEL_PROJECT_PRODUCTION_URL are exact deployment origins. Configure the actual preview URL; project-name prefixes and arbitrary `.vercel.app` hosts are rejected. Staff authentication has both IP and normalized account limits. The serverless adapter derives the IP from Vercel's platform headers; outside that adapter production requests share the unknown-IP bucket. See [Vercel request headers](https://vercel.com/docs/headers/request-headers).
+
+Run `npm run db:migrate` before deploying this code; migration `0003_notification_emails.sql` creates the persistent email queue and `0004_review_invariants.sql` adds account access/profile fields, pickup closure tracking, unique credentials and assignment constraints. Migration `0006_email_leases_and_maintenance.sql` adds email lease/recovery fields, maintenance cursor storage and retention indexes. Apply it before running this worker version. No provider credentials are stored in Git.
 
 ## Apply schema and establish access
 
@@ -57,3 +63,27 @@ Inventory can be entered through the Board interface. The seed command contains 
 Back up the SB Turso database through its configured provider controls. Restore into a separate database first and verify the catalogue, accounts, reservations, asset states, and audit events before switching application configuration. Do not point this application at the RAS database as a recovery shortcut.
 
 Use /api/health for application and database reachability. Confirm account creation, member and admin sign-in, Board approval, collection scan, return scan, and calendar display in the deployed browser after any provider or domain changes.
+
+## Preflight and tested local recovery
+
+Before each unapplied migration, the runner checks integrity, foreign keys, duplicate active physical borrowing and duplicate provider credentials. Conflicts stop migration without deleting data. Keep a backup and investigate duplicate historical assignments/credentials explicitly before retrying.
+
+Use a consistent read-transaction SQL snapshot from an operator environment with the SB database variables configured:
+
+```powershell
+node --env-file-if-exists=.env scripts/backup-database.mjs .local/sb-before-upgrade.sql
+```
+
+The backup tool refuses to overwrite a recovery point. It contains personal data and credentials; store it in restricted, encrypted storage. On Windows, apply appropriate directory ACLs. Verify recovery into a new local database; the restore tool refuses remote targets and existing database files:
+
+```powershell
+$env:TURSO_DATABASE_URL = 'file:.local/sb-restore-check.db'
+node scripts/restore-backup.mjs .local/sb-before-upgrade.sql
+node scripts/check-database.mjs
+```
+
+Restore recreates tables, data, indexes and triggers, then verifies integrity and foreign keys. Review account/loan counts and immutable audit history before any configuration switch. Restore application environment variables after the local drill. For production recovery, restore to a separate SB database using reviewed provider controls, validate it first, and switch configuration only during an authorized recovery operation. Live remote recovery was not exercised by this implementation.
+
+## Deferred P1 behavior
+
+All five P1 findings remain deferred: borrower account ownership, promotion-session invalidation, explicit scan modes/longer camera latching, inferred-return reservation matching, and overdue-capacity stock retirement. See [the current correction record](review-fixes.md) for the exact retained behaviors. Account disabling/password reset still revoke sessions as before; role promotion deliberately does not.

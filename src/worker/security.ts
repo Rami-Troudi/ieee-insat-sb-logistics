@@ -46,3 +46,17 @@ export function requestIp(c: Context) {
   const forwarded = c.req.header("x-forwarded-for")?.split(",", 1)[0]?.trim();
   return forwarded || c.req.header("x-real-ip") || "unknown";
 }
+
+export function authenticationIp(c: {
+  env: Env;
+  req: { header(name: string): string | undefined };
+}) {
+  if (["development", "test"].includes(c.env.ENVIRONMENT))
+    return (
+      c.req.header("x-forwarded-for")?.split(",", 1)[0]?.trim() ||
+      c.req.header("x-real-ip") ||
+      "unknown"
+    );
+  // The serverless adapter overwrites this header from Vercel's platform headers.
+  return c.req.header("CF-Connecting-IP") || "unknown";
+}

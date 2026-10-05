@@ -3,6 +3,7 @@ import { createClient, type Client } from "@libsql/client";
 import { serializeSignedCookie } from "better-call";
 import { readFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { reconcileExpiredReservations } from "../worker/domain";
 import { app } from "../worker/index";
 import { createDatabase } from "../worker/database";
 import type { Env, UserRole } from "../worker/env";
@@ -73,6 +74,12 @@ beforeEach(async () => {
   );
   await client.executeMultiple(
     await readFile(new URL("../../drizzle/0005_system_audit_actor.sql", import.meta.url), "utf8")
+  );
+  await client.executeMultiple(
+    await readFile(
+      new URL("../../drizzle/0006_email_leases_and_maintenance.sql", import.meta.url),
+      "utf8"
+    )
   );
   env = {
     CLIENT: client,
@@ -734,7 +741,12 @@ describe("reservation API against a real libSQL database", () => {
       args: [staffId],
     });
     expect(userRow.rows.length).toBe(1);
-    expect(userRow.rows[0]?.name).toBe("Deleted User");
+    expect(userRow.rows[0]?.name).toBe(staffId);
+    expect(userRow.rows[0]?.disabled_at).toBeTruthy();
+    expect(
+      (await client.execute("SELECT approved_by_user_id FROM reservations WHERE id=?", [res.id]))
+        .rows[0].approved_by_user_id
+    ).toBe(staffId);
 
     // Audit logs remain intact
     const auditAfter = await client.execute({
@@ -947,6 +959,7 @@ describe("reservation API against a real libSQL database", () => {
       args: [now - 500, res.id],
     });
 
+    await reconcileExpiredReservations(env);
     const checkFinal = await request(`/api/v1/board/reservations/${res.id}`, {}, boardCookie).then(
       (r) => r.json()
     );
@@ -1042,6 +1055,7 @@ describe("reservation API against a real libSQL database", () => {
     expect(returnScan.status).toBe(200);
 
     // Now that borrowed count is 0 and deadline passed, reservation is COMPLETED
+    await reconcileExpiredReservations(env);
     const checkFinal = await request(`/api/v1/board/reservations/${res.id}`, {}, boardCookie).then(
       (r) => r.json()
     );

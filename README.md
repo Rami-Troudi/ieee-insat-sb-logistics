@@ -54,3 +54,5 @@ The numbered SQL files in `drizzle/` are the migration source of truth. They inc
 Use `npm run db:generate -- descriptive_name` to create the next empty incremental SQL migration. Write and review its SQL, update the ORM mapping, then run `npm run db:migrate` and `npm run db:check`. Do not regenerate an initial schema, modify an already applied migration, or run Drizzle Kit against this migration history. Back up an existing database before applying new constraints; a migration failure rolls back that migration and requires inspecting existing data.
 
 The review fixes and verification coverage are documented in [docs/review-fixes.md](docs/review-fixes.md).
+
+Current corrections and all five deferred P1 findings: [review record](docs/review-fixes.md). Apply migration 0006 before running the updated worker. Backup/restore and preflight instructions are in [operations](docs/operations.md); generated output rules are in [artifact policy](docs/generated-artifacts.md).

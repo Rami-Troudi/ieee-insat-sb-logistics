@@ -80,6 +80,12 @@ beforeEach(async () => {
   await client.executeMultiple(
     await readFile(new URL("../../drizzle/0005_system_audit_actor.sql", import.meta.url), "utf8")
   );
+  await client.executeMultiple(
+    await readFile(
+      new URL("../../drizzle/0006_email_leases_and_maintenance.sql", import.meta.url),
+      "utf8"
+    )
+  );
   env = {
     CLIENT: client,
     DB: createDatabase(client),
@@ -254,7 +260,11 @@ describe("review regressions", () => {
     ]);
     expect(
       await (await request(`/api/v1/board/reservations/${r.id}`, {}, boardCookie)).json()
-    ).toMatchObject({ status: "COMPLETED", collectedCount: 1, returnedCount: 1, totalQuantity: 2 });
+    ).toMatchObject({ status: "APPROVED", collectedCount: 1, returnedCount: 1, totalQuantity: 2 });
+    await reconcileExpiredReservations(env);
+    expect(
+      (await client.execute("SELECT status FROM reservations WHERE id=?", [r.id])).rows[0].status
+    ).toBe("COMPLETED");
   });
   it("Regression: deleting historical borrower removes credentials then fails", async () => {
     const r = await loan();
@@ -755,5 +765,548 @@ describe("additional safety and database coverage", () => {
     expect(
       isAllowedOrigin("https://unrelated.vercel.app", env, env.APP_ORIGIN + "/api/v1/reservations")
     ).toBe(false);
+  });
+});
+
+describe("approved October review corrections", () => {
+  async function createLoan() {
+    const now = Date.now();
+    const response = await request(
+      "/api/v1/reservations",
+      sendJson({
+        pickupAt: new Date(now + 60_000).toISOString(),
+        returnAt: new Date(now + 7_200_000).toISOString(),
+        items: [{ equipmentItemId: itemId, quantity: 1 }],
+      }),
+      memberCookie
+    );
+    expect(response.status).toBe(201);
+    return (await response.json()).id as string;
+  }
+  async function approveLoan(id: string) {
+    expect(
+      (await request(`/api/v1/board/reservations/${id}/approve`, sendJson({}), boardCookie)).status
+    ).toBe(200);
+  }
+  async function scan(id: string, key: string) {
+    return request(
+      "/api/v1/board/scan",
+      {
+        ...sendJson({ qrToken, reservationId: id }),
+        headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+      },
+      boardCookie
+    );
+  }
+  async function auditFailure() {
+    await client.executeMultiple(
+      "CREATE TRIGGER fail_required_audit BEFORE INSERT ON audit_events BEGIN SELECT RAISE(ABORT,'injected audit failure'); END;"
+    );
+  }
+  it("limits the exact staff login route by normalized account across IPs", async () => {
+    env.AUTH_RATE_LIMIT_PER_MINUTE = 2;
+    for (let i = 0; i < 3; i++) {
+      const response = await request("/api/v1/auth/board-login", {
+        ...sendJson({
+          email: i % 2 ? " BOARD@example.test " : "board@example.test",
+          password: "incorrect-password",
+        }),
+        headers: { "Content-Type": "application/json", "x-forwarded-for": `192.0.2.${i}` },
+      });
+      expect(response.status).toBe(i < 2 ? 401 : 429);
+    }
+  });
+  it("limits staff attempts by IP across different accounts", async () => {
+    env.AUTH_RATE_LIMIT_PER_MINUTE = 2;
+    for (let i = 0; i < 3; i++)
+      expect(
+        (
+          await request(
+            "/api/v1/auth/board-login",
+            sendJson({ email: `person${i}@example.test`, password: "incorrect-password" })
+          )
+        ).status
+      ).toBe(i < 2 ? 401 : 429);
+  });
+  it("rejects prefixed preview hosts, wrong schemes and ports", () => {
+    env.APP_ORIGIN = "https://logistics-example.vercel.app";
+    const url = env.APP_ORIGIN + "/api/v1/me";
+    for (const origin of [
+      "https://logistics-example-attacker.vercel.app",
+      "http://logistics-example.vercel.app",
+      "https://logistics-example.vercel.app:444",
+    ])
+      expect(isAllowedOrigin(origin, env, url)).toBe(false);
+    env.APP_ORIGIN = undefined;
+    expect(
+      isAllowedOrigin("https://unknown.vercel.app", env, "https://unknown.vercel.app/api")
+    ).toBe(false);
+    env.VERCEL_URL = "known.vercel.app";
+    expect(isAllowedOrigin("https://known.vercel.app", env, "https://known.vercel.app/api")).toBe(
+      true
+    );
+  });
+  it.each(["manual", "qr"])(
+    "rejects overdue first pickup transactionally through %s",
+    async (mode) => {
+      const id = await createLoan();
+      await approveLoan(id);
+      await client.execute("UPDATE reservations SET pickup_at=? WHERE id=?", [
+        Date.now() - 31 * 60_000,
+        id,
+      ]);
+      const response =
+        mode === "qr"
+          ? await scan(id, "cutoff-test-key-0001")
+          : await request(
+              `/api/v1/board/reservations/${id}/handover`,
+              sendJson({ assetIds: ["asset-one"] }),
+              boardCookie
+            );
+      expect(response.status).toBe(409);
+      expect(
+        (await client.execute("SELECT state FROM assets WHERE id='asset-one'")).rows[0].state
+      ).toBe("AVAILABLE");
+      expect(
+        (
+          await client.execute(
+            "SELECT COUNT(*) AS count FROM reservation_assets WHERE reservation_id=?",
+            [id]
+          )
+        ).rows[0].count
+      ).toBe(0);
+    }
+  );
+  it("does not mutate a reservation when an unauthorized borrower reads it", async () => {
+    const id = await createLoan();
+    await approveLoan(id);
+    await client.execute("UPDATE reservations SET pickup_at=?,return_at=? WHERE id=?", [
+      Date.now() - 7_200_000,
+      Date.now() - 3_600_000,
+      id,
+    ]);
+    const other = await seedUser("other-reader", "USER");
+    expect((await request(`/api/v1/reservations/${id}`, {}, other)).status).toBe(404);
+    expect(
+      (await client.execute("SELECT status FROM reservations WHERE id=?", [id])).rows[0].status
+    ).toBe("APPROVED");
+    await reconcileExpiredReservations(env);
+    expect(
+      (await client.execute("SELECT status FROM reservations WHERE id=?", [id])).rows[0].status
+    ).toBe("CANCELLED");
+    expect(
+      (
+        await client.execute(
+          "SELECT COUNT(*) AS count FROM notifications WHERE type='PICKUP_EXPIRED' AND reservation_id=?",
+          [id]
+        )
+      ).rows[0].count
+    ).toBe(1);
+  });
+  it.each(["manual", "qr"])(
+    "supports an approved inactive equipment type through %s",
+    async (mode) => {
+      const id = await createLoan();
+      await approveLoan(id);
+      await client.execute("UPDATE reservations SET pickup_at=? WHERE id=?", [
+        Date.now() - 1000,
+        id,
+      ]);
+      await client.execute("UPDATE equipment_items SET active=0 WHERE id=?", [itemId]);
+      const response =
+        mode === "qr"
+          ? await scan(id, "inactive-type-test-0001")
+          : await request(
+              `/api/v1/board/reservations/${id}/handover`,
+              sendJson({ assetIds: ["asset-one"] }),
+              boardCookie
+            );
+      expect(response.status).toBe(200);
+    }
+  );
+  it.each(["RETIRED", "OUT_OF_SERVICE"])(
+    "retains physical material safety for %s",
+    async (state) => {
+      const id = await createLoan();
+      await approveLoan(id);
+      await client.execute("UPDATE reservations SET pickup_at=? WHERE id=?", [
+        Date.now() - 1000,
+        id,
+      ]);
+      await client.execute("UPDATE assets SET state=? WHERE id='asset-one'", [state]);
+      expect((await scan(id, "physical-safety-key-0001")).status).toBe(409);
+    }
+  );
+  it.each([
+    "equipment",
+    "asset",
+    "chapter-create",
+    "chapter-update",
+    "chapter-delete",
+    "role",
+    "password",
+  ])("rolls back %s when required audit fails", async (kind) => {
+    const admin = await seedUser("admin-review", "SUPERADMIN");
+    const before = (await client.execute("SELECT role FROM user WHERE id='member'")).rows[0].role;
+    await auditFailure();
+    const routes: Record<string, [string, RequestInit]> = {
+      equipment: [
+        "/api/v1/board/equipment",
+        sendJson({ name: "Audit atomicity", category: "Test" }),
+      ],
+      asset: [`/api/v1/board/equipment/${itemId}/assets`, sendJson({ assetCode: "ATOMIC-NEW" })],
+      "chapter-create": [
+        "/api/v1/board/chapters",
+        sendJson({ name: "New chapter", shortCode: "NEW" }),
+      ],
+      "chapter-update": [
+        "/api/v1/board/chapters/chapter-robotics",
+        { ...sendJson({ active: false }), method: "PATCH" },
+      ],
+      "chapter-delete": ["/api/v1/board/chapters/chapter-robotics", { method: "DELETE" }],
+      role: [
+        "/api/v1/board/users/member/role",
+        { ...sendJson({ role: "BOARD" }), method: "PATCH" },
+      ],
+      password: [
+        "/api/v1/board/users/member/password",
+        { ...sendJson({ password: "updated-long-password" }), method: "PUT" },
+      ],
+    };
+    const [path, options] = routes[kind];
+    expect((await request(path, options, admin)).status).toBe(500);
+    expect(
+      (
+        await client.execute(
+          "SELECT COUNT(*) AS count FROM equipment_items WHERE name='Audit atomicity'"
+        )
+      ).rows[0].count
+    ).toBe(0);
+    expect(
+      (await client.execute("SELECT COUNT(*) AS count FROM assets WHERE asset_code='ATOMIC-NEW'"))
+        .rows[0].count
+    ).toBe(0);
+    expect(
+      (await client.execute("SELECT active FROM chapters WHERE id='chapter-robotics'")).rows[0]
+        .active
+    ).toBe(1);
+    expect(
+      (await client.execute("SELECT COUNT(*) AS count FROM chapters WHERE short_code='NEW'"))
+        .rows[0].count
+    ).toBe(0);
+    expect((await client.execute("SELECT role FROM user WHERE id='member'")).rows[0].role).toBe(
+      before
+    );
+    expect(
+      (await client.execute("SELECT COUNT(*) AS count FROM account WHERE userId='member'")).rows[0]
+        .count
+    ).toBe(0);
+    expect(
+      (await client.execute("SELECT COUNT(*) AS count FROM session WHERE userId='member'")).rows[0]
+        .count
+    ).toBe(1);
+  });
+  it("retains staff pickup/return/approval attribution while disabling login", async () => {
+    const admin = await seedUser("delete-admin", "SUPERADMIN");
+    const id = await createLoan();
+    await approveLoan(id);
+    await client.execute("UPDATE reservations SET pickup_at=? WHERE id=?", [Date.now() - 1000, id]);
+    expect((await scan(id, "staff-attribution-checkout")).status).toBe(200);
+    await client.execute("UPDATE assets SET last_scan_at=?", [Date.now() - 4000]);
+    expect((await scan(id, "staff-attribution-return")).status).toBe(200);
+    expect((await request("/api/v1/board/users/board", { method: "DELETE" }, admin)).status).toBe(
+      200
+    );
+    expect(
+      (await client.execute("SELECT approved_by_user_id FROM reservations WHERE id=?", [id]))
+        .rows[0].approved_by_user_id
+    ).toBe("board");
+    expect(
+      (
+        await client.execute(
+          "SELECT checked_out_by_user_id,checked_in_by_user_id FROM reservation_assets WHERE reservation_id=?",
+          [id]
+        )
+      ).rows[0]
+    ).toMatchObject({ checked_out_by_user_id: "board", checked_in_by_user_id: "board" });
+    expect((await request("/api/v1/board/dashboard", {}, boardCookie)).status).toBe(401);
+  });
+  it("skips cancelled approvals and obsolete overdue email without provider submission", async () => {
+    const id = await createLoan();
+    await approveLoan(id);
+    await client.execute("UPDATE reservations SET status='CANCELLED' WHERE id=?", [id]);
+    await client.execute(
+      "INSERT INTO notifications(id,user_id,reservation_id,type,title,message,created_at) VALUES('obsolete-overdue','member',?,'RETURN_OVERDUE','Overdue','obsolete',?)",
+      [id, Date.now()]
+    );
+    await client.execute(
+      "INSERT INTO notification_emails(notification_id) VALUES('obsolete-overdue')"
+    );
+    env.BREVO_API_KEY = "test-only";
+    env.BREVO_SENDER_EMAIL = "test@example.test";
+    const fetchMock = vi.fn().mockResolvedValue(new Response("", { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      expect((await deliverNotificationEmails(env)).skipped).toBe(2);
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+  it("claims emails once across concurrent workers and recovers expired leases", async () => {
+    const now = Date.now();
+    await client.execute(
+      "INSERT INTO notifications(id,user_id,type,title,message,created_at) VALUES('claim-mail','member','OTHER','title','body',?)",
+      [now]
+    );
+    await client.execute(
+      "INSERT INTO notification_emails(notification_id,status,lease_until,lease_token) VALUES('claim-mail','SENDING',?,'abandoned')",
+      [now - 1000]
+    );
+    env.BREVO_API_KEY = "test-only";
+    env.BREVO_SENDER_EMAIL = "test@example.test";
+    const fetchMock = vi.fn().mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return new Response("", { status: 201 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const results = await Promise.allSettled([
+        deliverNotificationEmails(env),
+        deliverNotificationEmails(env),
+      ]);
+      expect(results.filter((result) => result.status === "fulfilled").length).toBeGreaterThan(0);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const payload = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(payload.headers.idempotencyKey).toBe("claim-mail");
+      expect(
+        (
+          await client.execute(
+            "SELECT status FROM notification_emails WHERE notification_id='claim-mail'"
+          )
+        ).rows[0].status
+      ).toBe("SENT");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+  it("keeps the excluded session promotion behavior unchanged", async () => {
+    const admin = await seedUser("promotion-admin", "SUPERADMIN");
+    expect(
+      (
+        await request(
+          "/api/v1/board/users/member/role",
+          { ...sendJson({ role: "SUPERADMIN" }), method: "PATCH" },
+          admin
+        )
+      ).status
+    ).toBe(200);
+    expect((await request("/api/v1/board/users", {}, memberCookie)).status).toBe(200);
+  });
+  it("keeps automatic second-scan returns and inferred cross-reservation returns unchanged", async () => {
+    const a = await createLoan();
+    const b = await createLoan();
+    await approveLoan(a);
+    await client.execute("UPDATE reservations SET pickup_at=? WHERE id=?", [Date.now() - 1000, a]);
+    expect((await scan(a, "excluded-auto-checkout")).status).toBe(200);
+    await client.execute("UPDATE assets SET last_scan_at=?", [Date.now() - 4000]);
+    const returned = await scan(b, "excluded-auto-return");
+    expect(returned.status).toBe(200);
+    expect(await returned.json()).toMatchObject({ operation: "RETURNED", reservationId: a });
+  });
+});
+
+describe("complete histories and transient retention", () => {
+  it("paginates borrower history past 200 and batches an entire board page", async () => {
+    const now = Date.now();
+    const tx = await client.transaction("write");
+    try {
+      for (let index = 0; index < 205; index++) {
+        await tx.execute({
+          sql: "INSERT INTO reservations(id,requested_by_user_id,borrower_type,borrower_user_id,pickup_at,return_at,status,created_at,updated_at) VALUES(?,'member','PERSON','member',?,?,'PENDING',?,?)",
+          args: [
+            `history-${String(index).padStart(3, "0")}`,
+            now + 60_000,
+            now + 120_000,
+            now,
+            now,
+          ],
+        });
+        await tx.execute({
+          sql: "INSERT INTO reservation_lines(id,reservation_id,equipment_item_id,quantity) VALUES(?,?,?,1)",
+          args: [`history-line-${index}`, `history-${String(index).padStart(3, "0")}`, itemId],
+        });
+      }
+      await tx.commit();
+    } finally {
+      tx.close();
+    }
+    const pages = [];
+    for (const offset of [0, 100, 200])
+      pages.push(
+        ...(await (await request(`/api/v1/reservations?offset=${offset}`, {}, memberCookie)).json())
+      );
+    expect(pages).toHaveLength(205);
+    expect(new Set(pages.map((row) => row.id)).size).toBe(205);
+    const { listBoardReservations } = await import("../worker/domain");
+    const spy = vi.spyOn(client, "execute");
+    expect(await listBoardReservations(env)).toHaveLength(100);
+    expect(spy).toHaveBeenCalledTimes(3);
+    spy.mockRestore();
+  });
+  it("paginates account and audit histories beyond the old caps", async () => {
+    const admin = await seedUser("history-admin", "SUPERADMIN");
+    const now = Date.now();
+    const tx = await client.transaction("write");
+    try {
+      for (let index = 0; index < 505; index++)
+        await tx.execute({
+          sql: "INSERT INTO user(id,name,email,emailVerified,role,createdAt,updatedAt) VALUES(?,?,?,0,'USER',?,?)",
+          args: [
+            `history-user-${index}`,
+            `History ${index}`,
+            `history-${index}@example.test`,
+            now,
+            now,
+          ],
+        });
+      for (let index = 0; index < 105; index++)
+        await tx.execute({
+          sql: "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES(?,'board','USER','member','TEST',?,'{}')",
+          args: [`history-audit-${index}`, now],
+        });
+      await tx.commit();
+    } finally {
+      tx.close();
+    }
+    const accounts = [];
+    for (let offset = 0; ; offset += 100) {
+      const page = await (await request(`/api/v1/board/users?offset=${offset}`, {}, admin)).json();
+      accounts.push(...page);
+      if (page.length < 100) break;
+    }
+    expect(accounts).toHaveLength(508);
+    const audit = [];
+    for (const offset of [0, 100])
+      audit.push(
+        ...(await (await request(`/api/v1/board/audit?offset=${offset}`, {}, boardCookie)).json())
+      );
+    expect(audit).toHaveLength(105);
+  });
+  it("cleans transient data while retaining durable loans and audit events", async () => {
+    const now = Date.now();
+    await client.execute(
+      "INSERT INTO rate_limit_buckets(key_hash,window_start,count) VALUES('expired',?,1)",
+      [now - 2 * 24 * 60 * 60_000]
+    );
+    await client.execute(
+      "INSERT INTO idempotency_keys(actor_id,operation,key,response,created_at) VALUES('board','ASSET_SCAN','expired','{}',?)",
+      [now - 8 * 24 * 60 * 60_000]
+    );
+    await client.execute(
+      "INSERT INTO notifications(id,user_id,type,title,message,created_at) VALUES('expired-note','member','OTHER','old','old',?)",
+      [now - 91 * 24 * 60 * 60_000]
+    );
+    await client.execute(
+      "INSERT INTO audit_events(id,actor_user_id,entity_type,entity_id,action,created_at,data) VALUES('durable-audit','board','USER','member','TEST',?,'{}')",
+      [now - 365 * 24 * 60 * 60_000]
+    );
+    const { runReservationMaintenance } = await import("../worker/domain");
+    await runReservationMaintenance(env);
+    expect(
+      (
+        await client.execute(
+          "SELECT COUNT(*) AS count FROM rate_limit_buckets WHERE key_hash='expired'"
+        )
+      ).rows[0].count
+    ).toBe(0);
+    expect(
+      (await client.execute("SELECT COUNT(*) AS count FROM idempotency_keys WHERE key='expired'"))
+        .rows[0].count
+    ).toBe(0);
+    expect(
+      (await client.execute("SELECT COUNT(*) AS count FROM notifications WHERE id='expired-note'"))
+        .rows[0].count
+    ).toBe(0);
+    expect(
+      (await client.execute("SELECT COUNT(*) AS count FROM audit_events WHERE id='durable-audit'"))
+        .rows[0].count
+    ).toBe(1);
+  });
+});
+
+describe("email submission recovery", () => {
+  async function queue(id: string) {
+    env.BREVO_API_KEY = "test-only";
+    env.BREVO_SENDER_EMAIL = "test@example.test";
+    await client.execute(
+      "INSERT INTO notifications(id,user_id,type,title,message,created_at) VALUES(?,'member','OTHER','title','body',?)",
+      [id, Date.now()]
+    );
+    await client.execute("INSERT INTO notification_emails(notification_id) VALUES(?)", [id]);
+  }
+  it("recovers provider acceptance followed by failed SENT persistence using the same provider key", async () => {
+    await queue("uncertain-mail");
+    await client.executeMultiple(
+      "CREATE TRIGGER fail_sent BEFORE UPDATE ON notification_emails WHEN NEW.status='SENT' BEGIN SELECT RAISE(ABORT,'sent persistence failure'); END;"
+    );
+    const mock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("", { status: 201 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ code: "duplicate_parameter" }), { status: 400 })
+      );
+    vi.stubGlobal("fetch", mock);
+    try {
+      expect((await deliverNotificationEmails(env)).sent).toBe(0);
+      expect(
+        (
+          await client.execute(
+            "SELECT status FROM notification_emails WHERE notification_id='uncertain-mail'"
+          )
+        ).rows[0].status
+      ).toBe("SENDING");
+      await client.execute("DROP TRIGGER fail_sent");
+      await client.execute(
+        "UPDATE notification_emails SET lease_until=? WHERE notification_id='uncertain-mail'",
+        [Date.now() - 1]
+      );
+      expect((await deliverNotificationEmails(env)).sent).toBe(1);
+      expect(mock).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(mock.mock.calls[0][1].body).headers.idempotencyKey).toBe(
+        JSON.parse(mock.mock.calls[1][1].body).headers.idempotencyKey
+      );
+      expect(
+        (
+          await client.execute(
+            "SELECT status FROM notification_emails WHERE notification_id='uncertain-mail'"
+          )
+        ).rows[0].status
+      ).toBe("SENT");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+  it("records old ambiguous submissions for investigation without redelivery", async () => {
+    await queue("old-uncertain-mail");
+    await client.execute(
+      "UPDATE notification_emails SET status='SENDING',first_attempt_at=?,lease_until=?",
+      [Date.now() - 15 * 60_000, Date.now() - 1]
+    );
+    const mock = vi.fn();
+    vi.stubGlobal("fetch", mock);
+    try {
+      expect((await deliverNotificationEmails(env)).skipped).toBe(1);
+      expect(mock).not.toHaveBeenCalled();
+      expect(
+        (
+          await client.execute(
+            "SELECT status,skip_reason FROM notification_emails WHERE notification_id='old-uncertain-mail'"
+          )
+        ).rows[0]
+      ).toMatchObject({ status: "SKIPPED", skip_reason: "DELIVERY_UNCERTAIN" });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

@@ -1,8 +1,10 @@
+import type { ReservationDTO } from "../shared/contracts";
+import { pagination } from "../shared/contracts";
+export type { ReservationDTO } from "../shared/contracts";
 import { DateTime } from "luxon";
 import type { Client, InArgs, InStatement, ResultSet } from "@libsql/client";
 import type { Env, CurrentUser } from "./env";
 import { DomainError } from "./security";
-import { escapeHtml, sendEmail } from "./email";
 
 export const DISPLAY_TIME_ZONE = "Africa/Tunis";
 const DUPLICATE_SCAN_WINDOW_MS = 3_000;
@@ -333,36 +335,6 @@ interface ReservationLineRow {
   asset_state_now: string | null;
 }
 
-export interface ReservationDTO {
-  id: string;
-  requestedBy: { id: string; name: string; email: string };
-  borrower: { type: "PERSON" | "CHAPTER"; id: string; name: string };
-  items: Array<{
-    lineId: string;
-    equipmentItemId: string;
-    name: string;
-    quantity: number;
-    assignedAssets?: Array<{ id: string; assetCode: string; state: string }>;
-  }>;
-  pickupAt: string;
-  returnAt: string;
-  note: string | null;
-  status: ReservationRow["status"];
-  derivedStatus:
-    | "PENDING"
-    | "APPROVED"
-    | "BORROWED"
-    | "PARTIALLY_RETURNED"
-    | "RETURNED"
-    | "OVERDUE"
-    | "DECLINED"
-    | "CANCELLED";
-  collectedCount: number;
-  returnedCount: number;
-  totalQuantity: number;
-  createdAt: string;
-}
-
 export async function finalizeReservationIfFinished(
   tx: SqlExecutor,
   reservationId: string,
@@ -403,7 +375,7 @@ export async function finalizeReservationIfFinished(
   // 1. If all requested units were collected and all are returned -> COMPLETED immediately
   if (totalRequested > 0 && collectedCount === totalRequested && returnedCount === totalRequested) {
     shouldComplete = true;
-  } else if (now >= returnAt && borrowedCount === 0) {
+  } else if (now >= returnAt && borrowedCount === 0 && collectedCount > 0) {
     await releaseUncollectedAssets(tx, reservationId, now);
     shouldComplete = true;
   }
@@ -443,7 +415,7 @@ async function releaseUncollectedAssets(tx: SqlExecutor, reservationId: string, 
   }
 }
 
-async function expireUncollectedReservationsTx(tx: SqlExecutor, now: number) {
+async function expireUncollectedReservationsTx(tx: SqlExecutor, now: number, deadline = Infinity) {
   const cutoff = now - 30 * 60_000;
   const candidates = await rows<{
     id: string;
@@ -459,20 +431,18 @@ async function expireUncollectedReservationsTx(tx: SqlExecutor, now: number) {
          SELECT COUNT(*)
          FROM reservation_assets ra
          WHERE ra.reservation_id = r.id AND ra.actual_pickup_at IS NOT NULL
-       ) = 0`,
+       ) = 0 ORDER BY r.pickup_at,r.id LIMIT 100`,
     [cutoff]
   );
 
   let expiredCount = 0;
   for (const r of candidates) {
+    if (Date.now() >= deadline) break;
     await tx.execute({
       sql: "UPDATE reservations SET status = 'CANCELLED', pickup_closed_at = ?, updated_at = ? WHERE id = ? AND status IN ('PENDING', 'APPROVED')",
       args: [now, now, r.id],
     });
-    await tx.execute({
-      sql: "UPDATE reservation_assets SET state = 'RELEASED', updated_at = ? WHERE reservation_id = ? AND state = 'RESERVED'",
-      args: [now, r.id],
-    });
+    await releaseUncollectedAssets(tx, r.id, now);
     await notify(
       tx,
       r.requested_by_user_id,
@@ -490,43 +460,30 @@ async function expireUncollectedReservationsTx(tx: SqlExecutor, now: number) {
   return expiredCount;
 }
 
-export async function expireUncollectedReservations(env: Env, now = Date.now()): Promise<number> {
-  return write(env, (tx) => expireUncollectedReservationsTx(tx, now));
+export async function expireUncollectedReservations(
+  env: Env,
+  now = Date.now(),
+  deadline = Infinity
+): Promise<number> {
+  return write(env, (tx) => expireUncollectedReservationsTx(tx, now, deadline));
 }
 
-export async function reconcileExpiredReservations(env: Env, now = Date.now()) {
+export async function reconcileExpiredReservations(
+  env: Env,
+  now = Date.now(),
+  deadline = Infinity
+) {
   await write(env, async (tx) => {
-    await expireUncollectedReservationsTx(tx, now);
-    const expired = await rows<{ id: string }>(
+    await expireUncollectedReservationsTx(tx, now, deadline);
+    const candidates = await rows<{ id: string }>(
       tx,
-      "SELECT id FROM reservations WHERE status='APPROVED' AND return_at<=? AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id=reservations.id AND state='RESERVED')>0",
+      "SELECT id FROM reservations WHERE status='APPROVED' AND NOT EXISTS (SELECT 1 FROM reservation_assets WHERE reservation_id=reservations.id AND state='BORROWED') AND (return_at<=? OR (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id=reservations.id AND state='RETURNED')=(SELECT SUM(quantity) FROM reservation_lines WHERE reservation_id=reservations.id)) ORDER BY updated_at,id LIMIT 100",
       [now]
     );
-    for (const { id: reservationId } of expired)
-      await releaseUncollectedAssets(tx, reservationId, now);
-
-    // 1. Expired approved reservations with 0 currently borrowed units -> COMPLETED
-    await tx.execute({
-      sql: `UPDATE reservations
-            SET status = 'COMPLETED', updated_at = ?
-            WHERE status = 'APPROVED'
-              AND return_at <= ?
-              AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state = 'BORROWED') = 0
-              AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state = 'RESERVED') = 0`,
-      args: [now, now],
-    });
-
-    // 2. Approved reservations where all requested units are collected and returned -> COMPLETED
-    await tx.execute({
-      sql: `UPDATE reservations
-            SET status = 'COMPLETED', updated_at = ?
-            WHERE status = 'APPROVED'
-              AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state = 'BORROWED') = 0
-              AND (SELECT COALESCE(SUM(quantity), 0) FROM reservation_lines WHERE reservation_id = reservations.id) > 0
-              AND (SELECT COALESCE(SUM(quantity), 0) FROM reservation_lines WHERE reservation_id = reservations.id) = (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state = 'RETURNED')
-              AND (SELECT COUNT(*) FROM reservation_assets WHERE reservation_id = reservations.id AND state NOT IN ('RESERVED', 'RELEASED')) = (SELECT COALESCE(SUM(quantity), 0) FROM reservation_lines WHERE reservation_id = reservations.id)`,
-      args: [now],
-    });
+    for (const { id } of candidates) {
+      if (Date.now() >= deadline) break;
+      await finalizeReservationIfFinished(tx, id, now);
+    }
   });
 }
 
@@ -535,8 +492,18 @@ export async function getReservation(
   reservationId: string,
   includeAssets = false
 ): Promise<ReservationDTO | null> {
+  return (await getReservations(env, [reservationId], includeAssets))[0] ?? null;
+}
+
+async function getReservations(
+  env: Env,
+  ids: string[],
+  includeAssets = false
+): Promise<ReservationDTO[]> {
+  if (!ids.length) return [];
   const executor = env.CLIENT as unknown as SqlExecutor;
-  const reservation = await one<ReservationRow>(
+  const placeholders = ids.map(() => "?").join(",");
+  const reservations = await rows<ReservationRow>(
     executor,
     `SELECT r.id,r.requested_by_user_id,u.name AS requester_name,u.email AS requester_email,
             r.borrower_type,r.borrower_user_id,r.chapter_id,bu.name AS borrower_name,ch.name AS chapter_name,
@@ -545,30 +512,39 @@ export async function getReservation(
        INNER JOIN user u ON u.id=r.requested_by_user_id
        LEFT JOIN user bu ON bu.id=r.borrower_user_id
        LEFT JOIN chapters ch ON ch.id=r.chapter_id
-      WHERE r.id=?`,
-    [reservationId]
+      WHERE r.id IN (${placeholders})`,
+    ids
   );
-  if (!reservation) return null;
-
-  if (reservation.status === "APPROVED") {
-    const finalized = await finalizeReservationIfFinished(executor, reservationId);
-    if (finalized) {
-      reservation.status = "COMPLETED";
-    }
-  }
-
-  const lineRows = await rows<ReservationLineRow>(
+  const lines = await rows<ReservationLineRow & { reservation_id: string }>(
     executor,
-    `SELECT l.id,l.equipment_item_id,e.name AS equipment_name,l.quantity,
+    `SELECT l.reservation_id,l.id,l.equipment_item_id,e.name AS equipment_name,l.quantity,
             ra.asset_id,a.asset_code,ra.state AS asset_state,a.state AS asset_state_now
        FROM reservation_lines l
        INNER JOIN equipment_items e ON e.id=l.equipment_item_id
        LEFT JOIN reservation_assets ra ON ra.reservation_line_id=l.id
        LEFT JOIN assets a ON a.id=ra.asset_id
-      WHERE l.reservation_id=?
+      WHERE l.reservation_id IN (${placeholders})
       ORDER BY e.name,a.asset_code`,
-    [reservationId]
+    ids
   );
+  const grouped = new Map<string, ReservationLineRow[]>();
+  for (const line of lines) {
+    const group = grouped.get(line.reservation_id) ?? [];
+    group.push(line);
+    grouped.set(line.reservation_id, group);
+  }
+  const byId = new Map(reservations.map((reservation) => [reservation.id, reservation]));
+  return ids.flatMap((id) => {
+    const reservation = byId.get(id);
+    return reservation ? [reservationDto(reservation, grouped.get(id) ?? [], includeAssets)] : [];
+  });
+}
+
+function reservationDto(
+  reservation: ReservationRow,
+  lineRows: ReservationLineRow[],
+  includeAssets: boolean
+): ReservationDTO {
   const grouped = new Map<string, ReservationDTO["items"][number]>();
   const assignmentStates: string[] = [];
   for (const line of lineRows) {
@@ -612,7 +588,8 @@ export async function getReservation(
   } else if (
     reservation.status === "APPROVED" &&
     now >= Number(reservation.return_at) &&
-    borrowedCount === 0
+    borrowedCount === 0 &&
+    collectedCount > 0
   ) {
     derivedStatus = "RETURNED";
   } else if (reservation.status === "COMPLETED") {
@@ -650,23 +627,28 @@ export async function getReservation(
   };
 }
 
-export async function listReservations(env: Env, ownerId: string) {
-  await reconcileExpiredReservations(env);
+export async function listReservations(
+  env: Env,
+  ownerId: string,
+  options: { offset?: number; limit?: number } = {}
+) {
+  const { offset, limit } = pagination(options.offset, options.limit);
   const ids = await rows<{ id: string }>(
     env.CLIENT as unknown as SqlExecutor,
-    "SELECT id FROM reservations WHERE requested_by_user_id=? ORDER BY pickup_at DESC LIMIT 200",
-    [ownerId]
+    "SELECT id FROM reservations WHERE requested_by_user_id=? ORDER BY pickup_at DESC,id LIMIT ? OFFSET ?",
+    [ownerId, limit, offset]
   );
-  return Promise.all(ids.map(({ id: reservationId }) => getReservation(env, reservationId)));
+  return getReservations(
+    env,
+    ids.map(({ id }) => id)
+  );
 }
 
 export async function listBoardReservations(
   env: Env,
   options: { offset?: number; limit?: number; start?: number; end?: number } = {}
 ) {
-  await reconcileExpiredReservations(env);
-  const limit = Math.min(100, Math.max(1, options.limit ?? 100));
-  const offset = Math.max(0, options.offset ?? 0);
+  const { limit, offset } = pagination(options.offset, options.limit);
   let sql = "SELECT id FROM reservations";
   const args: (string | number)[] = [];
 
@@ -676,11 +658,15 @@ export async function listBoardReservations(
   }
 
   sql +=
-    " ORDER BY CASE status WHEN 'PENDING' THEN 0 WHEN 'APPROVED' THEN 1 ELSE 2 END, pickup_at ASC LIMIT ? OFFSET ?";
+    " ORDER BY CASE status WHEN 'PENDING' THEN 0 WHEN 'APPROVED' THEN 1 ELSE 2 END, pickup_at ASC,id LIMIT ? OFFSET ?";
   args.push(limit, offset);
 
   const ids = await rows<{ id: string }>(env.CLIENT as unknown as SqlExecutor, sql, args);
-  return Promise.all(ids.map(({ id: reservationId }) => getReservation(env, reservationId, true)));
+  return getReservations(
+    env,
+    ids.map(({ id }) => id),
+    true
+  );
 }
 
 export interface CreateReservationInput {
@@ -801,7 +787,8 @@ export async function createReservation(
 export async function refreshReturnNotificationsForUser(
   env: Env,
   userId: string,
-  now = Date.now()
+  now = Date.now(),
+  deadline = Infinity
 ) {
   return write(env, async (tx) => {
     const activeLoans = await rows<{ id: string; return_at: number; borrowed_count: number }>(
@@ -817,6 +804,7 @@ export async function refreshReturnNotificationsForUser(
     let created = 0;
 
     for (const loan of activeLoans) {
+      if (Date.now() >= deadline) break;
       const returnAt = Number(loan.return_at);
       const dueLabel = DateTime.fromMillis(returnAt, { zone: DISPLAY_TIME_ZONE }).toFormat(
         "ccc, d LLL 'at' HH:mm"
@@ -865,19 +853,29 @@ export async function refreshReturnNotificationsForUser(
   });
 }
 
-export async function refreshAllReturnNotifications(env: Env, now = Date.now()) {
-  await reconcileExpiredReservations(env, now);
+export async function refreshAllReturnNotifications(
+  env: Env,
+  now = Date.now(),
+  deadline = Infinity
+) {
   const borrowers = await rows<{ user_id: string }>(
     env.CLIENT as unknown as SqlExecutor,
     "SELECT DISTINCT r.requested_by_user_id AS user_id " +
       "FROM reservations r " +
       "INNER JOIN reservation_assets ra ON ra.reservation_id=r.id " +
-      "WHERE r.status='APPROVED' AND ra.state='BORROWED'"
+      "WHERE r.status='APPROVED' AND ra.state='BORROWED' AND r.requested_by_user_id > COALESCE((SELECT value FROM maintenance_state WHERE key='reminder_cursor'),'') ORDER BY user_id LIMIT 100"
   );
   let created = 0;
   for (const borrower of borrowers) {
-    created += await refreshReturnNotificationsForUser(env, borrower.user_id, now);
+    if (Date.now() >= deadline) break;
+    created += await refreshReturnNotificationsForUser(env, borrower.user_id, now, deadline);
+    await env.CLIENT.execute({
+      sql: "INSERT INTO maintenance_state(key,value) VALUES('reminder_cursor',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      args: [borrower.user_id],
+    });
   }
+  if (!borrowers.length)
+    await env.CLIENT.execute("DELETE FROM maintenance_state WHERE key='reminder_cursor'");
   return { borrowersChecked: borrowers.length, notificationsCreated: created };
 }
 
@@ -900,6 +898,8 @@ export async function approveReservation(
         "RESERVATION_CONFLICT",
         "Only a pending reservation can be approved."
       );
+    if (Date.now() >= Number(reservation.pickup_at) + 30 * 60_000)
+      throw new DomainError(409, "PICKUP_EXPIRED", "The first pickup deadline has expired.");
     await checkQuantities(
       tx,
       reservationId,
@@ -1129,9 +1129,9 @@ export async function rescheduleReservation(
 ) {
   validateWindow(pickupAt, returnAt);
   await write(env, async (tx) => {
-    const reservation = await one<{ status: string }>(
+    const reservation = await one<{ status: string; pickup_at: number }>(
       tx,
-      "SELECT status FROM reservations WHERE id=?",
+      "SELECT status,pickup_at FROM reservations WHERE id=?",
       [reservationId]
     );
     if (!reservation) throw new DomainError(404, "NOT_FOUND", "Reservation not found.");
@@ -1141,6 +1141,8 @@ export async function rescheduleReservation(
         "RESERVATION_CONFLICT",
         "Only an approved reservation can be rescheduled."
       );
+    if (Date.now() >= Number(reservation.pickup_at) + 30 * 60_000)
+      throw new DomainError(409, "PICKUP_EXPIRED", "The first pickup deadline has expired.");
     const pickedUp = await one<{ count: number }>(
       tx,
       "SELECT COUNT(*) AS count FROM reservation_assets WHERE reservation_id=? AND actual_pickup_at IS NOT NULL",
@@ -1252,6 +1254,13 @@ async function collectMaterial(
     throw new DomainError(409, "TOO_EARLY", "The pickup window has not started yet.");
   if (timestamp >= Number(reservation.return_at))
     throw new DomainError(409, "RESERVATION_EXPIRED", "The reservation window has expired.");
+  const priorPickup = await one<{ count: number }>(
+    tx,
+    "SELECT COUNT(*) AS count FROM reservation_assets WHERE reservation_id=? AND actual_pickup_at IS NOT NULL",
+    [reservationId]
+  );
+  if (!Number(priorPickup?.count) && timestamp >= Number(reservation.pickup_at) + 30 * 60_000)
+    throw new DomainError(409, "PICKUP_EXPIRED", "The first pickup deadline has expired.");
   const asset = await one<{
     equipment_item_id: string;
     state: string;
@@ -1454,15 +1463,6 @@ export async function scanAsset(
       if (operation === "RETURNED") {
         throw new DomainError(409, "ALREADY_RETURNED", "This asset has no active checkout.");
       }
-      const equipment = await one<{ active: number }>(
-        tx,
-        "SELECT active FROM equipment_items WHERE id=?",
-        [asset.equipment_item_id]
-      );
-      if (!equipment || !equipment.active) {
-        throw new DomainError(409, "ASSET_UNAVAILABLE", "This equipment is currently inactive.");
-      }
-
       let targetReservationId = reservationId;
       if (!targetReservationId) {
         const eligible = await rows<{
@@ -1593,11 +1593,15 @@ export async function boardDashboard(env: Env) {
     returnsToday: Number(returns?.count ?? 0),
     currentlyBorrowed: Number(borrowed?.count ?? 0),
     overdue: Number(overdue?.count ?? 0),
-    nextPickups: await Promise.all(
-      nextPickups.map(({ id: reservationId }) => getReservation(env, reservationId, true))
+    nextPickups: await getReservations(
+      env,
+      nextPickups.map(({ id }) => id),
+      true
     ),
-    nextReturns: await Promise.all(
-      nextReturns.map(({ id: reservationId }) => getReservation(env, reservationId, true))
+    nextReturns: await getReservations(
+      env,
+      nextReturns.map(({ id }) => id),
+      true
     ),
   };
 }
@@ -1616,7 +1620,6 @@ export async function calendarEvents(
   ) {
     throw new DomainError(400, "INVALID_TIME_RANGE", "Choose a calendar range under 93 days.");
   }
-  await reconcileExpiredReservations(env);
   const ids = await rows<{ id: string }>(
     env.CLIENT as unknown as SqlExecutor,
     `SELECT DISTINCT r.id FROM reservations r
@@ -1625,8 +1628,10 @@ export async function calendarEvents(
       ORDER BY r.pickup_at`,
     [end, start]
   );
-  const reservations = await Promise.all(
-    ids.map(({ id: reservationId }) => getReservation(env, reservationId, true))
+  const reservations = await getReservations(
+    env,
+    ids.map(({ id }) => id),
+    true
   );
   return reservations
     .filter((reservation): reservation is ReservationDTO => Boolean(reservation))
@@ -1660,13 +1665,15 @@ export async function calendarEvents(
     );
 }
 
-export async function listBoardAudit(env: Env) {
+export async function listBoardAudit(env: Env, options: { offset?: number; limit?: number } = {}) {
+  const { offset, limit } = pagination(options.offset, options.limit);
   return rows<Record<string, unknown>>(
     env.CLIENT as unknown as SqlExecutor,
     `SELECT a.id,a.entity_type AS entityType,a.entity_id AS entityId,a.action,a.created_at AS createdAt,
             a.data,CASE WHEN a.actor_type='SYSTEM' THEN 'System · ' || a.actor_id ELSE u.name END AS actorName
        FROM audit_events a LEFT JOIN user u ON u.id=a.actor_user_id
-      ORDER BY a.created_at DESC LIMIT 100`
+      ORDER BY a.created_at DESC,a.id LIMIT ? OFFSET ?`,
+    [limit, offset]
   );
 }
 
@@ -1678,71 +1685,34 @@ export function randomId(prefix: string) {
   return id(prefix);
 }
 
-export async function deliverNotificationEmails(
-  env: Env,
-  now = Date.now()
-): Promise<{ sent: number; skipped: number; pending: number }> {
-  if (!env.BREVO_API_KEY || !env.BREVO_SENDER_EMAIL) {
-    return { sent: 0, skipped: 0, pending: 0 };
-  }
-
-  const pendingRows = await rows<{
-    notification_id: string;
-    attempts: number;
-    title: string;
-    message: string;
-    user_email: string | null;
-  }>(
-    env.CLIENT as unknown as SqlExecutor,
-    `SELECT ne.notification_id, ne.attempts, n.title, n.message, u.email AS user_email
-     FROM notification_emails ne
-     JOIN notifications n ON n.id = ne.notification_id
-     LEFT JOIN user u ON u.id = n.user_id
-     WHERE ne.status = 'PENDING' AND ne.next_attempt_at <= ?
-     ORDER BY ne.next_attempt_at ASC
-     LIMIT 25`,
-    [now]
-  );
-
-  let sent = 0;
-  let skipped = 0;
-  const startTime = Date.now();
-
-  for (const row of pendingRows) {
-    if (Date.now() - startTime > 16_000) break;
-
-    if (!row.user_email) {
-      await env.CLIENT.execute({
-        sql: "UPDATE notification_emails SET status = 'SKIPPED' WHERE notification_id = ?",
-        args: [row.notification_id],
-      });
-      skipped++;
-      continue;
-    }
-
-    try {
-      await sendEmail(env, row.user_email, row.title, `<p>${escapeHtml(row.message)}</p>`);
-      await env.CLIENT.execute({
-        sql: "UPDATE notification_emails SET status = 'SENT', attempts = attempts + 1, sent_at = ?, next_attempt_at = 0 WHERE notification_id = ?",
-        args: [Date.now(), row.notification_id],
-      });
-      sent++;
-    } catch {
-      await env.CLIENT.execute({
-        sql: "UPDATE notification_emails SET status = 'PENDING', attempts = attempts + 1, next_attempt_at = ? WHERE notification_id = ?",
-        args: [now + 5 * 60_000, row.notification_id],
-      });
-    }
-  }
-
-  return { sent, skipped, pending: pendingRows.length - sent - skipped };
-}
+export { deliverNotificationEmails } from "./notification-delivery";
+import { deliverNotificationEmails } from "./notification-delivery";
 
 export async function runReservationMaintenance(env: Env, now = Date.now()) {
-  const expiredReservations = await expireUncollectedReservations(env, now);
-  await reconcileExpiredReservations(env, now);
-  const reminders = await refreshAllReturnNotifications(env, now);
-  const emailResults = await deliverNotificationEmails(env, now);
+  const deadline = Date.now() + 20_000;
+  const expiredReservations = await expireUncollectedReservations(env, now, deadline);
+  if (Date.now() < deadline) await reconcileExpiredReservations(env, now, deadline);
+  const reminders =
+    Date.now() < deadline
+      ? await refreshAllReturnNotifications(env, now, deadline)
+      : { notificationsCreated: 0 };
+  const emailResults =
+    Date.now() < deadline ? await deliverNotificationEmails(env, now, deadline) : { sent: 0 };
+  if (Date.now() < deadline)
+    await write(env, async (tx) => {
+      await tx.execute({
+        sql: "DELETE FROM rate_limit_buckets WHERE key_hash IN (SELECT key_hash FROM rate_limit_buckets WHERE window_start<? LIMIT 500)",
+        args: [now - 24 * 60 * 60_000],
+      });
+      await tx.execute({
+        sql: "DELETE FROM idempotency_keys WHERE rowid IN (SELECT rowid FROM idempotency_keys WHERE created_at<? LIMIT 500)",
+        args: [now - 7 * 24 * 60 * 60_000],
+      });
+      await tx.execute({
+        sql: "DELETE FROM notifications WHERE id IN (SELECT n.id FROM notifications n LEFT JOIN notification_emails ne ON ne.notification_id=n.id WHERE n.created_at<? AND (ne.status IS NULL OR ne.status IN ('SENT','SKIPPED')) LIMIT 500)",
+        args: [now - 90 * 24 * 60 * 60_000],
+      });
+    });
   return {
     expiredReservations,
     remindersCreated: reminders.notificationsCreated,

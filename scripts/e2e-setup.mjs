@@ -36,6 +36,9 @@ try {
   await client.executeMultiple(
     await readFile(resolve("drizzle/0005_system_audit_actor.sql"), "utf8")
   );
+  await client.executeMultiple(
+    await readFile(resolve("drizzle/0006_email_leases_and_maintenance.sql"), "utf8")
+  );
   const now = Date.now();
   const result = {};
   for (const [id, name, role] of [

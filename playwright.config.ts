@@ -33,6 +33,7 @@ export default defineConfig({
         BETTER_AUTH_SECRET: e2eSecret,
         APP_ORIGIN: "http://127.0.0.1:5188",
         NODE_ENV: "test",
+        CRON_SECRET: "e2e-maintenance-secret",
         BREVO_API_KEY: "",
         BREVO_SENDER_EMAIL: "",
       },

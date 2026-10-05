@@ -2,7 +2,7 @@
 
 Branch: `Youssef`
 
-This document explains the changes added to the logistics application and what to check when integrating them.
+This is a historical integration note. The current implementation and explicit five-P1 deferral are recorded in [docs/review-fixes.md](docs/review-fixes.md). Historical test/audit counts below are not current verification results.
 
 ## 1. Authentication & Borrower Identification
 
@@ -129,9 +129,9 @@ In **Board → Inventory**, each equipment type has an **Export all QR codes** b
 ## Borrowing history, email reminders and pickup expiry
 
 - The Board borrower dialog shows the latest 50 loans, dates, material types, requested/collected/returned quantities, total units collected and units still borrowed. Totals count all retained loan records, including current loans; force-deleted records are excluded.
-- Approval, return reminder, overdue and missed-pickup emails use the existing Brevo sender. A persistent queue records delivery and retries provider failures after five minutes. Superseded or old reminders are skipped. Migration `0003_notification_emails.sql` creates the queue.
+- Approval, return reminder, overdue and missed-pickup emails use the existing Brevo sender. A persistent queue records delivery and retries provider failures after one minute. Superseded or old reminders are skipped. Migration `0003_notification_emails.sql` creates the queue.
 - Reservations with no collected units are cancelled 30 minutes after scheduled pickup, releasing their quantity capacity. This applies to pending and approved requests. Partially collected reservations remain active.
-- Borrowers see the policy before submitting a request and in submission/approval notifications. Automatic cancellations create borrower and Board notifications and an audit entry marked as automatic.
+- Borrowers see the policy before submitting a request and in submission/approval notifications. Automatic cancellations create a borrower notification and a system-actor audit entry.
 - The development API performs maintenance every minute. Production requires a minute scheduler calling the protected maintenance endpoint, or a Vercel Pro minute cron. The checked-in cron now runs every minute; Hobby deployments need the documented external scheduler alternative. Pickup is rejected after the deadline even between scheduler runs.
 
 ## Code commits
@@ -143,7 +143,7 @@ In **Board → Inventory**, each equipment type has an **Export all QR codes** b
 
 - Protected equipment, account and reservation deletion with transactional writes and history checks. Accounts with history can have access disabled instead of being deleted.
 - Removed unsigned session-cookie fallback and restricted origin trust to configured deployments and local development ports.
-- Public signup always creates a new account; existing passwordless accounts require a Superadmin password reset. Password changes and bootstrap rotation revoke sessions.
+- Borrower sign-in remains passwordless and can update/sign in an existing USER account without proving email ownership; this P1 behavior is explicitly deferred. Password changes and bootstrap rotation revoke sessions; role promotion keeps existing sessions.
 - Added migration 0004 for pickup closure, disabled accounts, affiliation, credential uniqueness and physical assignment constraints.
 - Fixed quantity availability, reserved stock retirement checks, pickup for previously approved disabled equipment, and partial-pickup completion at the return deadline.
 - Fixed direct material QR routing and staff login destination, borrower status filters, calendar quantities/colors/range loading, print CSP and HTML escaping, and camera lifecycle.

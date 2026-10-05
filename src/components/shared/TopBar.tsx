@@ -153,7 +153,7 @@ function NotificationBell({ userId }: { userId: string }) {
         <div
           role="dialog"
           aria-label="Notifications"
-          className="absolute right-0 top-12 z-50 w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-border bg-card shadow-xl"
+          className="fixed left-4 right-4 top-20 sm:absolute sm:left-auto sm:right-0 sm:top-12 z-50 w-[calc(100vw-2rem)] sm:w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-border bg-card shadow-xl"
         >
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <div>
